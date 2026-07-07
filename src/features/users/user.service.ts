@@ -1,6 +1,12 @@
 import bcrypt from "bcrypt";
+
 import { UserRepository } from "./user.repository";
 import { CreateUserInput } from "./user.schema";
+
+import {
+  ConflictError,
+  NotFoundError,
+} from "@/lib/errors";
 
 export const UserService = {
   async getUsers() {
@@ -8,14 +14,20 @@ export const UserService = {
   },
 
   async getUserById(id: string) {
-    return UserRepository.findById(id);
+    const user = await UserRepository.findById(id);
+
+    if (!user) {
+      throw new NotFoundError("User not found");
+    }
+
+    return user;
   },
 
   async createUser(data: CreateUserInput) {
     const existing = await UserRepository.findByEmail(data.email);
 
     if (existing) {
-      throw new Error("User already exists");
+      throw new ConflictError("User already exists");
     }
 
     const hashedPassword = await bcrypt.hash(data.password, 10);

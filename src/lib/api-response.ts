@@ -14,14 +14,33 @@ export function success<T>(
   });
 }
 
+export function created<T>(
+  data: T,
+  message = "Created successfully"
+) {
+  return NextResponse.json<ApiResponse<T>>(
+    {
+      success: true,
+      message,
+      data,
+    },
+    {
+      status: 201,
+    }
+  );
+}
+
 export function error(
   message = "Something went wrong",
   status = 500
 ) {
-  return NextResponse.json<ApiResponse>({
-    success: false,
-    message,
-  }, {
-    status,
-  });
+  return NextResponse.json<ApiResponse>(
+    {
+      success: false,
+      message,
+    },
+    {
+      status,
+    }
+  );
 }

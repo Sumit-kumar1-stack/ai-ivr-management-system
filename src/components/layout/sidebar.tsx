@@ -7,19 +7,35 @@ const menu = [
   },
   {
     label: "Users",
-    href: "/dashboard/users",
+    href: "/users",
   },
   {
     label: "Campaigns",
-    href: "/dashboard/campaigns",
+    href: "/campaigns",
   },
   {
     label: "Contacts",
-    href: "/dashboard/contacts",
+    href: "/contacts",
+  },
+  {
+    label: "Calls",
+    href: "/calls",
+  },
+  {
+    label: "Agents",
+    href: "/agents",
+  },
+  {
+    label: "Analytics",
+    href: "/analytics",
   },
   {
     label: "IVR Builder",
-    href: "/dashboard/ivr",
+    href: "/ivr",
+  },
+  {
+    label: "Settings",
+    href: "/settings",
   },
 ];
 
