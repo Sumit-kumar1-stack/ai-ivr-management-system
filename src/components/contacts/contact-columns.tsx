@@ -120,15 +120,9 @@ export const columns: ColumnDef<Contact>[] = [
 
         cell: ({ row }) => (
 
-            <ContactActions
-
-                id={
-
-                    row.original.id
-
-                }
-
-            />
+<ContactActions
+    contact={row.original}
+/>
 
         ),
 

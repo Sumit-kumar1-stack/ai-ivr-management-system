@@ -1,0 +1,26 @@
+import { prisma } from "@/lib/prisma";
+
+export async function saveKnowledgeDocument(data: {
+  fileName: string;
+  originalName: string;
+  mimeType: string;
+  size: number;
+  path: string;
+}) {
+  return prisma.knowledgeDocument.create({
+    data,
+  });
+}
+
+export async function saveChunks(
+  documentId: string,
+  chunks: string[]
+) {
+  return prisma.knowledgeChunk.createMany({
+    data: chunks.map((chunk, index) => ({
+      documentId,
+      chunkIndex: index,
+      content: chunk,
+    })),
+  });
+}

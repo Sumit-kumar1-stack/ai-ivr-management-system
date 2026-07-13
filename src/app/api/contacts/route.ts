@@ -1,49 +1,33 @@
 import { asyncHandler } from "@/lib/async-handler";
-
 import { success } from "@/lib/api-response";
 
 import { ContactService } from "@/features/contacts/contact.service";
 
 export const GET = asyncHandler(async (req) => {
+  const { searchParams } = new URL(req.url);
 
-    const { searchParams } =
+  const result = await ContactService.getContacts({
+    page: searchParams.get("page"),
+    limit: searchParams.get("limit"),
+    search: searchParams.get("search"),
+    language: searchParams.get("language"),
+    status: searchParams.get("status"),
+  });
 
-        new URL(req.url);
+  return success(
+    result.contacts,
+    "Contacts fetched successfully",
+    result.meta
+  );
+});
 
-    const result =
+export const POST = asyncHandler(async (req) => {
+  const body = await req.json();
 
-        await ContactService.getContacts({
+  const contact = await ContactService.createContact(body);
 
-            page:
-
-                searchParams.get("page"),
-
-            limit:
-
-                searchParams.get("limit"),
-
-            search:
-
-                searchParams.get("search"),
-
-            language:
-
-                searchParams.get("language"),
-
-            status:
-
-                searchParams.get("status"),
-
-        });
-
-    return success(
-
-        result.contacts,
-
-        "Contacts fetched successfully",
-
-        result.meta
-
-    );
-
+  return success(
+    contact,
+    "Contact created successfully"
+  );
 });

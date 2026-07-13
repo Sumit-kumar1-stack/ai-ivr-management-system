@@ -1,59 +1,51 @@
 import ContactStats from "@/components/contacts/contact-stats";
-
 import ContactFilters from "@/components/contacts/contact-filters";
-
 import ContactTable from "@/components/contacts/contact-table";
-
 import Pagination from "@/components/contacts/pagination";
 
-import { Button } from "@/components/ui/button";
+import UploadCSV from "@/components/contacts/upload-csv";
+import ContactForm from "@/components/contacts/contact-form";
 
-export default function ContactsPage(){
+export default function ContactsPage() {
+  return (
+    <div className="space-y-6">
 
-return(
+      {/* Header */}
+      <div className="flex items-center justify-between">
 
-<div
-className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold">
+            Contacts
+          </h1>
 
-<div
-className="flex justify-between">
+          <p className="text-muted-foreground">
+            Manage your contact database
+          </p>
+        </div>
 
-<h1
-className="text-3xl font-bold">
+        <div className="flex gap-3">
 
-Contacts
+          {/* Upload CSV Dialog */}
+          <UploadCSV />
 
-</h1>
+          {/* Add Contact Dialog */}
+          <ContactForm />
 
-<div
-className="flex gap-3">
+        </div>
+      </div>
 
-<Button>
+      {/* Statistics */}
+      <ContactStats />
 
-Upload CSV
+      {/* Search & Filters */}
+      <ContactFilters />
 
-</Button>
+      {/* Contact Table */}
+      <ContactTable />
 
-<Button>
+      {/* Pagination */}
+      <Pagination />
 
-Add Contact
-
-</Button>
-
-</div>
-
-</div>
-
-<ContactStats/>
-
-<ContactFilters/>
-
-<ContactTable/>
-
-<Pagination/>
-
-</div>
-
-);
-
+    </div>
+  );
 }

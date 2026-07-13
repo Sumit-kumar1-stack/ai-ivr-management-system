@@ -1,42 +1,66 @@
 "use client";
 
+import { useState } from "react";
+
 import { Button } from "@/components/ui/button";
 
-interface Props{
+import EditContactDialog from "./edit-contact-dialog";
+import DeleteContactDialog from "./delete-contact-dialog";
+import type { ContactDTO } from "@/features/contacts/contact.types";
 
-id:string;
-
+interface Props {
+  contact: ContactDTO;
 }
 
 export default function ContactActions({
+  contact,
+}: Props) {
+  const [editOpen, setEditOpen] =
+    useState(false);
 
-id,
+  const [deleteOpen, setDeleteOpen] =
+    useState(false);
 
-}:Props){
+  return (
+    <>
+      <div className="flex gap-2">
 
-return(
+        <Button
+          size="sm"
+          onClick={() => setEditOpen(true)}
+        >
+          Edit
+        </Button>
 
-<div className="flex gap-2">
+        <Button
+          size="sm"
+          variant="destructive"
+          onClick={() => setDeleteOpen(true)}
+        >
+          Delete
+        </Button>
 
-<Button
-size="sm"
->
+      </div>
 
-Edit
 
-</Button>
+      <EditContactDialog
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        contact={{
+          id: contact.id,
+          fullName: contact.fullName,
+          phone: contact.phone,
+          email: contact.email ?? "",
+          language: contact.language,
+        }}
+      />
 
-<Button
-size="sm"
-variant="destructive"
->
 
-Delete
-
-</Button>
-
-</div>
-
-);
-
+      <DeleteContactDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        id={contact.id}
+      />
+    </>
+  );
 }
