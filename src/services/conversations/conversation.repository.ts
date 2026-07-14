@@ -19,6 +19,7 @@ export const ConversationRepository = {
           orderBy: {
             createdAt: "asc",
           },
+          take: -10,
         },
       },
     });
@@ -44,6 +45,32 @@ export const ConversationRepository = {
       },
       data: {
         summary,
+      },
+    });
+  },
+
+  updateAnalysis(
+    conversationId: string,
+    analysis: {
+      summary: string;
+      intent: string;
+      sentiment: string;
+      priority: string;
+      followUp: boolean;
+      actionItems: string[];
+    }
+  ) {
+    return prisma.conversation.update({
+      where: {
+        id: conversationId,
+      },
+      data: {
+        summary: analysis.summary,
+        intent: analysis.intent,
+        sentiment: analysis.sentiment,
+        priority: analysis.priority,
+        followUp: analysis.followUp,
+        actionItems: analysis.actionItems,
       },
     });
   },

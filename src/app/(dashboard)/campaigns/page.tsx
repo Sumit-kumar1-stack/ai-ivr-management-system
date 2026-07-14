@@ -1,39 +1,62 @@
+"use client";
+
 import Link from "next/link";
+
 import CreateCampaignDialog from "@/components/campaigns/create-campaign-dialog";
+import { useCampaigns } from "@/features/campaigns/use-campaigns";
 
 export default function CampaignsPage() {
+  const { data: campaigns, isLoading } =
+    useCampaigns();
+
   return (
     <div className="space-y-6">
-
-      <div className="flex justify-between items-center">
-
+      <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">
           Campaigns
         </h1>
 
         <CreateCampaignDialog />
-
       </div>
 
-      <div className="rounded-lg border p-6">
+      {isLoading && (
+        <p>Loading campaigns...</p>
+      )}
 
-        <h2 className="font-semibold">
-          July Loan Campaign
-        </h2>
+      {!isLoading &&
+        campaigns?.length === 0 && (
+          <div className="rounded-lg border p-6 text-center text-gray-500">
+            No campaigns found.
+          </div>
+        )}
 
-        <p className="text-gray-500">
-          Hindi • Draft
-        </p>
-
-        <Link
-          href="/campaigns/demo"
-          className="text-blue-600 mt-3 inline-block"
+      {campaigns?.map((campaign: any) => (
+        <div
+          key={campaign.id}
+          className="rounded-lg border p-6 shadow-sm"
         >
-          Manage →
-        </Link>
+          <h2 className="text-xl font-semibold">
+            {campaign.name}
+          </h2>
 
-      </div>
+          <p className="text-gray-500">
+            {campaign.language} • {campaign.status}
+          </p>
 
+          {campaign.description && (
+            <p className="mt-2 text-gray-600">
+              {campaign.description}
+            </p>
+          )}
+
+          <Link
+            href={`/campaigns/${campaign.id}`}
+            className="mt-4 inline-block text-blue-600"
+          >
+            Manage →
+          </Link>
+        </div>
+      ))}
     </div>
   );
 }

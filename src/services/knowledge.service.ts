@@ -11,16 +11,3 @@ export async function saveKnowledgeDocument(data: {
     data,
   });
 }
-
-export async function saveChunks(
-  documentId: string,
-  chunks: string[]
-) {
-  return prisma.knowledgeChunk.createMany({
-    data: chunks.map((chunk, index) => ({
-      documentId,
-      chunkIndex: index,
-      content: chunk,
-    })),
-  });
-}

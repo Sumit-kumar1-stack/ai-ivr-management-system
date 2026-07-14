@@ -1,43 +1,32 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-
 import { api } from "@/lib/axios";
-
 import { toast } from "sonner";
 
 export function useCreateCampaign() {
-  const queryClient =
-    useQueryClient();
+  const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (
-      campaign: any
-    ) => {
-      const { data } =
-        await api.post(
-          "/campaigns",
-          campaign
-        );
+    mutationFn: async (campaign: any) => {
+      const { data } = await api.post(
+        "/campaigns",
+        campaign
+      );
 
-      return data;
+      return data.data;
     },
 
     onSuccess() {
-      toast.success(
-        "Campaign created successfully"
-      );
+      toast.success("Campaign created");
 
       queryClient.invalidateQueries({
         queryKey: ["campaigns"],
       });
     },
 
-    onError(error: any) {
-      toast.error(
-        error?.response?.data?.message ??
-          "Failed to create campaign"
-      );
+    onError() {
+      toast.error("Failed to create campaign");
     },
   });
 }

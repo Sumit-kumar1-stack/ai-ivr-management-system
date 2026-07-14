@@ -190,8 +190,16 @@ model Conversation {
   callId String @unique
   call   Call   @relation(fields: [callId], references: [id], onDelete: Cascade)
 
-  summary    String?
-  tokenUsage Int     @default(0)
+  summary   String?
+  intent    String?
+  sentiment String?
+  priority  String?
+
+  followUp Boolean @default(false)
+
+  actionItems Json?
+
+  tokenUsage Int @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

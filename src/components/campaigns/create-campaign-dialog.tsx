@@ -1,18 +1,21 @@
 "use client";
 
 import { useState } from "react";
+
 import { Button } from "@/components/ui/button";
+
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+
 import { Input } from "@/components/ui/input";
+
 import { Textarea } from "@/components/ui/textarea";
 
 import { useCreateCampaign } from "@/features/campaigns/use-create-campaign";
-
 
 export default function CreateCampaignDialog() {
   const [open, setOpen] = useState(false);
@@ -30,7 +33,7 @@ export default function CreateCampaignDialog() {
   const createCampaign =
     useCreateCampaign();
 
-  async function handleCreate() {
+  function handleCreate() {
     createCampaign.mutate(
       {
         name,
@@ -45,6 +48,10 @@ export default function CreateCampaignDialog() {
           setName("");
 
           setDescription("");
+
+          setLanguage("English");
+
+          setVoice("Female");
         },
       }
     );
@@ -52,7 +59,11 @@ export default function CreateCampaignDialog() {
 
   return (
     <>
-    <CreateCampaignDialog />
+      <Button
+        onClick={() => setOpen(true)}
+      >
+        Create Campaign
+      </Button>
 
       <Dialog
         open={open}
@@ -108,21 +119,36 @@ export default function CreateCampaignDialog() {
               }
             />
 
-            <Button
-              className="w-full"
-              onClick={handleCreate}
-              disabled={
-                createCampaign.isPending
-              }
-            >
-              {createCampaign.isPending
-                ? "Creating..."
-                : "Create"}
-            </Button>
+            <div className="flex gap-2">
+
+              <Button
+                className="flex-1"
+                onClick={handleCreate}
+                disabled={
+                  createCampaign.isPending
+                }
+              >
+                {createCampaign.isPending
+                  ? "Creating..."
+                  : "Create"}
+              </Button>
+
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() =>
+                  setOpen(false)
+                }
+              >
+                Cancel
+              </Button>
+
+            </div>
 
           </div>
 
         </DialogContent>
+
       </Dialog>
     </>
   );

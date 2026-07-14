@@ -1,6 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { CallStatus } from "@prisma/client";
-import { mapProviderStatus } from "@/providers/telephony/status-map";
+
+import {
+  mapProviderStatus,
+} from "@/providers/telephony/status-map";
 
 export async function createCall(data: {
   campaignId: string;
@@ -34,6 +37,16 @@ export async function updateCall(
   });
 }
 
+export async function getCallByProviderId(
+  providerCallId: string
+) {
+  return prisma.call.findFirst({
+    where: {
+      providerCallId,
+    },
+  });
+}
+
 export async function getCall(id: string) {
   return prisma.call.findUnique({
     where: {
@@ -51,17 +64,21 @@ export async function updateCallStatus(data: {
   status: string;
   duration?: number;
 }) {
-  const mappedStatus = mapProviderStatus(data.status);
+  const mappedStatus = mapProviderStatus(
+    data.status
+  );
 
   return prisma.call.updateMany({
     where: {
-      providerCallId: data.providerCallId,
+      providerCallId:
+        data.providerCallId,
     },
     data: {
       status: mappedStatus,
       duration: data.duration,
       endedAt:
-        mappedStatus === CallStatus.COMPLETED
+        mappedStatus ===
+        CallStatus.COMPLETED
           ? new Date()
           : undefined,
     },

@@ -8,6 +8,7 @@ import {
 
 import { createConversation } from "@/services/conversations/conversation.service";
 import { mapProviderStatus } from "@/providers/telephony/status-map";
+import { startConversation } from "../conversations/conversation-engine.service";
 
 export async function startCall(request: CallRequest) {
   const provider = getTelephonyProvider();
@@ -35,6 +36,8 @@ export async function startCall(request: CallRequest) {
     status,
     startedAt: new Date(),
   });
+
+  await startConversation(call.id);
 
   return {
     callId: call.id,

@@ -1,26 +1,28 @@
-export function mapProviderStatus(
-  status: string
-) {
+import { CallStatus } from "@prisma/client";
+
+export function mapProviderStatus(status: string): CallStatus {
+
   switch (status.toLowerCase()) {
+
+    case "queued":
+      return CallStatus.QUEUED;
+
     case "ringing":
-      return "RINGING";
+      return CallStatus.RINGING;
 
     case "answered":
-      return "ANSWERED";
+      return CallStatus.ANSWERED;
 
     case "completed":
-      return "COMPLETED";
+      return CallStatus.COMPLETED;
 
     case "busy":
-      return "BUSY";
+      return CallStatus.BUSY;
 
     case "failed":
-      return "FAILED";
-
-    case "no-answer":
-      return "NO_ANSWER";
+      return CallStatus.FAILED;
 
     default:
-      return "FAILED";
+      return CallStatus.FAILED;
   }
 }

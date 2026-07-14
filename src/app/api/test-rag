@@ -1,0 +1,17 @@
+import { NextResponse }
+from "next/server";
+
+import {
+  retrieveKnowledge,
+} from "@/services/knowledge/retrieval.service";
+
+export async function GET() {
+
+  const result =
+    await retrieveKnowledge(
+      "What is loan interest?"
+    );
+
+  return NextResponse.json(result);
+
+}
