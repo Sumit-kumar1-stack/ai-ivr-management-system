@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/prisma";
+import type { CreateCampaignInput } from "./campaign.schema";
+import type { Prisma } from "@prisma/client";
 
 export const CampaignRepository={
 
@@ -38,7 +40,7 @@ contacts:true,
 
 },
 
-create(data:any){
+create(data: CreateCampaignInput){
 
 return prisma.campaign.create({
 
@@ -48,7 +50,7 @@ data,
 
 },
 
-update(id:string,data:any){
+update(id:string,data: Prisma.CampaignUpdateInput){
 
 return prisma.campaign.update({
 

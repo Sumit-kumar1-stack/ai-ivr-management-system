@@ -16,10 +16,7 @@ export async function GET() {
       );
     }
 
-    const payload =
-      verifyToken(token) as {
-        userId: string;
-      };
+    const payload = verifyToken(token);
 
     const user =
       await prisma.user.findUnique({
@@ -28,7 +25,19 @@ export async function GET() {
         },
       });
 
-    return NextResponse.json(user);
+    if (!user || !user.isActive) {
+      return NextResponse.json(null, { status: 401 });
+    }
+
+    return NextResponse.json({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      fullName: user.fullName,
+      phone: user.phone,
+      avatar: user.avatar,
+      isActive: user.isActive,
+    });
   } catch {
     return NextResponse.json(
       null,

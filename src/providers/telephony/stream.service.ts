@@ -1,7 +1,5 @@
 import { AudioChunk } from "@/services/voice/types";
 
-import { playAudio } from "./playback.service";
-
 import {
   PlaybackState,
 } from "@/services/voice/playback-state.service";
@@ -9,6 +7,14 @@ import {
 import {
   ConversationStateService,
 } from "@/services/conversations/conversation-state.service";
+
+import {
+  AudioConverter,
+} from "@/services/voice/audio-converter.service";
+
+import {
+  streamAudioToTwilio,
+} from "./twilio-stream.service";
 
 export async function streamToCall(
   callId: string,
@@ -52,18 +58,23 @@ export async function streamToCall(
   }
 
   //------------------------------------------------
-  // Stream audio
+  // Convert audio for Twilio
   //------------------------------------------------
-
-  console.log(
-    `📞 Streaming Audio -> ${callId}`
-  );
 
   try {
 
-    await playAudio(
+    const audio =
+      await AudioConverter.textToMulaw(
+        chunk.text
+      );
+
+    console.log(
+      `📞 Streaming Audio -> ${callId}`
+    );
+
+    await streamAudioToTwilio(
       callId,
-      chunk
+      audio
     );
 
   } catch (error) {

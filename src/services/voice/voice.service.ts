@@ -1,17 +1,30 @@
 import { randomUUID } from "crypto";
 
-import { AudioChunk } from "./types";
+import {
+  AudioChunk,
+} from "./types";
+
+import {
+  createCallLogger,
+} from "@/lib/logger";
 
 export class VoiceService {
 
-  /**
-   * Convert text into audio.
-   * Currently mocked.
-   */
+  //--------------------------------------------------
+  // Mock Text-To-Speech
+  //--------------------------------------------------
+
   static async synthesize(
     callId: string,
     text: string
   ): Promise<AudioChunk> {
+
+    const log =
+      createCallLogger(callId);
+
+    log.info({
+      length: text.length,
+    }, "Generating Speech");
 
     console.log(
       "\n========== TTS =========="
@@ -21,18 +34,25 @@ export class VoiceService {
       "Generating audio..."
     );
 
-    console.log(
-      "Text:"
-    );
+    console.log("Text:");
 
     console.log(text);
 
-    // -------------------------------------------------
+    //--------------------------------------------------
     // Mock Audio Buffer
-    // -------------------------------------------------
+    //--------------------------------------------------
+
+    const started =
+      performance.now();
 
     const audio =
       Buffer.from(text);
+
+    const elapsed =
+      (
+        performance.now() -
+        started
+      ).toFixed(0);
 
     console.log(
       "Audio Size:",
@@ -41,8 +61,21 @@ export class VoiceService {
     );
 
     console.log(
+      "Generation:",
+      `${elapsed} ms`
+    );
+
+    console.log(
       "=========================\n"
     );
+
+    log.info({
+
+      size: audio.length,
+
+      generationTime: elapsed,
+
+    }, "Speech Generated");
 
     return {
 
@@ -62,13 +95,16 @@ export class VoiceService {
 
   }
 
-  /**
-   * Batch synthesis.
-   * Useful later for buffering.
-   */
+  //--------------------------------------------------
+  // Batch Synthesis
+  //--------------------------------------------------
+
   static async synthesizeBatch(
+
     callId: string,
+
     chunks: string[]
+
   ) {
 
     const result: AudioChunk[] = [];
@@ -78,8 +114,11 @@ export class VoiceService {
       result.push(
 
         await this.synthesize(
+
           callId,
+
           chunk
+
         )
 
       );

@@ -24,6 +24,11 @@ import {
 } from "./action.service";
 
 import {
+  createCallLogger,
+} from "@/lib/logger";  
+
+
+import {
   updateConversationMemory,
 } from "./memory.service";
 
@@ -93,6 +98,8 @@ export async function processUserMessage(
   message: string
 ) {
 
+  const log = createCallLogger(callId);
+
   //----------------------------------------
   // Stop Silence Timer
   //----------------------------------------
@@ -137,15 +144,12 @@ export async function processUserMessage(
       message
     );
 
-  console.log(
-    "\n========== PROMPT ==========\n"
-  );
-
-  console.log(prompt);
-
-  console.log(
-    "\n============================\n"
-  );
+log.info(
+  {
+    prompt,
+  },
+  "Prompt generated"
+);
 
   //----------------------------------------
   // No Knowledge
@@ -221,9 +225,7 @@ export async function processUserMessage(
   let fullReply =
     "";
 
-  console.log(
-    "\n========== GEMINI STREAM ==========\n"
-  );
+log.info("Gemini streaming started");
 
   //----------------------------------------
   // Stream Gemini
@@ -243,12 +245,17 @@ export async function processUserMessage(
 
       firstToken = false;
 
-      console.log(
-        `⚡ First Token ${(
-          performance.now() -
-          start
-        ).toFixed(0)} ms`
-      );
+log.info(
+  {
+    latencyMs: Number(
+      (
+        performance.now() -
+        start
+      ).toFixed(0)
+    ),
+  },
+  "First token received"
+);
 
     }
 
@@ -271,13 +278,12 @@ export async function processUserMessage(
       callId,
       async (sentence) => {
 
-        console.log(
-          "\n🗣 Sentence Ready"
-        );
-
-        console.log(
-          sentence
-        );
+ log.debug(
+  {
+    sentence,
+  },
+  "Sentence ready for TTS"
+);
 
         await VoiceWorker.addText(
           callId,
@@ -290,6 +296,7 @@ export async function processUserMessage(
   }
 
     //----------------------------------------
+  //----------------------------------------
   // Flush Remaining Sentence
   //----------------------------------------
 
@@ -297,11 +304,12 @@ export async function processUserMessage(
     callId,
     async (sentence) => {
 
-      console.log(
-        "\n🗣 Final Sentence"
+      log.debug(
+        {
+          sentence,
+        },
+        "Final sentence queued for TTS"
       );
-
-      console.log(sentence);
 
       await VoiceWorker.addText(
         callId,
@@ -311,9 +319,7 @@ export async function processUserMessage(
     }
   );
 
-  console.log(
-    "\n\n===================================\n"
-  );
+  log.info("Gemini stream finished");
 
   //----------------------------------------
   // Back To Listening
@@ -370,15 +376,12 @@ export async function processUserMessage(
       )
       .join("\n");
 
-  console.log(
-    "\n========== TRANSCRIPT ==========\n"
-  );
-
-  console.log(transcript);
-
-  console.log(
-    "\n===============================\n"
-  );
+log.debug(
+  {
+    transcript,
+  },
+  "Conversation transcript"
+);
 
   //----------------------------------------
   // Update Memory Every 5 Messages
@@ -389,9 +392,9 @@ export async function processUserMessage(
     conversation.messages.length % 5 === 0
   ) {
 
-    console.log(
-      "🧠 Updating Conversation Memory..."
-    );
+  log.info(
+  "Updating conversation memory"
+);
 
     const summary =
       await generateConversationSummary(
@@ -403,9 +406,9 @@ export async function processUserMessage(
       summary
     );
 
-    console.log(
-      "✅ Memory Updated"
-    );
+log.info(
+  "Conversation memory updated"
+);
 
   }
 
@@ -413,10 +416,9 @@ export async function processUserMessage(
   // Conversation Analysis
   //----------------------------------------
 
-  console.log(
-    "📊 Generating Conversation Analysis..."
-  );
-
+log.info(
+  "Generating conversation analysis"
+);
   const analysis =
     await generateConversationAnalysis(
       transcript
@@ -427,9 +429,9 @@ export async function processUserMessage(
     analysis
   );
 
-  console.log(
-    "✅ Analysis Saved"
-  );
+log.info(
+  "Conversation analysis saved"
+);
 
     //----------------------------------------
   // Detect Actions
@@ -437,9 +439,9 @@ export async function processUserMessage(
 
   try {
 
-    console.log(
-      "🤖 Detecting Actions..."
-    );
+log.info(
+  "Detecting conversation actions"
+);
 
     const action =
       await detectAction(
@@ -451,9 +453,12 @@ export async function processUserMessage(
       action.action !== "NONE"
     ) {
 
-      console.log(
-        `✅ Action Detected: ${action.action}`
-      );
+log.info(
+  {
+    action: action.action,
+  },
+  "Action detected"
+);
 
       await executeAction(
         action.action,
@@ -462,18 +467,20 @@ export async function processUserMessage(
 
     } else {
 
-      console.log(
-        "ℹ️ No Action Required"
-      );
+    log.info(
+  "No action required"
+);
 
     }
 
   } catch (error) {
 
-    console.error(
-      "❌ Action Detection Error:",
-      error
-    );
+log.error(
+  {
+    error,
+  },
+  "Action detection failed"
+);
 
   }
 
@@ -481,22 +488,12 @@ export async function processUserMessage(
   // Conversation Finished
   //----------------------------------------
 
-  console.log(
-    "\n========== CONVERSATION COMPLETE ==========\n"
-  );
-
-  console.log(
-    `Call ID : ${callId}`
-  );
-
-  console.log(
-    `Reply Length : ${fullReply.length} characters`
-  );
-
-  console.log(
-    "\n===========================================\n"
-  );
-
+log.info(
+  {
+    replyLength: fullReply.length,
+  },
+  "Conversation completed"
+);
   //----------------------------------------
   // Return Final Reply
   //----------------------------------------

@@ -7,11 +7,11 @@ export const GET = asyncHandler(async (req) => {
   const { searchParams } = new URL(req.url);
 
   const result = await ContactService.getContacts({
-    page: searchParams.get("page"),
-    limit: searchParams.get("limit"),
-    search: searchParams.get("search"),
-    language: searchParams.get("language"),
-    status: searchParams.get("status"),
+    page: searchParams.get("page") ?? undefined,
+    limit: searchParams.get("limit") ?? undefined,
+    search: searchParams.get("search") ?? undefined,
+    language: searchParams.get("language") ?? undefined,
+    status: searchParams.get("status") ?? undefined,
   });
 
   return success(

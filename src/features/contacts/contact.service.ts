@@ -1,19 +1,18 @@
 import { ContactRepository } from "./contact.repository";
-import { CreateContactSchema } from "./contact.schema";
+import { ContactQuerySchema, CreateContactSchema, UpdateContactSchema, type ContactQueryInput } from "./contact.schema";
 import { ConflictError } from "@/lib/errors";
 import { toContactDTO } from "./contact.mapper";
 
 export const ContactService = {
-  async getContacts(query: any) {
-    const page = Number(query.page ?? 1);
-    const limit = Number(query.limit ?? 10);
+  async getContacts(query: ContactQueryInput) {
+    const { page, limit, search, language, status } = ContactQuerySchema.parse(query);
 
     const result = await ContactRepository.findMany({
       page,
       limit,
-      search: query.search,
-      language: query.language,
-      status: query.status,
+      search,
+      language,
+      status,
     });
 
     return {
@@ -52,7 +51,7 @@ export const ContactService = {
   ) {
     const updated = await ContactRepository.update(
       id,
-      input as any
+      UpdateContactSchema.parse(input)
     );
 
     return toContactDTO(updated);
@@ -64,15 +63,8 @@ export const ContactService = {
     return true;
   },
 
-  async importContacts(rows: any[]) {
-    const validContacts: {
-      fullName: string;
-      phone: string;
-      email?: string;
-      company?: string;
-      language?: string;
-      notes?: string;
-    }[] = [];
+  async importContacts(rows: Record<string, unknown>[]) {
+    const validContacts: import("./contact.schema").CreateContactInput[] = [];
 
     let duplicate = 0;
     let invalid = 0;
@@ -81,30 +73,22 @@ export const ContactService = {
       try {
         const contact = CreateContactSchema.parse({
           fullName:
-            row.fullName ??
-            row.Name ??
-            row.name,
+            row.fullName ?? row.Name ?? row.name,
 
           phone:
-            row.phone ??
-            row.Phone,
+            row.phone ?? row.Phone,
 
           email:
-            row.email ??
-            row.Email,
+            row.email ?? row.Email,
 
           company:
-            row.company ??
-            row.Company,
+            row.company ?? row.Company,
 
           language:
-            row.language ??
-            row.Language ??
-            "English",
+            row.language ?? row.Language ?? "English",
 
           notes:
-            row.notes ??
-            row.Notes,
+            row.notes ?? row.Notes,
         });
 
         const exists =

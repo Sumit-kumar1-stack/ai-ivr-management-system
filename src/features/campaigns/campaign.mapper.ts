@@ -1,8 +1,9 @@
-export function toCampaignDTO(
+import type { Campaign, CampaignContact } from "@prisma/client";
+import type { CampaignDTO } from "./campaign.types";
 
-campaign:any
+type CampaignWithContacts = Campaign & { contacts: CampaignContact[] };
 
-){
+export function toCampaignDTO(campaign: CampaignWithContacts): CampaignDTO {
 
 return{
 
@@ -16,7 +17,7 @@ campaign.name,
 
 description:
 
-campaign.description,
+campaign.description ?? undefined,
 
 language:
 

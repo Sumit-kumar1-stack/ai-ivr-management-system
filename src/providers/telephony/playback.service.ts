@@ -1,15 +1,26 @@
 import { AudioChunk } from "@/services/voice/types";
 
+import {
+  createCallLogger,
+} from "@/lib/logger";
+
 function delay(ms: number) {
-  return new Promise((resolve) =>
-    setTimeout(resolve, ms)
-  );
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 export async function playAudio(
   callId: string,
   chunk: AudioChunk
 ) {
+
+  const log =
+    createCallLogger(callId);
+
+  log.info({
+    chunkId: chunk.id,
+    size: chunk.audio.length,
+  }, "Playback Started");
+
   console.log(
     "\n========== PLAYBACK =========="
   );
@@ -33,7 +44,7 @@ export async function playAudio(
   );
 
   //--------------------------------------------------
-  // Simulate speaking latency
+  // Mock Streaming Playback
   //--------------------------------------------------
 
   const words =
@@ -48,4 +59,9 @@ export async function playAudio(
   }
 
   console.log("\n");
+
+  log.info({
+    chunkId: chunk.id,
+  }, "Playback Finished");
+
 }

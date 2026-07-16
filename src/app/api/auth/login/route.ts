@@ -62,10 +62,8 @@ export async function POST(req: Request) {
       role: user.role,
     });
 
-    const response =
-      NextResponse.json({
+    const response = NextResponse.json({
         success: true,
-        token,
         user: {
           id: user.id,
           email: user.email,
@@ -84,6 +82,7 @@ export async function POST(req: Request) {
           "production",
         sameSite: "lax",
         path: "/",
+        maxAge: 60 * 60 * 8,
       }
     );
 

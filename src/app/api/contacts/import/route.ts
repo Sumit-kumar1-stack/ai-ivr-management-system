@@ -27,9 +27,12 @@ export const POST = asyncHandler(async (req: NextRequest) => {
 
     });
 
-    const report = await ContactService.importContacts(
-        parsed.data
+    const rows = parsed.data.filter(
+        (row): row is Record<string, unknown> =>
+            typeof row === "object" && row !== null && !Array.isArray(row)
     );
+
+    const report = await ContactService.importContacts(rows);
 
     return success(
         report,

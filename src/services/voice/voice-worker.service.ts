@@ -1,3 +1,7 @@
+import {
+  createCallLogger,
+} from "@/lib/logger";
+
 import { VoiceService } from "./voice.service";
 import { voiceQueue } from "./voice-queue.service";
 
@@ -14,15 +18,21 @@ import {
 } from "@/services/conversations/conversation-state.service";
 
 function sleep(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) =>
+    setTimeout(resolve, ms)
+  );
 }
 
+/**
+ * Prevent multiple workers
+ * running for the same call.
+ */
 const runningWorkers = new Set<string>();
 
 export class VoiceWorker {
 
   //------------------------------------------------
-  // Convert text -> audio -> queue
+  // Convert Text → Audio → Queue
   //------------------------------------------------
 
   static async addText(
@@ -30,33 +40,58 @@ export class VoiceWorker {
     text: string
   ) {
 
+    const log =
+      createCallLogger(callId);
+
     if (!text.trim()) {
       return;
     }
 
-    const audio =
-      await VoiceService.synthesize(
+    try {
+
+      const audio =
+        await VoiceService.synthesize(
+          callId,
+          text
+        );
+
+      voiceQueue.enqueue(
         callId,
-        text
+        audio
       );
 
-    voiceQueue.enqueue(
-      callId,
-      audio
-    );
+      log.debug(
+        {
+          queueSize:
+            voiceQueue.size(callId),
+        },
+        "Audio added to queue"
+      );
+
+    } catch (error) {
+
+      log.error(
+        { error },
+        "Failed to synthesize speech"
+      );
+
+    }
 
   }
 
   //------------------------------------------------
-  // Interrupt playback
+  // Interrupt Current Playback
   //------------------------------------------------
 
   static interrupt(
     callId: string
   ) {
 
-    console.log(
-      `🛑 Interrupt (${callId})`
+    const log =
+      createCallLogger(callId);
+
+    log.warn(
+      "Playback interrupted"
     );
 
     voiceQueue.clear(callId);
@@ -71,15 +106,18 @@ export class VoiceWorker {
   }
 
   //------------------------------------------------
-  // End worker
+  // Stop Worker
   //------------------------------------------------
 
   static stop(
     callId: string
   ) {
 
-    console.log(
-      `🛑 Stop Worker (${callId})`
+    const log =
+      createCallLogger(callId);
+
+    log.info(
+      "Stopping voice worker"
     );
 
     voiceQueue.clear(callId);
@@ -101,22 +139,33 @@ export class VoiceWorker {
     callId: string
   ) {
 
-    if (
-      runningWorkers.has(callId)
-    ) {
+    const log =
+      createCallLogger(callId);
+
+    //--------------------------------------------
+    // Prevent Duplicate Workers
+    //--------------------------------------------
+
+    if (runningWorkers.has(callId)) {
+
+      log.debug(
+        "Voice worker already running"
+      );
+
       return;
+
     }
 
     runningWorkers.add(callId);
 
-    console.log(
-      `🎙 Voice Worker Started (${callId})`
+    log.info(
+      "Voice worker started"
     );
 
     while (true) {
 
       //----------------------------------------
-      // End Conversation
+      // Current Conversation State
       //----------------------------------------
 
       const state =
@@ -124,19 +173,21 @@ export class VoiceWorker {
           callId
         );
 
-      if (
-        state === "ENDED"
-      ) {
+      //----------------------------------------
+      // Conversation Ended
+      //----------------------------------------
 
-        console.log(
-          `🛑 Voice Worker Ended (${callId})`
-        );
+      if (state === "ENDED") {
 
         PlaybackState.stop(callId);
 
         voiceQueue.clear(callId);
 
         runningWorkers.delete(callId);
+
+        log.info(
+          "Voice worker stopped"
+        );
 
         return;
 
@@ -146,13 +197,7 @@ export class VoiceWorker {
       // Interrupted
       //----------------------------------------
 
-      if (
-        state === "INTERRUPTED"
-      ) {
-
-        console.log(
-          `⚠️ Playback Interrupted (${callId})`
-        );
+      if (state === "INTERRUPTED") {
 
         PlaybackState.stop(callId);
 
@@ -161,6 +206,10 @@ export class VoiceWorker {
         ConversationStateService.setState(
           callId,
           "LISTENING"
+        );
+
+        log.warn(
+          "Playback interrupted, returning to LISTENING"
         );
 
         await sleep(20);
@@ -184,7 +233,7 @@ export class VoiceWorker {
       }
 
       //----------------------------------------
-      // Get Next Audio
+      // Next Audio
       //----------------------------------------
 
       const audio =
@@ -199,7 +248,7 @@ export class VoiceWorker {
       }
 
       //----------------------------------------
-      // Speaking
+      // Start Playback
       //----------------------------------------
 
       PlaybackState.start(callId);
@@ -207,6 +256,14 @@ export class VoiceWorker {
       ConversationStateService.setState(
         callId,
         "SPEAKING"
+      );
+
+      log.info(
+        {
+          queueRemaining:
+            voiceQueue.size(callId),
+        },
+        "Streaming audio to caller"
       );
 
       try {
@@ -218,17 +275,19 @@ export class VoiceWorker {
 
       } catch (error) {
 
-        console.error(
-          "Playback Error:",
-          error
+        log.error(
+          { error },
+          "Audio playback failed"
         );
+
+      } finally {
+
+        PlaybackState.stop(callId);
 
       }
 
-      PlaybackState.stop(callId);
-
       //----------------------------------------
-      // Back to Listening
+      // Back To Listening
       //----------------------------------------
 
       if (

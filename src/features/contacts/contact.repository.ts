@@ -1,4 +1,6 @@
+import { ContactStatus, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import type { CreateContactInput, UpdateContactInput } from "./contact.schema";
 
 export interface ContactQuery {
 
@@ -10,7 +12,7 @@ export interface ContactQuery {
 
     language?: string;
 
-    status?: string;
+    status?: ContactStatus;
 
 }
 
@@ -24,7 +26,7 @@ export const ContactRepository = {
 
         const skip = (page - 1) * limit;
 
-        const where: any = {};
+        const where: Prisma.ContactWhereInput = {};
 
         if (query.search) {
 
@@ -130,7 +132,7 @@ export const ContactRepository = {
 
     },
 
-    create(data: any) {
+    create(data: CreateContactInput) {
 
         return prisma.contact.create({
 
@@ -140,7 +142,7 @@ export const ContactRepository = {
 
     },
 
-    update(id: string, data: any) {
+    update(id: string, data: UpdateContactInput) {
 
         return prisma.contact.update({
 
@@ -170,7 +172,7 @@ export const ContactRepository = {
 
     },
 
-    bulkCreate(data: any[]) {
+    bulkCreate(data: CreateContactInput[]) {
 
         return prisma.contact.createMany({
 

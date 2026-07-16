@@ -1,5 +1,4 @@
-import { NextRequest } from "next/server";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 const publicRoutes = [
   "/login",
@@ -16,9 +15,8 @@ export function middleware(
     request.nextUrl.pathname;
 
   const isPublic =
-    publicRoutes.some(
-      route =>
-        path.startsWith(route)
+    publicRoutes.some(route =>
+      path.startsWith(route)
     );
 
   if (!token && !isPublic) {
@@ -30,12 +28,20 @@ export function middleware(
     );
   }
 
+  if (token && path === "/login") {
+    return NextResponse.redirect(
+      new URL(
+        "/dashboard",
+        request.url
+      )
+    );
+  }
+
   return NextResponse.next();
 }
 
 export const config = {
   matcher: [
-    "/dashboard/:path*",
-    "/api/:path*",
+    "/((?!_next/static|_next/image|favicon.ico).*)",
   ],
 };
