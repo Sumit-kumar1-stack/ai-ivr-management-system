@@ -1,4 +1,4 @@
-import { AudioChunk } from "@/services/voice/types";
+import { TTSAudioChunk } from "@/services/voice/types";
 
 import {
   createCallLogger,
@@ -10,7 +10,7 @@ function delay(ms: number) {
 
 export async function playAudio(
   callId: string,
-  chunk: AudioChunk
+  chunk: TTSAudioChunk
 ) {
 
   const log =

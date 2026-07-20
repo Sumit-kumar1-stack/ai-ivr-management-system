@@ -1,40 +1,93 @@
-import { eventBus } from "./event-bus";
-
+import { getIO } from "@/server/socket";
 
 export class RealtimeService {
 
-  static publish(
+  //----------------------------------
+
+  static emit(
     event: string,
     payload: unknown
   ) {
 
-    eventBus.emit(
-      event,
-      payload
+    try {
+
+      getIO().emit(
+        event,
+        payload
+      );
+
+    }
+
+    catch {
+
+      // Socket not initialized yet
+
+    }
+
+  }
+
+  //----------------------------------
+
+  static transcript(
+    callId: string,
+    text: string
+  ) {
+
+    this.emit(
+      "transcript",
+      {
+        callId,
+        text,
+      }
     );
 
   }
 
-  static subscribe(
-    event: string,
-    listener: (payload: unknown) => void
+  //----------------------------------
+
+  static state(
+    callId: string,
+    state: string
   ) {
 
-    eventBus.on(
-      event,
-      listener
+    this.emit(
+      "state",
+      {
+        callId,
+        state,
+      }
     );
 
   }
 
-  static unsubscribe(
-    event: string,
-    listener: (payload: unknown) => void
+  //----------------------------------
+
+  static assistant(
+    callId: string,
+    text: string
   ) {
 
-    eventBus.off(
-      event,
-      listener
+    this.emit(
+      "assistant",
+      {
+        callId,
+        text,
+      }
+    );
+
+  }
+
+  //----------------------------------
+
+  static completed(
+    callId: string
+  ) {
+
+    this.emit(
+      "completed",
+      {
+        callId,
+      }
     );
 
   }

@@ -1,45 +1,66 @@
-import { Buffer } from "buffer";
+import {
+  Buffer,
+} from "buffer";
 
 import {
-  twilioMediaService,
-} from "./twilio-media.service";
+  AudioSessionService,
+} from "./audio-session.service";
+
+const SOCKET_TIMEOUT_MS =
+  20000;
 
 export async function streamAudioToTwilio(
-
   callId: string,
-
   audio: Buffer
-
-) {
-
-  const socket =
-    twilioMediaService.get(callId);
-
-  if (!socket) {
-
-    console.log(
-      "No Twilio socket"
+): Promise<void> {
+  if (!callId) {
+    throw new Error(
+      "Cannot stream audio without callId"
     );
-
-    return;
-
   }
 
-  socket.send(
+  if (
+    !Buffer.isBuffer(
+      audio
+    )
+  ) {
+    throw new TypeError(
+      `Audio is not a Buffer for call ${callId}`
+    );
+  }
 
-    JSON.stringify({
+  if (
+    audio.length === 0
+  ) {
+    throw new Error(
+      `Audio buffer is empty for call ${callId}`
+    );
+  }
 
-      event: "media",
-
-      media: {
-
-        payload:
-          audio.toString("base64"),
-
-      },
-
-    })
-
+  console.log(
+    `⏳ Waiting for Twilio stream (${callId})`
   );
 
+  await AudioSessionService
+    .waitForCall(
+      callId,
+      SOCKET_TIMEOUT_MS
+    );
+
+  const sent =
+    AudioSessionService
+      .sendAudioByCallId(
+        callId,
+        audio
+      );
+
+  if (!sent) {
+    throw new Error(
+      `Failed to send audio to Twilio for call ${callId}`
+    );
+  }
+
+  console.log(
+    `✅ Streaming Audio -> ${callId}`
+  );
 }

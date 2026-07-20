@@ -1,3 +1,8 @@
+import {
+  TranscriptBuffer,
+} from "@/services/speech/transcript-buffer.service";
+
+
 type SilenceCallback = () => Promise<void> | void;
 
 const timers = new Map<
@@ -23,26 +28,32 @@ export const SilenceDetector = {
 
     const timer = setTimeout(async () => {
 
-      console.log(
-        `🔇 Silence detected (${callId})`
-      );
-
-      timers.delete(callId);
-
-      try {
-
-  await callback();
-
-} catch (error) {
-
-  console.error(
-    "Silence callback failed:",
-    error
+  console.log(
+    `🔇 Silence detected (${callId})`
   );
 
-}
+  timers.delete(callId);
 
-    }, timeout);
+  //----------------------------------
+  // Flush transcript first
+  //----------------------------------
+
+  TranscriptBuffer.flush(callId);
+
+  try {
+
+    await callback();
+
+  } catch (error) {
+
+    console.error(
+      "Silence callback failed:",
+      error
+    );
+
+  }
+
+}, timeout);
 
     timers.set(callId, timer);
 

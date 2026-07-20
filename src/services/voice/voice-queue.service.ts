@@ -1,13 +1,13 @@
-import { AudioChunk } from "./types";
+import { TTSAudioChunk } from "./types";
 
 class VoiceQueue {
 
   private queues =
-    new Map<string, AudioChunk[]>();
+    new Map<string, TTSAudioChunk[]>();
 
   enqueue(
     callId: string,
-    chunk: AudioChunk
+    chunk: TTSAudioChunk
   ) {
 
     if (!this.queues.has(callId)) {
@@ -29,9 +29,40 @@ class VoiceQueue {
 
   }
 
+  flush(
+    callId: string
+  ) {
+
+    const queue =
+      this.queues.get(callId);
+
+    if (!queue) {
+
+      return [];
+
+    }
+
+    this.queues.delete(
+      callId
+    );
+
+    return queue;
+
+  }
+
+  isEmpty(
+    callId: string
+  ) {
+
+    return (
+      this.size(callId) === 0
+    );
+
+  }
+
   dequeue(
     callId: string
-  ): AudioChunk | undefined {
+  ): TTSAudioChunk | undefined {
 
     const queue =
       this.queues.get(callId);
@@ -90,9 +121,9 @@ class VoiceQueue {
     callId: string
   ) {
 
-    return this.size(
-      callId
-    ) > 0;
+    return (
+      this.size(callId) > 0
+    );
 
   }
 

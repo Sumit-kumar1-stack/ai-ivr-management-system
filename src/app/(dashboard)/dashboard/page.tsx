@@ -1,33 +1,43 @@
-import StatsCard from "@/components/layout/stats-card";
+"use client";
+
+import LiveMetrics from "@/components/dashboard/live-metrics";
+import LiveTimeline from "@/components/dashboard/live-timeline";
+import LiveActiveCalls from "@/components/dashboard/live-active-calls";
+
+import { useDashboardEvents } from "@/hooks/use-dashboard-events";
 
 export default function DashboardPage() {
+
+  useDashboardEvents();
+
   return (
-    <div>
-      <h1 className="text-3xl font-bold mb-6">
-        Dashboard
-      </h1>
 
-      <div className="grid grid-cols-4 gap-4">
-        <StatsCard
-          title="Total Calls"
-          value="0"
-        />
+    <div className="space-y-8">
 
-        <StatsCard
-          title="Campaigns"
-          value="0"
-        />
+      <div>
 
-        <StatsCard
-          title="Agents"
-          value="0"
-        />
+        <h1 className="text-3xl font-bold">
+          Dashboard
+        </h1>
 
-        <StatsCard
-          title="Contacts"
-          value="0"
-        />
+        <p className="text-muted-foreground">
+          Live AI IVR Monitoring
+        </p>
+
       </div>
+
+      <LiveMetrics />
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        <LiveActiveCalls />
+
+        <LiveTimeline />
+
+      </div>
+
     </div>
+
   );
+
 }

@@ -4,340 +4,667 @@ import { createCallLogger } from "@/lib/logger";
 
 import { BaseTelephonyProvider } from "./base.provider";
 
-import {
-  processUserMessage,
-} from "@/services/conversations/conversation-engine.service";
 
 import {
   getCallByProviderId,
   updateCallStatus,
 } from "@/services/calls/call.service";
 
-import { CallTimelineService } from "@/services/calls/call-timeline.service";
+
+import {
+  EventPublisher,
+  AppEvent,
+} from "@/core/events";
+
+
+import {
+  CallPayload,
+} from "@/core/events/payloads/call.payload";
+
 
 import {
   SilenceDetector,
 } from "@/services/conversations/silence-detector.service";
 
+
 import {
   PartialTranscriptService,
 } from "@/services/conversations/partial-transcript.service";
+
 
 import {
   BargeInService,
 } from "@/services/voice/barge-in.service";
 
+
 import {
   ConversationStateService,
 } from "@/services/conversations/conversation-state.service";
+
 
 import {
   ConversationEvents,
 } from "@/services/conversations/conversation-events.service";
 
+
 import {
-  CallRequest,
-  CallResponse,
+ ProviderCallRequest,
+ CallResponse,
 } from "@/services/telephony/types";
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+
+
+function sleep(ms:number){
+
+  return new Promise(
+    resolve=>setTimeout(resolve,ms)
+  );
+
 }
 
-export class MockProvider extends BaseTelephonyProvider {
 
-  async makeCall(
-    request: CallRequest
-  ): Promise<CallResponse> {
 
-    const providerCallId = randomUUID();
+export class MockProvider 
+extends BaseTelephonyProvider {
 
-    const log =
-      createCallLogger(providerCallId);
 
-  CallTimelineService.started(providerCallId);
+
+async makeCall(
+ request: ProviderCallRequest
+): Promise<CallResponse>{
+
+
+
+const providerCallId =
+    randomUUID();
+
+
+const callId =
+    request.callId;
+
+
+
+const log =
+ createCallLogger(
+   providerCallId
+ );
+
+
+
+/*
+|--------------------------------------------------------------------------
+| CALL STARTED
+|--------------------------------------------------------------------------
+*/
+
+
+await EventPublisher.publish<CallPayload>(
+ AppEvent.CALL_STARTED,
+ {
+
+   callId,
+
+   timestamp:
+    new Date(),
+
+   metadata:{
+     providerCallId
+   }
+
+ }
+);
+
+
 
 log.info(
-  {
-    to: request.to,
-  },
-  "Outbound call requested"
+ {
+   to:request.to
+ },
+ "Outbound call requested"
 );
 
-    //--------------------------------------------------
-    // Ringing
-    //--------------------------------------------------
 
-    setTimeout(async () => {
 
-      try {
 
-        CallTimelineService.ringing(providerCallId);
+/*
+|--------------------------------------------------------------------------
+| RINGING
+|--------------------------------------------------------------------------
+*/
 
-        await updateCallStatus({
-          providerCallId,
-          status: "ringing",
-        });
 
-      } catch (error) {
+setTimeout(async()=>{
 
-        log.error(
-          { error },
-          "Failed to update ringing status"
-        );
 
-      }
+try{
 
-    }, 2000);
 
-    //--------------------------------------------------
-    // Answered
-    //--------------------------------------------------
+await EventPublisher.publish<CallPayload>(
+ AppEvent.CALL_RINGING,
+ {
+   callId,
 
-    setTimeout(async () => {
+   timestamp:
+    new Date(),
 
-      try {
-
-        CallTimelineService.answered(providerCallId);
-
-        await updateCallStatus({
-          providerCallId,
-          status: "answered",
-        });
-
-        const call =
-          await getCallByProviderId(
-            providerCallId
-          );
-
-        if (!call) {
-
-          log.error(
-            "Internal call not found"
-          );
-
-          return;
-
-        }
-
-        //--------------------------------------------
-        // Listening State
-        //--------------------------------------------
-
-        ConversationStateService.setState(
-          call.id,
-          "LISTENING"
-        );
-
-        ConversationEvents.emit(
-          "listening",
-          call.id
-        );
-
-        //--------------------------------------------
-        // Reset Transcript
-        //--------------------------------------------
-
-        PartialTranscriptService.clear(
-          call.id
-        );
-
-        //--------------------------------------------
-        // Simulated Streaming STT
-        //--------------------------------------------
-
-        const partials = [
-
-          "What",
-
-          "What is",
-
-          "What is the",
-
-          "What is the interest",
-
-          "What is the interest rate?"
-
-        ];
-
-        let processed = false;
-
-        for (const partial of partials) {
-
-          log.debug(
-            { partial },
-            "Received partial transcript"
-          );
-
-          //------------------------------------------
-          // Interrupt if AI speaking
-          //------------------------------------------
-
-          BargeInService.interrupt(
-            call.id
-          );
-
-          //------------------------------------------
-          // Update partial transcript
-          //------------------------------------------
-
-          PartialTranscriptService.update(
-            call.id,
-            partial
-          );
-
-          //------------------------------------------
-          // Restart silence timer
-          //------------------------------------------
-
-          SilenceDetector.reset(
-            call.id,
-            async () => {
-
-              if (processed) {
-                return;
-              }
-
-              processed = true;
-
-              log.info(
-                "User finished speaking"
-              );
-
-              ConversationStateService.setState(
-                call.id,
-                "THINKING"
-              );
-
-              CallTimelineService.thinking(call.id);
-
-              ConversationEvents.emit(
-                "thinking",
-                call.id
-              );
-
-              const transcript =
-                PartialTranscriptService.get(
-                  call.id
-                );
-
-              PartialTranscriptService.clear(
-                call.id
-              );
-
-              if (!transcript.trim()) {
-
-                log.warn(
-                  "Ignoring empty transcript"
-                );
-
-                return;
-              }
-
-              await processUserMessage(
-                call.id,
-                transcript
-              );
-
-            }
-          );
-
-          await sleep(600);
-
-        }
-
-      } catch (error) {
-
-        log.error(
-          { error },
-          "Answered flow failed"
-        );
-
-      }
-
-    }, 5000);
-
-    //--------------------------------------------------
-    // Completed
-    //--------------------------------------------------
-
-    setTimeout(async () => {
-
-      try {
-
-        CallTimelineService.completed(providerCallId);
-
-        log.info(
-{
-duration:30
-},
-"Mock call completed successfully"
+   metadata:{
+     providerCallId
+   }
+ }
 );
 
-        await updateCallStatus({
 
-          providerCallId,
 
-          status: "completed",
+await updateCallStatus({
 
-          duration: 30,
+ providerCallId,
 
-        });
+ status:"ringing"
 
-        const call =
-          await getCallByProviderId(
-            providerCallId
-          );
+});
 
-        if (call) {
 
-          ConversationStateService.setState(
-            call.id,
-            "IDLE"
-          );
 
-          ConversationEvents.emit(
-            "idle",
-            call.id
-          );
+}
+catch(error){
 
-          PartialTranscriptService.clear(
-            call.id
-          );
 
-        }
+log.error(
+ {
+   error
+ },
+ "Ringing update failed"
+);
 
-      } catch (error) {
 
-        CallTimelineService.failed(
-  providerCallId,
+}
+
+
+
+},2000);
+
+
+
+
+
+/*
+|--------------------------------------------------------------------------
+| ANSWERED
+|--------------------------------------------------------------------------
+*/
+
+
+setTimeout(async()=>{
+
+
+try{
+
+
+
+await EventPublisher.publish<CallPayload>(
+ AppEvent.CALL_ANSWERED,
+ {
+
+   callId,
+
+   timestamp:
+    new Date(),
+
+   metadata:{
+     providerCallId
+   }
+
+ }
+);
+
+
+
+
+await updateCallStatus({
+
+ providerCallId,
+
+ status:"answered"
+
+});
+
+
+
+
+const call =
+ await getCallByProviderId(
+   providerCallId
+ );
+
+
+
+if(!call){
+
+
+log.error(
+ "Call record not found"
+);
+
+
+return;
+
+
+}
+
+
+
+
+/*
+|--------------------------------------------------------------------------
+| Conversation Started
+|--------------------------------------------------------------------------
+*/
+
+
+ConversationStateService.setState(
+ call.id,
+ "LISTENING"
+);
+
+
+
+ConversationEvents.emit(
+ "listening",
+ call.id
+);
+
+
+
+PartialTranscriptService.clear(
+ call.id
+);
+
+
+
+
+
+/*
+|--------------------------------------------------------------------------
+| Fake Streaming Speech To Text
+|--------------------------------------------------------------------------
+*/
+
+
+const partials=[
+
+
+"What",
+
+"What is",
+
+"What is the",
+
+"What is the interest",
+
+"What is the interest rate?"
+
+];
+
+
+
+let processed=false;
+
+
+
+for(
+ const partial of partials
+){
+
+
+
+log.debug(
+ {
+  partial
+ },
+ "Partial transcript received"
+);
+
+
+
+
+/*
+| Barge in detection
+*/
+
+
+BargeInService.interrupt(
+ call.id
+);
+
+
+
+
+/*
+| Update transcript
+*/
+
+
+PartialTranscriptService.update(
+ call.id,
+ partial
+);
+
+
+
+
+/*
+| Silence detection
+*/
+
+
+SilenceDetector.reset(
+
+ call.id,
+
+
+async()=>{
+
+
+if(processed)
+return;
+
+
+processed=true;
+
+
+
+log.info(
+ "User finished speaking"
+);
+
+
+
+
+ConversationStateService.setState(
+ call.id,
+ "THINKING"
+);
+
+
+
+await EventPublisher.publish<CallPayload>(
+ AppEvent.VOICE_THINKING,
+ {
+
+  callId:
+    call.id,
+
+
+  timestamp:
+    new Date()
+
+ }
+);
+
+
+
+
+ConversationEvents.emit(
+ "thinking",
+ call.id
+);
+
+
+
+
+const transcript =
+ PartialTranscriptService.get(
+   call.id
+ );
+
+
+
+PartialTranscriptService.clear(
+ call.id
+ );
+
+
+
+
+if(!transcript.trim()){
+
+
+log.warn(
+ "Empty transcript ignored"
+);
+
+return;
+
+}
+
+}
+
+);
+
+await sleep(600);
+
+}
+
+}
+catch(error){
+
+
+log.error(
+ {
   error
+ },
+ "Answered flow failed"
 );
-      }
 
-    }, 20000);
 
-    return {
+}
 
-      callId: providerCallId,
 
-      status: "queued",
 
-    };
+},5000);
 
+
+
+
+
+
+
+/*
+|--------------------------------------------------------------------------
+| COMPLETED
+|--------------------------------------------------------------------------
+*/
+
+
+setTimeout(async()=>{
+
+
+try{
+
+
+
+await EventPublisher.publish<CallPayload>(
+ AppEvent.CALL_COMPLETED,
+ {
+
+  callId,
+
+  timestamp:
+    new Date(),
+
+  metadata:{
+    providerCallId
   }
 
-  async endCall(
-    callId: string
-  ) {
+ }
+);
 
-    const log =
-      createCallLogger(callId);
 
-    CallTimelineService.completed(callId);
 
-log.info("Ending mock call");
+await updateCallStatus({
 
+ providerCallId,
+
+ status:"completed",
+
+ duration:30
+
+});
+
+
+
+
+const call =
+ await getCallByProviderId(
+   providerCallId
+ );
+
+
+
+if(call){
+
+
+ConversationStateService.setState(
+ call.id,
+ "IDLE"
+);
+
+
+
+ConversationEvents.emit(
+ "idle",
+ call.id
+);
+
+
+
+PartialTranscriptService.clear(
+ call.id
+);
+
+
+
+}
+
+
+
+log.info(
+ {
+  duration:30
+ },
+ "Mock call completed successfully"
+);
+
+
+
+}
+catch(error){
+
+
+
+await EventPublisher.publish<CallPayload>(
+ AppEvent.CALL_FAILED,
+ {
+
+  callId,
+
+  timestamp:
+    new Date(),
+
+
+  metadata:{
+    error
   }
+
+
+ }
+);
+
+
+
+log.error(
+ {
+  error
+ },
+ "Mock call failed"
+);
+
+
+
+}
+
+
+
+},20000);
+
+
+
+
+
+return {
+
+
+callId:
+ providerCallId,
+
+
+status:
+ "queued"
+
+
+};
+
+
+
+}
+
+async handleWebhook(
+    body: unknown
+) {
+
+    console.log(
+        "Mock webhook",
+        body
+    );
+
+}
+
+
+
+
+async endCall(
+ callId:string
+){
+
+
+
+await EventPublisher.publish<CallPayload>(
+ AppEvent.CALL_COMPLETED,
+ {
+
+  callId,
+
+  timestamp:
+    new Date()
+
+ }
+);
+
+
+
+const log =
+createCallLogger(callId);
+
+
+
+log.info(
+ "Ending mock call"
+);
+
+
+
+}
+
+
 
 }

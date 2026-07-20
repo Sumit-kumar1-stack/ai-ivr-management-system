@@ -3,6 +3,7 @@ export type ConversationState =
   | "LISTENING"
   | "THINKING"
   | "SPEAKING"
+  | "INTERRUPTING"
   | "INTERRUPTED"
   | "ENDED";
 

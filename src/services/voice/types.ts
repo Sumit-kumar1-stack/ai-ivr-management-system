@@ -1,5 +1,4 @@
-export interface AudioChunk {
-
+export interface TTSAudioChunk {
   id: string;
 
   callId: string;
@@ -9,5 +8,4 @@ export interface AudioChunk {
   audio: Buffer;
 
   createdAt: Date;
-
 }

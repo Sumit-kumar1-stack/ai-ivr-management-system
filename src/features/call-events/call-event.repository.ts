@@ -45,4 +45,22 @@ export class CallEventRepository {
 
     }
 
+    static async getLatest(
+  limit = 100
+) {
+
+  return prisma.callEvent.findMany({
+
+    orderBy: {
+
+      createdAt: "desc",
+
+    },
+
+    take: limit,
+
+  });
+
+}
+
 }

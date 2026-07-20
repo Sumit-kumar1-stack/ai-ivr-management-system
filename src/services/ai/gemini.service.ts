@@ -3,9 +3,7 @@ import { GoogleGenAI } from "@google/genai";
 import { AI_CONFIG } from "@/config/ai";
 
 const ai = new GoogleGenAI({
-
   apiKey: AI_CONFIG.geminiApiKey,
-
 });
 
 /**
@@ -32,7 +30,8 @@ export async function askGemini(
  * Streaming completion
  */
 export async function* askGeminiStream(
-  prompt: string
+  prompt: string,
+  signal?: AbortSignal
 ): AsyncGenerator<string> {
 
   const stream =
@@ -46,8 +45,19 @@ export async function* askGeminiStream(
 
   for await (const chunk of stream) {
 
-    const text =
-      chunk.text ?? "";
+    //----------------------------------
+    // Conversation cancelled
+    //----------------------------------
+
+    if (signal?.aborted) {
+
+      console.log("🛑 Gemini stream aborted");
+
+      return;
+
+    }
+
+    const text = chunk.text ?? "";
 
     if (!text) {
 

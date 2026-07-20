@@ -6,7 +6,8 @@ export class CallEventService {
     callId: string,
     type: CallEventType,
     message?: string,
-    metadata?: Record<string, unknown>
+    payload?: Prisma.InputJsonValue,
+    metadata?: Prisma.InputJsonValue
   ) {
     return CallEventRepository.create({
       call: {
@@ -16,7 +17,8 @@ export class CallEventService {
       },
       type,
       message,
-      metadata: metadata as Prisma.InputJsonValue,
+      payload,
+      metadata,
     });
   }
 }

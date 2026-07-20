@@ -1,110 +1,75 @@
-import { NextResponse } from "next/server";
-
-import { TwiMLService } from "@/providers/telephony/twiml.service";
+import { NextRequest } from "next/server";
+import { twiml } from "twilio";
 
 import {
   processUserMessage,
 } from "@/services/conversations/conversation-engine.service";
 
-import {
-  getCallByProviderId,
-} from "@/services/calls/call.service";
+export async function POST(
+  req: NextRequest
+) {
 
-export async function POST(req: Request) {
+  const form =
+    await req.formData();
 
-  try {
+  const speech =
+    String(
+      form.get("SpeechResult") ?? ""
+    );
 
-    const form =
-      await req.formData();
+  const callId =
+    req.nextUrl.searchParams.get("callId") ??
+    String(form.get("CallSid") ?? "");
 
-    const speech =
-      String(
-        form.get("SpeechResult") ?? ""
-      );
+  let reply =
+    "Sorry, I didn't understand.";
 
-    const confidence =
-      Number(
-        form.get("Confidence") ?? 0
-      );
+  if (speech.trim()) {
 
-    const providerCallId =
-      String(
-        form.get("CallSid") ?? ""
-      );
-
-    console.log("\n========== GATHER ==========");
-
-    console.log("Speech:", speech);
-
-    console.log("Confidence:", confidence);
-
-    console.log("============================\n");
-
-    if (!speech.trim()) {
-
-      const xml =
-        TwiMLService.continueConversation();
-
-      return new NextResponse(xml, {
-        headers: {
-          "Content-Type": "text/xml",
-        },
-      });
-
-    }
-
-    const call =
-      await getCallByProviderId(
-        providerCallId
-      );
-
-    if (!call) {
-
-      const xml =
-        TwiMLService.hangup(
-          "Call not found."
-        );
-
-      return new NextResponse(xml, {
-        headers: {
-          "Content-Type": "text/xml",
-        },
-      });
-
-    }
-
-    const reply =
+    reply =
       await processUserMessage(
-        call.id,
+        callId,
         speech
       );
 
-    const xml =
-      TwiMLService.speak(reply);
-
-    return new NextResponse(xml, {
-      headers: {
-        "Content-Type": "text/xml",
-      },
-    });
-
   }
 
-  catch (error) {
+  const response =
+    new twiml.VoiceResponse();
 
-    console.error(error);
+  response.say(
+    {
+      voice: "alice",
+    },
+    reply
+  );
 
-    const xml =
-      TwiMLService.hangup(
-        "An internal error occurred."
-      );
+  const gather =
+    response.gather({
 
-    return new NextResponse(xml, {
-      headers: {
-        "Content-Type": "text/xml",
-      },
+      input: ["speech"],
+
+      speechTimeout: "auto",
+
+      action:
+        `/api/twilio/gather?callId=${callId}`,
+
+      method: "POST",
+
     });
 
-  }
+  gather.pause({
+    length: 1,
+  });
+
+  return new Response(
+    response.toString(),
+    {
+      headers: {
+        "Content-Type":
+          "text/xml",
+      },
+    }
+  );
 
 }

@@ -1,57 +1,146 @@
 import http from "http";
+import next from "next";
 
-import { Server } from "socket.io";
+import {
+  initializeTwilioWebSocket,
+} from "./twilio-websocket";
 
-const httpServer = http.createServer();
+import {
+  initializeSocket,
+} from "./socket";
 
-export const io = new Server(httpServer, {
+const development =
+  process.env.NODE_ENV !==
+  "production";
 
-    cors: {
+const PORT =
+  Number(
+    process.env.PORT ?? 3000
+  );
 
-        origin: "*",
+async function startServer() {
 
-        methods: ["GET", "POST"]
+  const app =
+    next({
+      dev: development,
+    });
+
+  const handle =
+    app.getRequestHandler();
+
+  await app.prepare();
+
+  const server =
+    http.createServer(
+      (
+        request,
+        response
+      ) => {
+
+        handle(
+          request,
+          response
+        ).catch(
+          (
+            error
+          ) => {
+
+            console.error(
+              "Next request handling error:",
+              error
+            );
+
+            if (
+              !response.headersSent
+            ) {
+
+              response.statusCode =
+                500;
+
+              response.end(
+                "Internal Server Error"
+              );
+
+            }
+
+          }
+        );
+
+      }
+    );
+
+  //------------------------------------
+  // Register Twilio WebSocket FIRST
+  //------------------------------------
+
+  initializeTwilioWebSocket(
+    server
+  );
+
+  //------------------------------------
+  // Register Socket.IO SECOND
+  //------------------------------------
+
+  initializeSocket(
+    server
+  );
+
+  //------------------------------------
+  // Diagnostics
+  //------------------------------------
+
+  console.log(
+    "Upgrade listener count:",
+    server.listenerCount(
+      "upgrade"
+    )
+  );
+
+  server.listeners(
+    "upgrade"
+  ).forEach(
+    (
+      listener,
+      index
+    ) => {
+
+      console.log(
+        `Upgrade listener #${index + 1}:`,
+        listener.name ||
+        "anonymous"
+      );
 
     }
+  );
 
-});
+  //------------------------------------
+  // Start HTTP Server
+  //------------------------------------
 
-io.on("connection", socket => {
+  server.listen(
+    PORT,
+    () => {
 
-    console.log(
+      console.log(
+        `🚀 Server listening on http://localhost:${PORT}`
+      );
 
-        "🟢 Dashboard Connected:",
+    }
+  );
 
-        socket.id
+}
 
+startServer().catch(
+  (
+    error
+  ) => {
+
+    console.error(
+      "Server startup failed:",
+      error
     );
 
-    socket.on(
+    process.exit(1);
 
-        "disconnect",
-
-        () =>
-
-            console.log(
-
-                "🔴 Dashboard Disconnected:",
-
-                socket.id
-
-            )
-
-    );
-
-});
-
-const PORT = 4000;
-
-httpServer.listen(PORT, () => {
-
-    console.log(
-
-        `🚀 Socket Server running on ${PORT}`
-
-    );
-
-});
+  }
+);

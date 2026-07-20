@@ -7,8 +7,8 @@ import {
 } from "./live-transcript.service";
 
 import {
-  processUserMessage,
-} from "@/services/conversations/conversation-engine.service";
+  TranscriptBuffer,
+} from "@/services/speech/transcript-buffer.service";
 
 export async function onSpeechChunk(
   callId: string,
@@ -50,10 +50,10 @@ export async function onSpeechChunk(
 
       liveTranscript.clear(callId);
 
-      await processUserMessage(
-        callId,
-        finalText
-      );
+      await TranscriptBuffer.addPartial(
+    callId,
+    finalText
+);
 
     }
 

@@ -17,7 +17,7 @@ export class CallTimelineService {
       "Call Started"
     );
 
-    RealtimeService.publish("call.started", {
+    RealtimeService.emit("call.started", {
       callId,
       timestamp: new Date(),
     });
@@ -36,7 +36,7 @@ export class CallTimelineService {
       "Call Ringing"
     );
 
-    RealtimeService.publish("call.ringing", {
+    RealtimeService.emit("call.ringing", {
       callId,
       timestamp: new Date(),
     });
@@ -55,7 +55,7 @@ export class CallTimelineService {
       "Call Answered"
     );
 
-    RealtimeService.publish("call.answered", {
+    RealtimeService.emit("call.answered", {
       callId,
       timestamp: new Date(),
     });
@@ -74,7 +74,7 @@ export class CallTimelineService {
       "AI Thinking"
     );
 
-    RealtimeService.publish("call.thinking", {
+    RealtimeService.emit("call.thinking", {
       callId,
       timestamp: new Date(),
     });
@@ -93,7 +93,7 @@ export class CallTimelineService {
       "AI Speaking"
     );
 
-    RealtimeService.publish("call.speaking", {
+    RealtimeService.emit("call.speaking", {
       callId,
       timestamp: new Date(),
     });
@@ -112,7 +112,7 @@ export class CallTimelineService {
       "Listening"
     );
 
-    RealtimeService.publish("call.listening", {
+    RealtimeService.emit("call.listening", {
       callId,
       timestamp: new Date(),
     });
@@ -131,7 +131,7 @@ export class CallTimelineService {
       "Barge-In Detected"
     );
 
-    RealtimeService.publish("call.interrupted", {
+    RealtimeService.emit("call.interrupted", {
       callId,
       timestamp: new Date(),
     });
@@ -150,7 +150,7 @@ export class CallTimelineService {
       "Call Completed"
     );
 
-    RealtimeService.publish("call.completed", {
+    RealtimeService.emit("call.completed", {
       callId,
       timestamp: new Date(),
     });
@@ -169,16 +169,20 @@ export class CallTimelineService {
       "Call Failed"
     );
 
-    await CallEventService.create(
-      callId,
-      CallEventType.FAILED,
-      "Call Failed",
-      {
-        error,
-      }
-    );
+await CallEventService.create(
+  callId,
+  CallEventType.FAILED,
+  "Call Failed",
+  undefined,
+  {
+    error:
+      error instanceof Error
+        ? error.message
+        : String(error),
+  }
+);
 
-    RealtimeService.publish("call.failed", {
+    RealtimeService.emit("call.failed", {
       callId,
       error,
       timestamp: new Date(),

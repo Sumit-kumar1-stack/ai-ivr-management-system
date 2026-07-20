@@ -1,6 +1,26 @@
-export const AI_CONFIG = {
-  provider: process.env.AI_PROVIDER ?? "gemini",
+function requireEnv(
+  name: string
+): string {
+  const value =
+    process.env[name];
 
+  if (!value) {
+    throw new Error(
+      `${name} is missing from the environment`
+    );
+  }
+
+  return value;
+}
+
+export const AI_CONFIG = {
   geminiApiKey:
-    process.env.GEMINI_API_KEY ?? "",
+    requireEnv(
+      "GEMINI_API_KEY"
+    ),
+
+  deepgramApiKey:
+    requireEnv(
+      "DEEPGRAM_API_KEY"
+    ),
 };

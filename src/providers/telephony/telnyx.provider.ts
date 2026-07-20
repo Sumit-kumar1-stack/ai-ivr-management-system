@@ -12,16 +12,32 @@ export class TelnyxProvider
     request: CallRequest
   ): Promise<CallResponse> {
 
-    /**
-     * Sprint 5.2
-     * Real API request goes here.
-     */
+    throw new Error(
+      "Telnyx integration not implemented."
+    );
 
-    return {
-      callId: "pending",
-      status: "queued",
-    };
   }
 
-  async endCall(callId: string) {}
+  async endCall(
+    callId: string
+  ) {
+
+    throw new Error(
+      "Telnyx integration not implemented."
+    );
+
+  }
+
+  async handleWebhook(
+    body: unknown
+) {
+
+    console.log(
+        "Telnyx webhook",
+        body
+    );
+
 }
+
+}
+

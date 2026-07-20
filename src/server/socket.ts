@@ -1,57 +1,89 @@
-import { Server as HttpServer } from "http";
+import {
+  Server as HttpServer,
+} from "http";
 
-import { Server } from "socket.io";
+import {
+  Server,
+} from "socket.io";
 
-let io: Server | null = null;
+let io: Server | null =
+  null;
 
 export function initializeSocket(
   server: HttpServer
 ) {
-
   if (io) {
+    console.log(
+      "⚡ Socket already initialized"
+    );
+
     return io;
   }
 
-  io = new Server(server, {
-    cors: {
-      origin: "*",
-      methods: ["GET", "POST"],
-    },
-  });
+  io =
+    new Server(
+      server,
+      {
+        path:
+          "/socket.io",
 
-  io.on("connection", (socket) => {
+        cors: {
+          origin: "*",
 
-    console.log(
-      `🟢 Dashboard Connected: ${socket.id}`
-    );
+          methods: [
+            "GET",
+            "POST",
+          ],
+        },
 
-    socket.on(
-      "disconnect",
-      () => {
-
-        console.log(
-          `🔴 Dashboard Disconnected: ${socket.id}`
-        );
-
+        /*
+         * Prevent Engine.IO from destroying
+         * WebSocket upgrades that belong to
+         * Twilio or Next.js.
+         */
+        destroyUpgrade:
+          false,
       }
     );
 
-  });
+  io.on(
+    "connection",
+    (
+      socket
+    ) => {
+      console.log(
+        `🟢 Dashboard Connected: ${socket.id}`
+      );
+
+      socket.on(
+        "disconnect",
+        (
+          reason
+        ) => {
+          console.log(
+            `🔴 Dashboard Disconnected: ${socket.id}`,
+            {
+              reason,
+            }
+          );
+        }
+      );
+    }
+  );
+
+  console.log(
+    "🚀 Socket.IO Initialized"
+  );
 
   return io;
-
 }
 
-export function getIO() {
-
+export function getIO(): Server {
   if (!io) {
-
     throw new Error(
-      "Socket.IO not initialized."
+      "Socket.IO not initialized. Call initializeSocket() first."
     );
-
   }
 
   return io;
-
 }

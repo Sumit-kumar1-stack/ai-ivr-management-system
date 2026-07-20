@@ -1,6 +1,6 @@
 import { ConversationService } from "@/services/conversations/conversation.service";
 import { buildPrompt } from "@/services/conversations/prompt-builder.service";
-import { generateAIResponse } from "./i-response.service"; 
+import { generateAIResponse } from "./ai-response.service"; 
 
 export async function chatWithAI(
   callId: string,
@@ -28,3 +28,4 @@ export async function chatWithAI(
 
   return aiReply;
 }
+

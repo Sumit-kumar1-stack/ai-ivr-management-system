@@ -1,23 +1,34 @@
 export interface CallRequest {
 
-  campaignId: string;
+  campaignId:string;
 
-  contactId: string;
+  contactId:string;
 
-  to: string;
+  to:string;
 
-  from: string;
+  from:string;
 
-  script: string;
+  script:string;
 
-  language: string;
+  language:string;
 
 }
 
+
+
+export interface ProviderCallRequest
+extends CallRequest {
+
+  callId:string;
+
+}
+
+
+
 export interface CallResponse {
 
-  callId: string;
+  callId:string;
 
-  status: string;
+  status:string;
 
 }

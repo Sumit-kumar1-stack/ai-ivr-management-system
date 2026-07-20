@@ -242,6 +242,8 @@ model CallEvent {
 
   message String?
 
+  payload Json?
+
   metadata Json?
 
   createdAt DateTime @default(now())

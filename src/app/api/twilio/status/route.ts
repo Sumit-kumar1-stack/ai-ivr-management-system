@@ -1,58 +1,28 @@
-import { NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 
-import {
-  updateCallStatus,
-} from "@/services/calls/call.service";
+export async function POST(
+    request: NextRequest
+) {
 
-export async function POST(req: Request) {
-  try {
-    const form = await req.formData();
+    const body =
+        await request.formData();
 
-    const providerCallId = String(
-      form.get("CallSid") ?? ""
+    console.log(
+
+        "Twilio Status Callback"
+
     );
 
-    const callStatus = String(
-      form.get("CallStatus") ?? ""
+    console.log(
+
+        Object.fromEntries(body)
+
     );
 
-    const duration = Number(
-      form.get("CallDuration") ?? 0
-    );
+    return Response.json({
 
-    console.log("📞 Twilio Status");
+        success: true,
 
-    console.table({
-      providerCallId,
-      callStatus,
-      duration,
     });
 
-    await updateCallStatus({
-      providerCallId,
-      status: callStatus.toLowerCase(),
-      duration,
-    });
-
-    return NextResponse.json({
-      success: true,
-    });
-  } catch (error) {
-    console.error(error);
-
-    return NextResponse.json(
-      {
-        success: false,
-      },
-      {
-        status: 500,
-      }
-    );
-  }
-}
-
-export async function GET() {
-  return NextResponse.json({
-    status: "ok",
-  });
 }

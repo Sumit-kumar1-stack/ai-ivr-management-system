@@ -1,22 +1,27 @@
-import { io } from "./server";
+import { getIO } from "./socket";
 
 export class SocketEvents {
-
   static emit(
     event: string,
     payload: unknown
   ) {
-
     console.log(
-      `📡 ${event}`,
+      `📡 Socket Event: ${event}`,
       payload
     );
 
-    io.emit(
-      event,
-      payload
-    );
+    try {
+      const io = getIO();
 
+      io.emit(
+        event,
+        payload
+      );
+    } catch (error) {
+      console.warn(
+        "⚠️ Socket server not initialized",
+        error
+      );
+    }
   }
-
 }

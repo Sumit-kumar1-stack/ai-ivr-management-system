@@ -42,7 +42,9 @@ class SentenceBuffer {
       const sentence =
         match[1].trim();
 
-      await callback(sentence);
+      await callback(
+        sentence
+      );
 
     }
 
@@ -80,6 +82,20 @@ class SentenceBuffer {
 
     this.buffers.delete(
       callId
+    );
+
+  }
+
+  clear(
+    callId: string
+  ) {
+
+    this.buffers.delete(
+      callId
+    );
+
+    console.log(
+      `🧹 Sentence buffer cleared (${callId})`
     );
 
   }

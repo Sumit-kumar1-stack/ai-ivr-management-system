@@ -2,7 +2,11 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 import QueryProvider from "@/providers/query-provider";
+import { SocketProvider } from "@/contexts/socket-context";
 import { Toaster } from "sonner";
+
+import { bootstrap } from "@/core/bootstrap";
+bootstrap();
 
 export const metadata: Metadata = {
   title: "AI IVR Management System",
@@ -20,16 +24,16 @@ export default function RootLayout({
       className="h-full antialiased"
     >
       <body className="min-h-full">
-
         <QueryProvider>
-          {children}
+          <SocketProvider>
+            {children}
+          </SocketProvider>
         </QueryProvider>
 
         <Toaster
           position="top-right"
           richColors
         />
-
       </body>
     </html>
   );

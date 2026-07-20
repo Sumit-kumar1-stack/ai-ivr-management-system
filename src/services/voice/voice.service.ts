@@ -1,62 +1,253 @@
-import { randomUUID } from "crypto";
+import {
+  randomUUID,
+} from "crypto";
 
 import {
-  AudioChunk,
+  GoogleGenAI,
+} from "@google/genai";
+
+import {
+  AI_CONFIG,
+} from "@/config/ai";
+
+import {
+  TTSAudioChunk,
 } from "./types";
 
 import {
   createCallLogger,
 } from "@/lib/logger";
 
+import {
+  AudioConverter,
+} from "./audio-converter.service";
+
+
+const ai =
+  new GoogleGenAI({
+    apiKey:
+      AI_CONFIG.geminiApiKey,
+  });
+
+
 export class VoiceService {
 
   //--------------------------------------------------
-  // Mock Text-To-Speech
+  // Gemini text → PCM → Twilio μ-law
   //--------------------------------------------------
 
   static async synthesize(
     callId: string,
     text: string
-  ): Promise<AudioChunk> {
+  ): Promise<TTSAudioChunk> {
 
     const log =
-      createCallLogger(callId);
+      createCallLogger(
+        callId
+      );
 
-    log.info({
-      length: text.length,
-    }, "Generating Speech");
+    const normalizedText =
+      text.trim();
 
-    console.log(
-      "\n========== TTS =========="
+    if (
+      !normalizedText
+    ) {
+      throw new Error(
+        "Cannot synthesize empty text"
+      );
+    }
+
+    if (
+      !AI_CONFIG.geminiApiKey
+    ) {
+      throw new Error(
+        "Gemini API key is missing"
+      );
+    }
+
+    const model =
+      process.env.GEMINI_TTS_MODEL ||
+      "gemini-2.5-flash-preview-tts";
+
+    const voice =
+      process.env.GEMINI_TTS_VOICE ||
+      "Kore";
+
+    const style =
+      process.env.GEMINI_TTS_STYLE ||
+      (
+        "Speak clearly and naturally in a warm, " +
+        "professional customer-service tone. " +
+        "Use a moderate pace suitable for a phone call."
+      );
+
+    const prompt =
+      `${style}\n\n` +
+      `Read the following text exactly:\n` +
+      normalizedText;
+
+    log.info(
+      {
+        textLength:
+          normalizedText.length,
+
+        model,
+
+        voice,
+      },
+      "Generating Gemini speech"
     );
 
     console.log(
-      "Generating audio..."
+      "\n========== GEMINI TTS =========="
     );
 
-    console.log("Text:");
+    console.log(
+      "Text:"
+    );
 
-    console.log(text);
+    console.log(
+      normalizedText
+    );
 
-    //--------------------------------------------------
-    // Mock Audio Buffer
-    //--------------------------------------------------
+    console.log(
+      "Model:",
+      model
+    );
+
+    console.log(
+      "Voice:",
+      voice
+    );
 
     const started =
       performance.now();
 
-    const audio =
-      Buffer.from(text);
+    //----------------------------------------------
+    // Generate raw 24 kHz PCM audio
+    //----------------------------------------------
+
+    const response =
+      await ai.models.generateContent({
+        model,
+
+        contents: [
+          {
+            role:
+              "user",
+
+            parts: [
+              {
+                text:
+                  prompt,
+              },
+            ],
+          },
+        ],
+
+        config: {
+          responseModalities: [
+            "AUDIO",
+          ],
+
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName:
+                  voice,
+              },
+            },
+          },
+        },
+      });
+
+    //----------------------------------------------
+    // Extract base64 PCM
+    //----------------------------------------------
+
+    const part =
+      response.candidates
+        ?.[0]
+        ?.content
+        ?.parts
+        ?.[0];
+
+    const base64Audio =
+      part?.inlineData?.data;
+
+    const mimeType =
+      part?.inlineData?.mimeType;
+
+    if (
+      !base64Audio
+    ) {
+      log.error(
+        {
+          candidates:
+            response.candidates,
+        },
+        "Gemini TTS returned no audio"
+      );
+
+      throw new Error(
+        "Gemini TTS returned no audio data"
+      );
+    }
+
+    const pcmAudio =
+      Buffer.from(
+        base64Audio,
+        "base64"
+      );
+
+    if (
+      pcmAudio.length === 0
+    ) {
+      throw new Error(
+        "Gemini returned an empty PCM audio buffer"
+      );
+    }
+
+    //----------------------------------------------
+    // Convert Gemini PCM to Twilio μ-law
+    //----------------------------------------------
+
+    const mulawAudio =
+      AudioConverter
+        .pcm24kToMulaw8k(
+          pcmAudio
+        );
+
+    if (
+      mulawAudio.length === 0
+    ) {
+      throw new Error(
+        "μ-law conversion returned empty audio"
+      );
+    }
 
     const elapsed =
       (
         performance.now() -
         started
-      ).toFixed(0);
+      ).toFixed(
+        0
+      );
 
     console.log(
-      "Audio Size:",
-      audio.length,
+      "Mime Type:",
+      mimeType ?? "unknown"
+    );
+
+    console.log(
+      "PCM Size:",
+      pcmAudio.length,
+      "bytes"
+    );
+
+    console.log(
+      "μ-law Size:",
+      mulawAudio.length,
       "bytes"
     );
 
@@ -66,67 +257,79 @@ export class VoiceService {
     );
 
     console.log(
-      "=========================\n"
+      "================================\n"
     );
 
-    log.info({
+    log.info(
+      {
+        model,
 
-      size: audio.length,
+        voice,
 
-      generationTime: elapsed,
+        mimeType,
 
-    }, "Speech Generated");
+        pcmBytes:
+          pcmAudio.length,
+
+        mulawBytes:
+          mulawAudio.length,
+
+        generationTime:
+          elapsed,
+      },
+      "Gemini speech generated"
+    );
 
     return {
-
       id:
         randomUUID(),
 
       callId,
 
-      text,
+      text:
+        normalizedText,
 
-      audio,
+      audio:
+        mulawAudio,
 
       createdAt:
         new Date(),
-
     };
-
   }
 
+
   //--------------------------------------------------
-  // Batch Synthesis
+  // Batch synthesis
   //--------------------------------------------------
 
   static async synthesizeBatch(
-
     callId: string,
-
     chunks: string[]
+  ): Promise<TTSAudioChunk[]> {
 
-  ) {
+    const result:
+      TTSAudioChunk[] = [];
 
-    const result: AudioChunk[] = [];
+    for (
+      const chunk of chunks
+    ) {
+      const normalizedChunk =
+        chunk.trim();
 
-    for (const chunk of chunks) {
+      if (
+        !normalizedChunk
+      ) {
+        continue;
+      }
 
       result.push(
-
         await this.synthesize(
-
           callId,
-
-          chunk
-
+          normalizedChunk
         )
-
       );
-
     }
 
     return result;
-
   }
-
 }
