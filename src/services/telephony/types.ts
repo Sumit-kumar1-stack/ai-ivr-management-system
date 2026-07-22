@@ -1,34 +1,44 @@
 export interface CallRequest {
+  campaignId: string;
 
-  campaignId:string;
+  campaignRunId?: string;
 
-  contactId:string;
+  contactId: string;
 
-  to:string;
+  /*
+   * Phone number stored against the contact.
+   */
+  contactPhone: string;
 
-  from:string;
+  /*
+   * Actual destination sent to the provider.
+   */
+  to: string;
 
-  script:string;
+  from: string;
 
-  language:string;
+  language: string;
 
+  script: string;
+
+  usedDevelopmentOverride?: boolean;
+
+  destinationOverrideSource?: string;
 }
-
 
 
 export interface ProviderCallRequest
-extends CallRequest {
-
-  callId:string;
-
+  extends CallRequest {
+  callId: string;
 }
 
 
-
 export interface CallResponse {
+  callId: string;
 
-  callId:string;
+  providerCallId?: string;
 
-  status:string;
+  status: string;
 
+  duplicate?: boolean;
 }

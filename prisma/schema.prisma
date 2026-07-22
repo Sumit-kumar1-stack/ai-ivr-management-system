@@ -7,6 +7,10 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ======================================================
+// USER
+// ======================================================
+
 enum UserRole {
   SUPER_ADMIN
   ADMIN
@@ -23,9 +27,14 @@ model User {
   avatar    String?
   isActive  Boolean   @default(true)
   lastLogin DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
+
+// ======================================================
+// CONTACT
+// ======================================================
 
 enum ContactStatus {
   PENDING
@@ -50,15 +59,32 @@ model Contact {
 
   campaigns CampaignContact[]
   calls     Call[]
+
+  @@index([status])
+  @@index([createdAt])
 }
+
+// ======================================================
+// CAMPAIGN
+// ======================================================
 
 enum CampaignStatus {
   DRAFT
   SCHEDULED
+  QUEUED
   RUNNING
   PAUSED
   COMPLETED
   FAILED
+  CANCELLED
+}
+
+enum CampaignRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
 }
 
 model Campaign {
@@ -73,12 +99,19 @@ model Campaign {
   status CampaignStatus @default(DRAFT)
 
   scheduledAt DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   contacts CampaignContact[]
   calls    Call[]
+  runs     CampaignRun[]
+
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([createdAt])
 }
 
 model CampaignContact {
@@ -93,7 +126,38 @@ model CampaignContact {
   createdAt DateTime @default(now())
 
   @@unique([campaignId, contactId])
+  @@index([campaignId])
+  @@index([contactId])
 }
+
+model CampaignRun {
+  id         String            @id @default(cuid())
+  campaignId String
+  status     CampaignRunStatus @default(QUEUED)
+
+  total      Int @default(0)
+  processed  Int @default(0)
+  successful Int @default(0)
+  failed     Int @default(0)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  calls Call[]
+
+  @@index([campaignId])
+  @@index([campaignId, status])
+  @@index([status])
+}
+
+// ======================================================
+// IVR FLOW
+// ======================================================
 
 model IVRFlow {
   id String @id @default(cuid())
@@ -110,7 +174,14 @@ model IVRFlow {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([campaignId])
+  @@index([isPublished])
 }
+
+// ======================================================
+// KNOWLEDGE BASE
+// ======================================================
 
 model KnowledgeDocument {
   id String @id @default(cuid())
@@ -124,6 +195,8 @@ model KnowledgeDocument {
   uploadedAt DateTime @default(now())
 
   chunks KnowledgeChunk[]
+
+  @@index([uploadedAt])
 }
 
 model KnowledgeChunk {
@@ -136,7 +209,14 @@ model KnowledgeChunk {
   content    String
 
   createdAt DateTime @default(now())
+
+  @@unique([documentId, chunkIndex])
+  @@index([documentId])
 }
+
+// ======================================================
+// CALL
+// ======================================================
 
 enum CallStatus {
   QUEUED
@@ -149,12 +229,6 @@ enum CallStatus {
   CANCELED
 }
 
-enum ConversationRole {
-  SYSTEM
-  USER
-  ASSISTANT
-}
-
 model Call {
   id             String  @id @default(cuid())
   providerCallId String?
@@ -162,10 +236,17 @@ model Call {
   campaignId String
   campaign   Campaign @relation(fields: [campaignId], references: [id])
 
+  campaignRunId String?
+  campaignRun   CampaignRun? @relation(fields: [campaignRunId], references: [id], onDelete: SetNull)
+
   contactId String
   contact   Contact @relation(fields: [contactId], references: [id])
 
-  phone    String
+  contactPhoneSnapshot      String?
+  providerDestination       String?
+  usedDevelopmentOverride   Boolean @default(false)
+  destinationOverrideSource String?
+
   language String
 
   status CallStatus @default(QUEUED)
@@ -177,6 +258,17 @@ model Call {
 
   events CallEvent[]
 
+  // Explicit call lifecycle timestamps
+
+  requestedAt DateTime  @default(now())
+  queuedAt    DateTime?
+  ringingAt   DateTime?
+  answeredAt  DateTime?
+  completedAt DateTime?
+  failedAt    DateTime?
+
+  // Keep temporarily for compatibility.
+  // Remove after dashboard/services stop using them.
   startedAt DateTime?
   endedAt   DateTime?
 
@@ -184,6 +276,27 @@ model Call {
   updatedAt DateTime @updatedAt
 
   conversation Conversation?
+
+  @@unique([campaignRunId, contactId])
+  @@index([campaignId])
+  @@index([campaignRunId])
+  @@index([contactId])
+  @@index([providerCallId])
+  @@index([providerDestination])
+  @@index([status])
+  @@index([requestedAt])
+  @@index([answeredAt])
+  @@index([completedAt])
+}
+
+// ======================================================
+// CONVERSATION
+// ======================================================
+
+enum ConversationRole {
+  SYSTEM
+  USER
+  ASSISTANT
 }
 
 model Conversation {
@@ -207,6 +320,8 @@ model Conversation {
   updatedAt DateTime @updatedAt
 
   messages ConversationMessage[]
+
+  @@index([createdAt])
 }
 
 model ConversationMessage {
@@ -219,7 +334,15 @@ model ConversationMessage {
   content String
 
   createdAt DateTime @default(now())
+
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
+  @@index([role])
 }
+
+// ======================================================
+// CALL EVENTS
+// ======================================================
 
 enum CallEventType {
   STARTED
@@ -237,13 +360,10 @@ model CallEvent {
   id String @id @default(cuid())
 
   callId String
+  type   CallEventType
 
-  type CallEventType
-
-  message String?
-
-  payload Json?
-
+  message  String?
+  payload  Json?
   metadata Json?
 
   createdAt DateTime @default(now())
@@ -253,4 +373,5 @@ model CallEvent {
   @@index([callId])
   @@index([type])
   @@index([createdAt])
+  @@index([callId, createdAt])
 }

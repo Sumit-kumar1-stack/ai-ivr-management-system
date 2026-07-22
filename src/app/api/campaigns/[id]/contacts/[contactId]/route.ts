@@ -1,31 +1,141 @@
-import { NextRequest } from "next/server";
-import { asyncHandler } from "@/lib/async-handler";
-import { success } from "@/lib/api-response";
-import { CampaignContactService } from "@/features/campaigns/campaign-contact.service";
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
 
-export const DELETE = asyncHandler(
-  async (
-    _req: NextRequest,
-    {
-      params,
-    }: {
-      params: Promise<{
-        id: string;
-        contactId: string;
-      }>;
+import {
+  UserRole,
+} from "@prisma/client";
+
+import {
+  CampaignContactService,
+} from "@/features/campaigns/campaign-contact.service";
+
+import {
+  requireRole,
+} from "@/lib/auth";
+
+import {
+  createAuthErrorResponse,
+} from "@/lib/auth-response";
+
+import {
+  success,
+} from "@/lib/api-response";
+
+
+interface RouteContext {
+  params: Promise<{
+    id: string;
+    contactId: string;
+  }>;
+}
+
+
+const CAMPAIGN_ROLES = [
+  UserRole.SUPER_ADMIN,
+  UserRole.ADMIN,
+] as const;
+
+
+//--------------------------------------------------
+// Remove Contact From Campaign
+//--------------------------------------------------
+
+export async function DELETE(
+  _request: NextRequest,
+  { params }: RouteContext
+) {
+
+  try {
+
+    await requireRole(
+      CAMPAIGN_ROLES
+    );
+
+
+    const {
+      id,
+      contactId,
+    } = await params;
+
+
+    const campaignId =
+      id.trim();
+
+
+    const normalizedContactId =
+      contactId.trim();
+
+
+    if (
+      !campaignId ||
+      !normalizedContactId
+    ) {
+      return NextResponse.json(
+        {
+          success:
+            false,
+
+          message:
+            "Campaign ID and contact ID are required",
+        },
+        {
+          status:
+            400,
+        }
+      );
     }
-  ) => {
-    const { id, contactId } = await params;
+
 
     const result =
-      await CampaignContactService.removeContact(
-        id,
-        contactId
-      );
+      await CampaignContactService
+        .removeContact(
+          campaignId,
+          normalizedContactId
+        );
+
 
     return success(
       result,
       "Contact removed successfully"
     );
+
+  } catch (error) {
+
+    const authResponse =
+      createAuthErrorResponse(
+        error
+      );
+
+
+    if (
+      authResponse
+    ) {
+      return authResponse;
+    }
+
+
+    console.error(
+      "Failed to remove campaign contact",
+      error
+    );
+
+
+    return NextResponse.json(
+      {
+        success:
+          false,
+
+        message:
+          "Failed to remove campaign contact",
+      },
+      {
+        status:
+          500,
+      }
+    );
+
   }
-);
+
+}

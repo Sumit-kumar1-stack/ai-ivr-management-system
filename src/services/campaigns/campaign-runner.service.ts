@@ -1,4 +1,9 @@
 import {
+  CampaignRunStatus,
+  CampaignStatus,
+} from "@prisma/client";
+
+import {
   prisma,
 } from "@/lib/prisma";
 
@@ -7,35 +12,98 @@ import {
 } from "@/services/telephony/telephony.service";
 
 
-export async function runCampaign(
-  campaignId: string
-) {
+//--------------------------------------------------
+// Campaign Contact Result Types
+//--------------------------------------------------
 
-  //--------------------------------------------------
-  // Load Campaign and Assigned Contacts
-  //--------------------------------------------------
+interface CampaignContactSuccessResult {
+  contactId: string;
+
+  contactPhone: string;
+
+  providerDestination: string;
+
+  success: true;
+
+  callId: string;
+
+  providerCallId?: string;
+
+  duplicate: boolean;
+}
+
+
+interface CampaignContactFailureResult {
+  contactId: string;
+
+  contactPhone: string;
+
+  providerDestination?: string;
+
+  success: false;
+
+  error: {
+    name: string;
+
+    message: string;
+
+    code?: string | number;
+  };
+}
+
+
+export type CampaignContactResult =
+  | CampaignContactSuccessResult
+  | CampaignContactFailureResult;
+
+
+export interface RunCampaignResult {
+  campaignId: string;
+
+  campaignRunId: string;
+
+  total: number;
+
+  processed: number;
+
+  successful: number;
+
+  failed: number;
+
+  status: CampaignRunStatus;
+
+  results: CampaignContactResult[];
+}
+
+
+//--------------------------------------------------
+// Run Campaign
+//--------------------------------------------------
+
+export async function runCampaign(
+  campaignId: string,
+  campaignRunId: string
+): Promise<RunCampaignResult> {
+
+  //------------------------------------------------
+  // Load Campaign And Contacts
+  //------------------------------------------------
 
   const campaign =
     await prisma.campaign.findUnique({
-
       where: {
         id:
           campaignId,
       },
 
       include: {
-
         contacts: {
-
           include: {
             contact:
               true,
           },
-
         },
-
       },
-
     });
 
 
@@ -44,24 +112,387 @@ export async function runCampaign(
   ) {
 
     throw new Error(
-      "Campaign not found"
+      `Campaign not found: ${campaignId}`
     );
 
   }
 
 
-  //--------------------------------------------------
-  // Campaign Execution Results
-  //--------------------------------------------------
+  //------------------------------------------------
+  // Load Campaign Run
+  //------------------------------------------------
 
-  const results: Array<
-    Record<string, unknown>
-  > = [];
+  const campaignRun =
+    await prisma.campaignRun.findUnique({
+      where: {
+        id:
+          campaignRunId,
+      },
+    });
 
 
-  //--------------------------------------------------
-  // Call Each Campaign Contact
-  //--------------------------------------------------
+  if (
+    !campaignRun
+  ) {
+
+    throw new Error(
+      `Campaign run not found: ${campaignRunId}`
+    );
+
+  }
+
+
+  if (
+    campaignRun.campaignId !==
+    campaign.id
+  ) {
+
+    throw new Error(
+      "Campaign run does not belong to the supplied campaign"
+    );
+
+  }
+
+
+  //------------------------------------------------
+  // Return Existing Final Run
+  //------------------------------------------------
+
+  if (
+    campaignRun.status ===
+      CampaignRunStatus.COMPLETED ||
+    campaignRun.status ===
+      CampaignRunStatus.FAILED
+  ) {
+
+    console.warn(
+      "Campaign run already finished",
+      {
+        campaignId,
+
+        campaignRunId,
+
+        status:
+          campaignRun.status,
+
+        total:
+          campaignRun.total,
+
+        processed:
+          campaignRun.processed,
+
+        successful:
+          campaignRun.successful,
+
+        failed:
+          campaignRun.failed,
+      }
+    );
+
+
+    return {
+      campaignId,
+
+      campaignRunId,
+
+      total:
+        campaignRun.total,
+
+      processed:
+        campaignRun.processed,
+
+      successful:
+        campaignRun.successful,
+
+      failed:
+        campaignRun.failed,
+
+      status:
+        campaignRun.status,
+
+      results:
+        [],
+    };
+
+  }
+
+
+  //------------------------------------------------
+  // Atomically Claim Campaign Run
+  //------------------------------------------------
+
+  const startedAt =
+    new Date();
+
+
+  const claimedRun =
+    await prisma.campaignRun.updateMany({
+      where: {
+        id:
+          campaignRunId,
+
+        campaignId,
+
+        status:
+          CampaignRunStatus.QUEUED,
+      },
+
+      data: {
+        status:
+          CampaignRunStatus.RUNNING,
+
+        startedAt,
+
+        total:
+          campaign.contacts.length,
+      },
+    });
+
+
+  /*
+   * updateMany prevents two workers from claiming
+   * the same campaign run at the same time.
+   */
+  if (
+    claimedRun.count ===
+    0
+  ) {
+
+    const currentRun =
+      await prisma.campaignRun.findUnique({
+        where: {
+          id:
+            campaignRunId,
+        },
+      });
+
+
+    if (
+      !currentRun
+    ) {
+
+      throw new Error(
+        `Campaign run disappeared: ${campaignRunId}`
+      );
+
+    }
+
+
+    console.warn(
+      "Campaign run could not be claimed",
+      {
+        campaignId,
+
+        campaignRunId,
+
+        currentStatus:
+          currentRun.status,
+      }
+    );
+
+
+    return {
+      campaignId,
+
+      campaignRunId,
+
+      total:
+        currentRun.total,
+
+      processed:
+        currentRun.processed,
+
+      successful:
+        currentRun.successful,
+
+      failed:
+        currentRun.failed,
+
+      status:
+        currentRun.status,
+
+      results:
+        [],
+    };
+
+  }
+
+
+  //------------------------------------------------
+  // Mark Campaign Running
+  //------------------------------------------------
+
+  await prisma.campaign.update({
+    where: {
+      id:
+        campaign.id,
+    },
+
+    data: {
+      status:
+        CampaignStatus.RUNNING,
+
+      /*
+       * Preserve the first campaign start time.
+       */
+      startedAt:
+        campaign.startedAt ??
+        startedAt,
+
+      completedAt:
+        null,
+    },
+  });
+
+
+  //------------------------------------------------
+  // Validate Campaign-Level Configuration
+  //------------------------------------------------
+
+  const providerPhoneNumber =
+    getRequiredEnvironmentVariable(
+      "TWILIO_PHONE_NUMBER"
+    );
+
+
+  const testDestination =
+    process.env
+      .TEST_DESTINATION_NUMBER
+      ?.trim();
+
+
+  const developmentOverrideEnabled =
+    process.env.NODE_ENV ===
+      "development" &&
+    Boolean(
+      testDestination
+    );
+
+
+  //------------------------------------------------
+  // Prepare Campaign Counters
+  //------------------------------------------------
+
+  const total =
+    campaign.contacts.length;
+
+
+  const results:
+    CampaignContactResult[] = [];
+
+
+  let processed =
+    0;
+
+
+  let successful =
+    0;
+
+
+  let failed =
+    0;
+
+
+  console.log(
+    "Campaign processing started",
+    {
+      campaignId,
+
+      campaignRunId,
+
+      total,
+
+      developmentOverrideEnabled,
+    }
+  );
+
+
+  //------------------------------------------------
+  // Handle Empty Campaign
+  //------------------------------------------------
+
+  if (
+    total ===
+    0
+  ) {
+
+    const completedAt =
+      new Date();
+
+
+    await prisma.$transaction([
+      prisma.campaignRun.update({
+        where: {
+          id:
+            campaignRunId,
+        },
+
+        data: {
+          status:
+            CampaignRunStatus.COMPLETED,
+
+          total:
+            0,
+
+          processed:
+            0,
+
+          successful:
+            0,
+
+          failed:
+            0,
+
+          completedAt,
+        },
+      }),
+
+      prisma.campaign.update({
+        where: {
+          id:
+            campaign.id,
+        },
+
+        data: {
+          status:
+            CampaignStatus.COMPLETED,
+
+          completedAt,
+        },
+      }),
+    ]);
+
+
+    return {
+      campaignId,
+
+      campaignRunId,
+
+      total:
+        0,
+
+      processed:
+        0,
+
+      successful:
+        0,
+
+      failed:
+        0,
+
+      status:
+        CampaignRunStatus.COMPLETED,
+
+      results:
+        [],
+    };
+
+  }
+
+
+  //------------------------------------------------
+  // Process Contacts Independently
+  //------------------------------------------------
 
   for (
     const item of campaign.contacts
@@ -71,238 +502,237 @@ export async function runCampaign(
       item.contact;
 
 
-    //------------------------------------------------
-    // Validate Contact Phone Number
-    //------------------------------------------------
-
-    if (
-      !contact.phone?.trim()
-    ) {
-
-      console.warn(
-        "Campaign call skipped: contact phone number is missing",
-        {
-          campaignId:
-            campaign.id,
-
-          contactId:
-            contact.id,
-
-          contactName:
-            contact.fullName,
-        }
-      );
+    const contactPhone =
+      contact.phone
+        ?.trim() ??
+      "";
 
 
-      results.push({
-        contactId:
-          contact.id,
-
-        status:
-          "FAILED",
-
-        reason:
-          "Contact phone number is missing",
-      });
-
-
-      continue;
-
-    }
-
-
-    //------------------------------------------------
-    // Select Destination Number
-    //------------------------------------------------
-
-    const testDestination =
-      process.env
-        .TEST_DESTINATION_NUMBER
-        ?.trim();
-
-
-    const isDevelopmentOverride =
-      process.env.NODE_ENV ===
-        "development" &&
-      Boolean(
-        testDestination
-      );
-
-
-    const destination =
-      isDevelopmentOverride
-        ? testDestination!
-        : contact.phone.trim();
-
-
-    //------------------------------------------------
-    // Prominently Log Development Override
-    //------------------------------------------------
-
-    if (
-      isDevelopmentOverride
-    ) {
-
-      console.warn(
-        "⚠️ DEVELOPMENT PHONE OVERRIDE ACTIVE",
-        {
-          campaignId:
-            campaign.id,
-
-          contactId:
-            contact.id,
-
-          originalDestination:
-            contact.phone,
-
-          overriddenDestination:
-            destination,
-
-          environment:
-            process.env.NODE_ENV,
-        }
-      );
-
-    }
-
-
-    //------------------------------------------------
-    // Log Outbound Call Attempt
-    //------------------------------------------------
-
-    console.info(
-      "Starting campaign call",
-      {
-        campaignId:
-          campaign.id,
-
-        contactId:
-          contact.id,
-
-        contactName:
-          contact.fullName,
-
-        destination,
-
-        language:
-          contact.language ??
-          "en",
-
-        usingTestDestination:
-          isDevelopmentOverride,
-      }
-    );
+    let providerDestination:
+      string |
+      undefined;
 
 
     try {
 
-      //------------------------------------------------
-      // Start Outbound Call
-      //------------------------------------------------
+      //--------------------------------------------
+      // Validate Contact
+      //--------------------------------------------
+
+      if (
+        !contactPhone
+      ) {
+
+        throw new Error(
+          "Contact phone number is missing"
+        );
+
+      }
+
+
+      //--------------------------------------------
+      // Resolve Actual Provider Destination
+      //--------------------------------------------
+
+      providerDestination =
+        developmentOverrideEnabled
+          ? testDestination!
+          : contactPhone;
+
+
+      if (
+        !providerDestination
+      ) {
+
+        throw new Error(
+          "Provider destination is missing"
+        );
+
+      }
+
+
+      //--------------------------------------------
+      // Start Call
+      //--------------------------------------------
 
       const result =
         await startCall({
-
           campaignId:
             campaign.id,
+
+          campaignRunId,
 
           contactId:
             contact.id,
 
+          /*
+           * Original contact phone snapshot.
+           */
+          contactPhone,
+
+          /*
+           * Actual number submitted to provider.
+           */
           to:
-            destination,
+            providerDestination,
 
           from:
-            process.env
-              .TWILIO_PHONE_NUMBER!,
+            providerPhoneNumber,
 
           language:
             contact.language ??
-            "en",
+            campaign.language ??
+            "English",
 
           script:
-            campaign.prompt ??
-            "Hello from AI IVR.",
+            campaign.description?.trim() ||
+            "Hello from the AI IVR management system.",
 
+          usedDevelopmentOverride:
+            developmentOverrideEnabled,
+
+          destinationOverrideSource:
+            developmentOverrideEnabled
+              ? "TEST_DESTINATION_NUMBER"
+              : undefined,
         });
 
 
-      //------------------------------------------------
-      // Store Successful Result
-      //------------------------------------------------
+      successful +=
+        1;
+
 
       results.push({
         contactId:
           contact.id,
 
-        destination,
+        contactPhone,
 
-        status:
-          "STARTED",
+        providerDestination,
 
-        result,
+        success:
+          true,
+
+        callId:
+          result.callId,
+
+        providerCallId:
+          result.providerCallId,
+
+        duplicate:
+          result.duplicate ??
+          false,
       });
 
 
-      console.info(
-        "Campaign call started successfully",
+      console.log(
+        "Campaign contact processed successfully",
         {
-          campaignId:
-            campaign.id,
+          campaignId,
+
+          campaignRunId,
 
           contactId:
             contact.id,
 
-          destination,
+          callId:
+            result.callId,
 
-          result,
+          providerCallId:
+            result.providerCallId,
+
+          duplicate:
+            result.duplicate ??
+            false,
+
+          usedDevelopmentOverride:
+            developmentOverrideEnabled,
         }
       );
 
-    }
+    } catch (error) {
 
-    catch (error) {
-
-      //------------------------------------------------
-      // Continue Campaign After Individual Failure
-      //------------------------------------------------
-
-      const errorMessage =
-        error instanceof Error
-          ? error.message
-          : String(
-              error
-            );
+      failed +=
+        1;
 
 
-      console.error(
-        "Campaign call failed",
-        {
-          campaignId:
-            campaign.id,
-
-          contactId:
-            contact.id,
-
-          destination,
-
-          error:
-            errorMessage,
-        }
-      );
+      const normalizedError =
+        normalizeError(
+          error
+        );
 
 
       results.push({
         contactId:
           contact.id,
 
-        destination,
+        contactPhone,
 
-        status:
-          "FAILED",
+        providerDestination,
 
-        reason:
-          errorMessage,
+        success:
+          false,
+
+        error:
+          normalizedError,
+      });
+
+
+      console.error(
+        "Campaign contact processing failed",
+        {
+          campaignId,
+
+          campaignRunId,
+
+          contactId:
+            contact.id,
+
+          contactPhone:
+            maskPhoneNumber(
+              contactPhone
+            ),
+
+          providerDestination:
+            providerDestination
+              ? maskPhoneNumber(
+                  providerDestination
+                )
+              : undefined,
+
+          error:
+            normalizedError,
+        }
+      );
+
+
+      /*
+       * Do not throw here.
+       *
+       * One contact failure must not stop
+       * remaining campaign contacts.
+       */
+
+    } finally {
+
+      processed +=
+        1;
+
+
+      //--------------------------------------------
+      // Persist Progress After Each Contact
+      //--------------------------------------------
+
+      await updateCampaignRunProgressSafely({
+        campaignRunId,
+
+        total,
+
+        processed,
+
+        successful,
+
+        failed,
       });
 
     }
@@ -310,47 +740,363 @@ export async function runCampaign(
   }
 
 
-  //--------------------------------------------------
-  // Return Campaign Execution Summary
-  //--------------------------------------------------
+  //------------------------------------------------
+  // Resolve Final Status
+  //------------------------------------------------
 
-  const successful =
-    results.filter(
-      result =>
-        result.status ===
-        "STARTED"
-    ).length;
+  const completedAt =
+    new Date();
 
 
-  const failed =
-    results.filter(
-      result =>
-        result.status ===
-        "FAILED"
-    ).length;
+  /*
+   * All contacts failed:
+   * campaign run is FAILED.
+   *
+   * At least one call succeeded:
+   * campaign run is COMPLETED, even when some
+   * individual contacts failed.
+   */
+  const finalRunStatus =
+    successful === 0 &&
+    failed > 0
+      ? CampaignRunStatus.FAILED
+      : CampaignRunStatus.COMPLETED;
+
+
+  const finalCampaignStatus =
+    finalRunStatus ===
+    CampaignRunStatus.FAILED
+      ? CampaignStatus.FAILED
+      : CampaignStatus.COMPLETED;
+
+
+  //------------------------------------------------
+  // Persist Final Campaign State
+  //------------------------------------------------
+
+  await prisma.$transaction([
+    prisma.campaignRun.update({
+      where: {
+        id:
+          campaignRunId,
+      },
+
+      data: {
+        status:
+          finalRunStatus,
+
+        total,
+
+        processed,
+
+        successful,
+
+        failed,
+
+        completedAt,
+      },
+    }),
+
+    prisma.campaign.update({
+      where: {
+        id:
+          campaign.id,
+      },
+
+      data: {
+        status:
+          finalCampaignStatus,
+
+        completedAt,
+      },
+    }),
+  ]);
+
+
+  console.log(
+    "Campaign processing completed",
+    {
+      campaignId,
+
+      campaignRunId,
+
+      total,
+
+      processed,
+
+      successful,
+
+      failed,
+
+      finalRunStatus,
+
+      finalCampaignStatus,
+
+      completedAt,
+    }
+  );
 
 
   return {
-    campaignId:
-      campaign.id,
+    campaignId,
 
-    total:
-      results.length,
+    campaignRunId,
+
+    total,
+
+    processed,
 
     successful,
 
     failed,
 
-    testDestinationOverride:
-      process.env.NODE_ENV ===
-        "development" &&
-      Boolean(
-        process.env
-          .TEST_DESTINATION_NUMBER
-          ?.trim()
-      ),
+    status:
+      finalRunStatus,
 
     results,
   };
+
+}
+
+
+//--------------------------------------------------
+// Safely Persist Campaign Progress
+//--------------------------------------------------
+
+async function updateCampaignRunProgressSafely(
+  input: {
+    campaignRunId: string;
+
+    total: number;
+
+    processed: number;
+
+    successful: number;
+
+    failed: number;
+  }
+): Promise<void> {
+
+  try {
+
+    await prisma.campaignRun.update({
+      where: {
+        id:
+          input.campaignRunId,
+      },
+
+      data: {
+        total:
+          input.total,
+
+        processed:
+          input.processed,
+
+        successful:
+          input.successful,
+
+        failed:
+          input.failed,
+      },
+    });
+
+  } catch (error) {
+
+    /*
+     * Progress persistence failure is logged,
+     * but it does not stop the next contact.
+     *
+     * The final transaction will attempt to
+     * store the authoritative final counters.
+     */
+    console.error(
+      "Failed to persist campaign progress",
+      {
+        campaignRunId:
+          input.campaignRunId,
+
+        total:
+          input.total,
+
+        processed:
+          input.processed,
+
+        successful:
+          input.successful,
+
+        failed:
+          input.failed,
+
+        error:
+          normalizeError(
+            error
+          ),
+      }
+    );
+
+  }
+
+}
+
+
+//--------------------------------------------------
+// Read Required Environment Variable
+//--------------------------------------------------
+
+function getRequiredEnvironmentVariable(
+  name: string
+): string {
+
+  const value =
+    process.env[name]
+      ?.trim();
+
+
+  if (
+    !value
+  ) {
+
+    throw new Error(
+      `${name} is not configured`
+    );
+
+  }
+
+
+  return value;
+
+}
+
+
+//--------------------------------------------------
+// Normalize Unknown Errors
+//--------------------------------------------------
+
+function normalizeError(
+  error: unknown
+): {
+  name: string;
+
+  message: string;
+
+  code?: string | number;
+} {
+
+  if (
+    error instanceof
+    Error
+  ) {
+
+    const errorWithCode =
+      error as Error & {
+        code?:
+          string |
+          number;
+      };
+
+
+    return {
+      name:
+        error.name,
+
+      message:
+        error.message,
+
+      code:
+        errorWithCode.code,
+    };
+
+  }
+
+
+  if (
+    typeof error ===
+    "string"
+  ) {
+
+    return {
+      name:
+        "Error",
+
+      message:
+        error,
+    };
+
+  }
+
+
+  try {
+
+    return {
+      name:
+        "UnknownError",
+
+      message:
+        JSON.stringify(
+          error
+        ),
+    };
+
+  } catch {
+
+    return {
+      name:
+        "UnknownError",
+
+      message:
+        String(
+          error
+        ),
+    };
+
+  }
+
+}
+
+
+//--------------------------------------------------
+// Mask Phone Number For Logs
+//--------------------------------------------------
+
+function maskPhoneNumber(
+  phone: string
+): string {
+
+  if (
+    !phone
+  ) {
+
+    return "unknown";
+
+  }
+
+
+  if (
+    phone.length <=
+    4
+  ) {
+
+    return "****";
+
+  }
+
+
+  const visibleDigits =
+    phone.slice(
+      -4
+    );
+
+
+  const maskedLength =
+    Math.max(
+      phone.length -
+      4,
+      4
+    );
+
+
+  return `${"*".repeat(
+    maskedLength
+  )}${visibleDigits}`;
 
 }

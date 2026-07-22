@@ -1,4 +1,8 @@
 import {
+  CallStatus,
+} from "@prisma/client";
+
+import {
   ProviderFactory,
 } from "@/providers/telephony/provider.factory";
 
@@ -24,6 +28,7 @@ import {
   createCallLogger,
 } from "@/lib/logger";
 
+
 export async function startCall(
   request: CallRequest
 ) {
@@ -35,61 +40,194 @@ export async function startCall(
   const provider =
     ProviderFactory.getProvider();
 
+
   //----------------------------------------
-  // Create Internal Call Record
+  // Normalize Phone Values
   //----------------------------------------
 
-  const call =
-    await createCall({
-      campaignId:
-        request.campaignId,
+  const normalizedContactPhone =
+    request.contactPhone.trim();
 
-      contactId:
-        request.contactId,
 
-      phone:
-        request.to,
+  const normalizedProviderDestination =
+    request.to.trim();
 
-      language:
-        request.language,
-    });
+
+  if (
+    !normalizedContactPhone
+  ) {
+    throw new Error(
+      "Contact phone number is required"
+    );
+  }
+
+
+  if (
+    !normalizedProviderDestination
+  ) {
+    throw new Error(
+      "Provider destination is required"
+    );
+  }
+
+
+  //----------------------------------------
+  // Atomically Create Idempotent Call
+  //----------------------------------------
+
+  const {
+    call,
+    created,
+  } = await createCall({
+    campaignId:
+      request.campaignId,
+
+    campaignRunId:
+      request.campaignRunId,
+
+    contactId:
+      request.contactId,
+
+    contactPhoneSnapshot:
+      normalizedContactPhone,
+
+    providerDestination:
+      normalizedProviderDestination,
+
+    usedDevelopmentOverride:
+      request.usedDevelopmentOverride ??
+      false,
+
+    destinationOverrideSource:
+      request.destinationOverrideSource,
+
+    language:
+      request.language,
+  });
+
 
   const log =
-    createCallLogger(call.id);
+    createCallLogger(
+      call.id
+    );
+
+
+  //----------------------------------------
+  // Existing Campaign Call
+  //----------------------------------------
+
+  if (
+    !created
+  ) {
+
+    log.warn(
+      {
+        campaignId:
+          request.campaignId,
+
+        campaignRunId:
+          request.campaignRunId,
+
+        contactId:
+          request.contactId,
+
+        contactPhoneSnapshot:
+          call.contactPhoneSnapshot,
+
+        providerDestination:
+          call.providerDestination,
+
+        usedDevelopmentOverride:
+          call.usedDevelopmentOverride,
+
+        providerCallId:
+          call.providerCallId,
+
+        status:
+          call.status,
+      },
+      "Duplicate campaign call prevented"
+    );
+
+
+    /*
+     * Never contact the provider again when
+     * the campaign-run/contact call already exists.
+     */
+    return {
+      callId:
+        call.id,
+
+      providerCallId:
+        call.providerCallId ??
+        undefined,
+
+      status:
+        call.status,
+
+      duplicate:
+        true,
+    };
+
+  }
+
+
+  //----------------------------------------
+  // Initialization Log
+  //----------------------------------------
 
   log.info(
     {
       campaignId:
         request.campaignId,
 
+      campaignRunId:
+        request.campaignRunId,
+
       contactId:
         request.contactId,
 
-      to:
-        request.to,
+      contactPhoneSnapshot:
+        normalizedContactPhone,
+
+      providerDestination:
+        normalizedProviderDestination,
+
+      usedDevelopmentOverride:
+        request.usedDevelopmentOverride ??
+        false,
+
+      destinationOverrideSource:
+        request.destinationOverrideSource,
 
       from:
         request.from,
 
       language:
         request.language,
+
+      requestedAt:
+        call.requestedAt,
     },
     "Outbound call initialization started"
   );
 
+
   try {
 
     //----------------------------------------
-    // Create Empty Conversation Record
+    // Create Conversation Record
     //----------------------------------------
 
     await createConversation(
       call.id
     );
 
+
     log.info(
       "Conversation record created"
     );
+
 
     //----------------------------------------
     // Build Provider Request
@@ -99,17 +237,28 @@ export async function startCall(
       ProviderCallRequest = {
         ...request,
 
+        contactPhone:
+          normalizedContactPhone,
+
+        to:
+          normalizedProviderDestination,
+
         callId:
           call.id,
       };
+
 
     log.info(
       {
         provider:
           provider.constructor.name,
+
+        destination:
+          normalizedProviderDestination,
       },
       "Sending outbound call request to provider"
     );
+
 
     //----------------------------------------
     // Request Outbound Call
@@ -120,6 +269,7 @@ export async function startCall(
         providerRequest
       );
 
+
     log.info(
       {
         providerCallId:
@@ -127,9 +277,13 @@ export async function startCall(
 
         providerStatus:
           result.status,
+
+        providerDestination:
+          normalizedProviderDestination,
       },
       "Provider accepted outbound call request"
     );
+
 
     //----------------------------------------
     // Map Provider Status
@@ -139,6 +293,11 @@ export async function startCall(
       mapProviderStatus(
         result.status
       );
+
+
+    const acceptedAt =
+      new Date();
+
 
     //----------------------------------------
     // Save Provider Details
@@ -153,16 +312,29 @@ export async function startCall(
         status,
 
         /*
-         * Do not set startedAt here.
-         *
-         * A queued Twilio response does not mean
-         * the recipient answered the call.
-         *
-         * Set startedAt when the provider sends
-         * an answered/in-progress status callback.
+         * Twilio accepting the REST request
+         * does not mean that the call was answered.
+         */
+        queuedAt:
+          status ===
+          CallStatus.QUEUED
+            ? acceptedAt
+            : undefined,
+
+        ringingAt:
+          status ===
+          CallStatus.RINGING
+            ? acceptedAt
+            : undefined,
+
+        /*
+         * Do not set answeredAt here.
+         * It must come from a verified provider
+         * status callback.
          */
       }
     );
+
 
     log.info(
       {
@@ -171,28 +343,20 @@ export async function startCall(
 
         internalStatus:
           status,
+
+        queuedAt:
+          status ===
+          CallStatus.QUEUED
+            ? acceptedAt
+            : undefined,
+
+        usedDevelopmentOverride:
+          request.usedDevelopmentOverride ??
+          false,
       },
-      "Outbound call queued successfully"
+      "Outbound call request accepted by provider"
     );
 
-    //----------------------------------------
-    // Important
-    //----------------------------------------
-
-    /*
-     * Do not call startConversation() here.
-     *
-     * The Twilio REST response only confirms
-     * that the outbound request was accepted.
-     *
-     * The conversation must start from the
-     * Twilio Media Streams "start" event after:
-     *
-     * 1. The recipient answers.
-     * 2. Twilio opens the WebSocket.
-     * 3. A streamSid is available.
-     * 4. The audio session is registered.
-     */
 
     return {
       callId:
@@ -202,19 +366,50 @@ export async function startCall(
         result.callId,
 
       status,
+
+      duplicate:
+        false,
     };
 
   } catch (error) {
 
+    const failedAt =
+      new Date();
+
+
     log.error(
       {
-        error,
+        error:
+          error instanceof Error
+            ? {
+                name:
+                  error.name,
+
+                message:
+                  error.message,
+
+                stack:
+                  error.stack,
+              }
+            : String(
+                error
+              ),
+
+        providerDestination:
+          normalizedProviderDestination,
+
+        usedDevelopmentOverride:
+          request.usedDevelopmentOverride ??
+          false,
+
+        failedAt,
       },
       "Outbound call initialization failed"
     );
 
+
     //----------------------------------------
-    // Mark Call as Failed
+    // Mark Internal Call As Failed
     //----------------------------------------
 
     try {
@@ -223,27 +418,48 @@ export async function startCall(
         call.id,
         {
           status:
-            "FAILED",
+            CallStatus.FAILED,
+
+          failedAt,
+
+          completedAt:
+            failedAt,
         }
       );
 
+
       log.info(
+        {
+          failedAt,
+        },
         "Call record marked as failed"
       );
 
-    } catch (
-      updateError
-    ) {
+    } catch (updateError) {
 
       log.error(
         {
           error:
-            updateError,
+            updateError instanceof Error
+              ? {
+                  name:
+                    updateError.name,
+
+                  message:
+                    updateError.message,
+
+                  stack:
+                    updateError.stack,
+                }
+              : String(
+                  updateError
+                ),
         },
-        "Failed to update call status"
+        "Failed to mark call record as failed"
       );
 
     }
+
 
     throw error;
 

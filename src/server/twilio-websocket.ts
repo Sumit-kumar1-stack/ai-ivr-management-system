@@ -1,16 +1,23 @@
 import {
+  IncomingMessage,
   Server as HttpServer,
 } from "http";
+
+import type {
+  Duplex,
+} from "stream";
 
 import type {
   Socket as NetSocket,
 } from "net";
 
 import {
-  WebSocketServer,
-  WebSocket,
   RawData,
+  WebSocket,
+  WebSocketServer,
 } from "ws";
+
+import twilio from "twilio";
 
 import {
   TwilioStreamGateway,
@@ -23,49 +30,124 @@ type WebSocketWithInternalSocket =
   };
 
 
+type TwilioMessage = {
+  event?: string;
+  streamSid?: string;
+  sequenceNumber?: string;
+
+  start?: {
+    streamSid?: string;
+    callSid?: string;
+
+    customParameters?: Record<
+      string,
+      string
+    >;
+  };
+};
+
+
+/*
+ * Prevent duplicate WebSocket initialization.
+ *
+ * This is important in development because custom
+ * servers and hot reloads can initialize modules
+ * more than once.
+ */
+const initializedServers =
+  new WeakMap<
+    HttpServer,
+    WebSocketServer
+  >();
+
+
+//--------------------------------------------------
+// Initialize Twilio WebSocket Server
+//--------------------------------------------------
+
 export function initializeTwilioWebSocket(
   server: HttpServer
-) {
+): WebSocketServer {
+
+  const existingServer =
+    initializedServers.get(
+      server
+    );
+
+
+  if (
+    existingServer
+  ) {
+
+    console.log(
+      "Twilio WebSocket already initialized"
+    );
+
+    return existingServer;
+
+  }
+
+
+  /*
+   * noServer mode allows us to manually accept
+   * only the Twilio endpoint.
+   *
+   * Socket.IO must use polling-only mode so it
+   * does not register a competing upgrade handler.
+   */
   const twilioWebSocketServer =
     new WebSocketServer({
-      noServer: true,
+      noServer:
+        true,
+
+      perMessageDeflate:
+        false,
+
+      clientTracking:
+        true,
     });
 
 
-  //------------------------------------
-  // Handle Twilio WebSocket Upgrade
-  //------------------------------------
+  initializedServers.set(
+    server,
+    twilioWebSocketServer
+  );
 
-  server.on(
-    "upgrade",
+
+  //------------------------------------------------
+  // Handle Twilio HTTP Upgrade
+  //------------------------------------------------
+
+  const upgradeHandler =
     (
-      request,
-      socket,
-      head
-    ) => {
+      request: IncomingMessage,
+      socket: Duplex,
+      head: Buffer
+    ): void => {
+
       try {
-        const pathname =
+
+        const incomingUrl =
           new URL(
             request.url ?? "/",
-            `http://${request.headers.host ?? "localhost"}`
-          ).pathname;
+            "http://localhost"
+          );
 
 
-        //------------------------------------
-        // Ignore non-Twilio upgrade requests
-        //------------------------------------
+        const pathname =
+          incomingUrl.pathname;
 
+
+        /*
+         * Ignore all non-Twilio upgrade requests.
+         */
         if (
           pathname !==
           "/api/twilio/stream"
         ) {
-          /*
-           * Do not destroy this socket.
-           *
-           * Socket.IO or another WebSocket
-           * server may need to handle it.
-           */
+
           return;
+
         }
 
 
@@ -77,8 +159,21 @@ export function initializeTwilioWebSocket(
             url:
               request.url,
 
+            method:
+              request.method,
+
             host:
               request.headers.host,
+
+            forwardedHost:
+              request.headers[
+                "x-forwarded-host"
+              ],
+
+            forwardedProto:
+              request.headers[
+                "x-forwarded-proto"
+              ],
 
             upgrade:
               request.headers.upgrade,
@@ -86,68 +181,219 @@ export function initializeTwilioWebSocket(
             connection:
               request.headers.connection,
 
+            websocketVersion:
+              request.headers[
+                "sec-websocket-version"
+              ],
+
+            websocketProtocol:
+              request.headers[
+                "sec-websocket-protocol"
+              ],
+
+            websocketExtensions:
+              request.headers[
+                "sec-websocket-extensions"
+              ],
+
+            websocketKeyPresent:
+              Boolean(
+                request.headers[
+                  "sec-websocket-key"
+                ]
+              ),
+
             userAgent:
               request.headers[
                 "user-agent"
               ],
+
+            signaturePresent:
+              Boolean(
+                request.headers[
+                  "x-twilio-signature"
+                ]
+              ),
           }
         );
 
 
-        //------------------------------------
-        // Upgrade HTTP connection to WebSocket
-        //------------------------------------
+        //------------------------------------------
+        // Validate WebSocket Upgrade Header
+        //------------------------------------------
 
-        twilioWebSocketServer.handleUpgrade(
-          request,
-          socket,
-          head,
-          (
-            webSocket
-          ) => {
-            twilioWebSocketServer.emit(
-              "connection",
-              webSocket,
-              request
-            );
+        if (
+          request.headers.upgrade
+            ?.toLowerCase() !==
+          "websocket"
+        ) {
+
+          rejectUpgrade(
+            socket,
+            400,
+            "WebSocket upgrade required"
+          );
+
+          return;
+
+        }
+
+
+        //------------------------------------------
+        // Validate Twilio Signature
+        //------------------------------------------
+
+        const validSignature =
+          validateTwilioWebSocketSignature(
+            request
+          );
+
+
+        if (
+          !validSignature
+        ) {
+
+          console.warn(
+            "Twilio WebSocket signature rejected",
+            {
+              pathname,
+
+              url:
+                request.url,
+
+              host:
+                request.headers.host,
+
+              forwardedHost:
+                request.headers[
+                  "x-forwarded-host"
+                ],
+
+              forwardedProto:
+                request.headers[
+                  "x-forwarded-proto"
+                ],
+
+              remoteAddress:
+                request.socket
+                  .remoteAddress,
+            }
+          );
+
+
+          rejectUpgrade(
+            socket,
+            403,
+            "Forbidden"
+          );
+
+          return;
+
+        }
+
+
+        console.log(
+          "Twilio WebSocket signature validated",
+          {
+            pathname,
           }
         );
+
+
+        //------------------------------------------
+        // Complete WebSocket Upgrade
+        //------------------------------------------
+
+        twilioWebSocketServer
+          .handleUpgrade(
+            request,
+            socket,
+            head,
+            webSocket => {
+
+              twilioWebSocketServer.emit(
+                "connection",
+                webSocket,
+                request
+              );
+
+            }
+          );
+
       } catch (error) {
+
         console.error(
-          "Twilio WebSocket upgrade error:",
+          "Twilio WebSocket upgrade error",
           formatError(
             error
           )
         );
 
+
         if (
           !socket.destroyed
         ) {
-          socket.destroy();
+
+          rejectUpgrade(
+            socket,
+            500,
+            "Internal Server Error"
+          );
+
         }
+
       }
-    }
+
+    };
+
+
+  server.on(
+    "upgrade",
+    upgradeHandler
   );
 
 
-  //------------------------------------
-  // Twilio Connected
-  //------------------------------------
+  //------------------------------------------------
+  // Twilio WebSocket Connected
+  //------------------------------------------------
 
   twilioWebSocketServer.on(
     "connection",
     (
       webSocket:
-        WebSocket
+        WebSocket,
+
+      request:
+        IncomingMessage
     ) => {
+
       console.log(
-        "🟢 Twilio Media WebSocket connected"
+        "Twilio Media WebSocket connected",
+        {
+          url:
+            request.url,
+
+          remoteAddress:
+            request.socket
+              .remoteAddress,
+
+          readyState:
+            webSocket.readyState,
+
+          protocol:
+            webSocket.protocol ||
+            "(none)",
+
+          extensions:
+            webSocket.extensions ||
+            "(none)",
+        }
       );
 
 
-      //----------------------------------
-      // Underlying TCP diagnostics
-      //----------------------------------
+      //------------------------------------------------
+      // Underlying TCP Diagnostics
+      //------------------------------------------------
 
       const tcpSocket =
         (
@@ -155,53 +401,58 @@ export function initializeTwilioWebSocket(
             WebSocketWithInternalSocket
         )._socket;
 
-      if (tcpSocket) {
+
+      if (
+        tcpSocket
+      ) {
+
         tcpSocket.on(
           "end",
           () => {
+
             console.log(
-              "⚠️ Twilio TCP socket ended"
+              "Twilio TCP socket ended"
             );
+
           }
         );
 
+
         tcpSocket.on(
           "close",
-          (
-            hadError
-          ) => {
+          hadError => {
+
             console.log(
-              "⚠️ Twilio TCP socket closed",
+              "Twilio TCP socket closed",
               {
                 hadError,
               }
             );
+
           }
         );
 
+
         tcpSocket.on(
           "error",
-          (
-            error
-          ) => {
+          error => {
+
             console.error(
-              "⚠️ Twilio TCP socket error",
+              "Twilio TCP socket error",
               formatError(
                 error
               )
             );
+
           }
         );
-      } else {
-        console.warn(
-          "Twilio internal TCP socket was unavailable"
-        );
+
       }
 
 
-      //----------------------------------
-      // Incoming Twilio Message
-      //----------------------------------
+      //------------------------------------------------
+      // Receive Twilio Messages
+      //------------------------------------------------
 
       webSocket.on(
         "message",
@@ -209,43 +460,58 @@ export function initializeTwilioWebSocket(
           data:
             RawData
         ) => {
+
           const rawMessage =
             rawDataToString(
               data
             );
 
+
           try {
+
             const parsed =
               JSON.parse(
                 rawMessage
-              ) as {
-                event?: string;
-
-                streamSid?: string;
-              };
+              ) as TwilioMessage;
 
 
-            console.log(
-              "Twilio WebSocket event",
-              {
-                event:
-                  parsed.event,
+            /*
+             * Do not log media packets because Twilio
+             * sends many audio frames each second.
+             */
+            if (
+              parsed.event !==
+              "media"
+            ) {
 
-                streamSid:
-                  parsed.streamSid,
+              console.log(
+                "Twilio WebSocket event",
+                {
+                  event:
+                    parsed.event,
 
-                bytes:
-                  Buffer.byteLength(
-                    rawMessage,
-                    "utf8"
-                  ),
-              }
-            );
+                  streamSid:
+                    parsed.streamSid ??
+                    parsed.start
+                      ?.streamSid,
+
+                  sequenceNumber:
+                    parsed.sequenceNumber,
+
+                  bytes:
+                    Buffer.byteLength(
+                      rawMessage,
+                      "utf8"
+                    ),
+                }
+              );
+
+            }
 
 
-            //----------------------------------
-            // Log important Twilio events
-            //----------------------------------
+            //----------------------------------------
+            // Lifecycle Diagnostics
+            //----------------------------------------
 
             if (
               parsed.event ===
@@ -255,6 +521,7 @@ export function initializeTwilioWebSocket(
               parsed.event ===
                 "stop"
             ) {
+
               console.log(
                 "========== TWILIO WS RAW =========="
               );
@@ -266,20 +533,24 @@ export function initializeTwilioWebSocket(
               console.log(
                 "=================================="
               );
+
             }
 
 
-            //----------------------------------
-            // Forward event to gateway
-            //----------------------------------
+            //----------------------------------------
+            // Forward To Application Gateway
+            //----------------------------------------
 
-            await TwilioStreamGateway.handle(
-              webSocket,
-              rawMessage
-            );
+            await TwilioStreamGateway
+              .handle(
+                webSocket,
+                rawMessage
+              );
+
           } catch (error) {
+
             console.error(
-              "Twilio WebSocket message error:",
+              "Twilio WebSocket message error",
               {
                 error:
                   formatError(
@@ -293,54 +564,16 @@ export function initializeTwilioWebSocket(
                   ),
               }
             );
+
           }
+
         }
       );
 
 
-      //----------------------------------
-      // Twilio WebSocket Ping
-      //----------------------------------
-
-      webSocket.on(
-        "ping",
-        (
-          data
-        ) => {
-          console.log(
-            "Twilio WebSocket ping received",
-            {
-              bytes:
-                data.length,
-            }
-          );
-        }
-      );
-
-
-      //----------------------------------
-      // Twilio WebSocket Pong
-      //----------------------------------
-
-      webSocket.on(
-        "pong",
-        (
-          data
-        ) => {
-          console.log(
-            "Twilio WebSocket pong received",
-            {
-              bytes:
-                data.length,
-            }
-          );
-        }
-      );
-
-
-      //----------------------------------
-      // Twilio Disconnected
-      //----------------------------------
+      //------------------------------------------------
+      // WebSocket Closed
+      //------------------------------------------------
 
       webSocket.on(
         "close",
@@ -348,8 +581,9 @@ export function initializeTwilioWebSocket(
           code,
           reason
         ) => {
+
           console.log(
-            "🔴 Twilio Media WebSocket disconnected",
+            "Twilio Media WebSocket disconnected",
             {
               code,
 
@@ -360,109 +594,409 @@ export function initializeTwilioWebSocket(
                 webSocket.readyState,
             }
           );
+
         }
       );
 
 
-      //----------------------------------
-      // Twilio WebSocket Error
-      //----------------------------------
+      //------------------------------------------------
+      // WebSocket Error
+      //------------------------------------------------
 
       webSocket.on(
         "error",
-        (
-          error
-        ) => {
+        error => {
+
           console.error(
-            "Twilio WebSocket error:",
+            "Twilio WebSocket error",
             formatError(
               error
             )
           );
+
         }
       );
 
 
-      //----------------------------------
-      // Unexpected response diagnostics
-      //----------------------------------
+      //------------------------------------------------
+      // Ping Diagnostics
+      //------------------------------------------------
 
       webSocket.on(
-        "unexpected-response",
-        (
-          request,
-          response
-        ) => {
-          console.error(
-            "Unexpected Twilio WebSocket response",
+        "ping",
+        data => {
+
+          console.debug(
+            "Twilio WebSocket ping received",
             {
-              requestUrl:
-                request.path,
-
-              statusCode:
-                response.statusCode,
-
-              statusMessage:
-                response.statusMessage,
+              bytes:
+                data.length,
             }
           );
+
         }
       );
+
+
+      //------------------------------------------------
+      // Pong Diagnostics
+      //------------------------------------------------
+
+      webSocket.on(
+        "pong",
+        data => {
+
+          console.debug(
+            "Twilio WebSocket pong received",
+            {
+              bytes:
+                data.length,
+            }
+          );
+
+        }
+      );
+
     }
   );
 
 
-  //------------------------------------
+  //------------------------------------------------
   // WebSocket Server Error
-  //------------------------------------
+  //------------------------------------------------
 
   twilioWebSocketServer.on(
     "error",
-    (
-      error
-    ) => {
+    error => {
+
       console.error(
-        "Twilio WebSocket server error:",
+        "Twilio WebSocket server error",
         formatError(
           error
         )
       );
+
+    }
+  );
+
+
+  //------------------------------------------------
+  // HTTP Server Closed
+  //------------------------------------------------
+
+  server.once(
+    "close",
+    () => {
+
+      initializedServers.delete(
+        server
+      );
+
+
+      twilioWebSocketServer.close(
+        error => {
+
+          if (
+            error
+          ) {
+
+            console.error(
+              "Twilio WebSocket shutdown error",
+              formatError(
+                error
+              )
+            );
+
+          }
+
+        }
+      );
+
     }
   );
 
 
   console.log(
-    "🎙️ Twilio WebSocket initialized at /api/twilio/stream"
+    "Twilio WebSocket initialized at /api/twilio/stream"
   );
 
 
   return twilioWebSocketServer;
+
 }
 
 
-//------------------------------------
-// Convert WebSocket RawData to String
-//------------------------------------
+//--------------------------------------------------
+// Validate Twilio WebSocket Signature
+//--------------------------------------------------
+
+function validateTwilioWebSocketSignature(
+  request: IncomingMessage
+): boolean {
+
+  const signatureHeader =
+    request.headers[
+      "x-twilio-signature"
+    ];
+
+
+  const signature =
+    Array.isArray(
+      signatureHeader
+    )
+      ? signatureHeader[0]
+      : signatureHeader;
+
+
+  if (
+    !signature?.trim()
+  ) {
+
+    console.warn(
+      "Twilio WebSocket upgrade missing X-Twilio-Signature"
+    );
+
+    return false;
+
+  }
+
+
+  const authToken =
+    process.env
+      .TWILIO_AUTH_TOKEN
+      ?.trim();
+
+
+  if (
+    !authToken
+  ) {
+
+    throw new Error(
+      "TWILIO_AUTH_TOKEN is not configured"
+    );
+
+  }
+
+
+  const publicWebSocketOrigin =
+    getTrustedPublicWebSocketOrigin();
+
+
+  const incomingUrl =
+    new URL(
+      request.url ??
+        "/api/twilio/stream",
+      "http://localhost"
+    );
+
+
+  /*
+   * Twilio signs the exact WSS URL supplied
+   * inside the TwiML <Stream> element.
+   */
+  const validationUrl =
+    `${publicWebSocketOrigin}` +
+    `${incomingUrl.pathname}` +
+    `${incomingUrl.search}`;
+
+
+  const valid =
+    twilio.validateRequest(
+      authToken,
+      signature,
+      validationUrl,
+      {}
+    );
+
+
+  console.log(
+    "Twilio WebSocket signature validation",
+    {
+      validationUrl,
+
+      signaturePresent:
+        true,
+
+      valid,
+    }
+  );
+
+
+  return valid;
+
+}
+
+
+//--------------------------------------------------
+// Resolve Public WebSocket Origin
+//--------------------------------------------------
+
+function getTrustedPublicWebSocketOrigin():
+  string {
+
+  const configuredUrl =
+    (
+      process.env
+        .TWILIO_PUBLIC_BASE_URL ??
+      process.env.APP_URL
+    )
+      ?.trim()
+      .replace(
+        /\/+$/,
+        ""
+      );
+
+
+  if (
+    !configuredUrl
+  ) {
+
+    throw new Error(
+      "TWILIO_PUBLIC_BASE_URL or APP_URL is not configured"
+    );
+
+  }
+
+
+  const url =
+    new URL(
+      configuredUrl
+    );
+
+
+  if (
+    url.protocol ===
+    "https:"
+  ) {
+
+    url.protocol =
+      "wss:";
+
+  } else if (
+    url.protocol ===
+    "http:"
+  ) {
+
+    url.protocol =
+      "ws:";
+
+  } else if (
+    url.protocol !==
+      "wss:" &&
+    url.protocol !==
+      "ws:"
+  ) {
+
+    throw new Error(
+      `Unsupported Twilio public URL protocol: ${url.protocol}`
+    );
+
+  }
+
+
+  return url.origin;
+
+}
+
+
+//--------------------------------------------------
+// Reject Upgrade Request
+//--------------------------------------------------
+
+function rejectUpgrade(
+  socket: Duplex,
+  statusCode: number,
+  message: string
+): void {
+
+  if (
+    socket.destroyed
+  ) {
+
+    return;
+
+  }
+
+
+  const body =
+    message;
+
+
+  socket.write(
+    `HTTP/1.1 ${statusCode} ${getHttpStatusText(
+      statusCode
+    )}\r\n` +
+    `Content-Type: text/plain; charset=utf-8\r\n` +
+    `Content-Length: ${Buffer.byteLength(
+      body,
+      "utf8"
+    )}\r\n` +
+    `Connection: close\r\n` +
+    `Cache-Control: no-store\r\n` +
+    `\r\n` +
+    body
+  );
+
+
+  socket.destroy();
+
+}
+
+
+//--------------------------------------------------
+// HTTP Status Text
+//--------------------------------------------------
+
+function getHttpStatusText(
+  statusCode: number
+): string {
+
+  switch (
+    statusCode
+  ) {
+
+    case 400:
+
+      return "Bad Request";
+
+
+    case 403:
+
+      return "Forbidden";
+
+
+    case 500:
+
+      return "Internal Server Error";
+
+
+    default:
+
+      return "Error";
+
+  }
+
+}
+
+
+//--------------------------------------------------
+// Convert Raw WebSocket Data
+//--------------------------------------------------
 
 function rawDataToString(
   data: RawData
 ): string {
-  if (
-    typeof data ===
-    "string"
-  ) {
-    return data;
-  }
-
 
   if (
     Buffer.isBuffer(
       data
     )
   ) {
+
     return data.toString(
       "utf8"
     );
+
   }
 
 
@@ -470,6 +1004,7 @@ function rawDataToString(
     data instanceof
     ArrayBuffer
   ) {
+
     return Buffer
       .from(
         data
@@ -477,6 +1012,7 @@ function rawDataToString(
       .toString(
         "utf8"
       );
+
   }
 
 
@@ -485,6 +1021,7 @@ function rawDataToString(
       data
     )
   ) {
+
     return Buffer
       .concat(
         data
@@ -492,39 +1029,42 @@ function rawDataToString(
       .toString(
         "utf8"
       );
+
   }
 
 
   return String(
     data
   );
+
 }
 
 
-//------------------------------------
-// Format Unknown Errors
-//------------------------------------
+//--------------------------------------------------
+// Format Unknown Error
+//--------------------------------------------------
 
 function formatError(
   error: unknown
 ): {
   name?: string;
-
   message: string;
-
   code?: string | number;
-
   stack?: string;
 } {
+
   if (
     error instanceof
     Error
   ) {
+
     const errorWithCode =
       error as Error & {
         code?:
-          string | number;
+          string |
+          number;
       };
+
 
     return {
       name:
@@ -539,6 +1079,7 @@ function formatError(
       stack:
         error.stack,
     };
+
   }
 
 
@@ -548,4 +1089,5 @@ function formatError(
         error
       ),
   };
+
 }

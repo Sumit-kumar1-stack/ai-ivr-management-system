@@ -1,148 +1,298 @@
-import { NextRequest, NextResponse } from "next/server";
-
-import { AppError } from "./errors";
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
 
 import {
-  createRequestLogger,
-} from "./logger";
+  Prisma,
+} from "@prisma/client";
 
 import {
-  generateRequestId,
-} from "./request-id";
+  ZodError,
+} from "zod";
 
-type RouteHandler = (
-  ...args: any[]
-) => Promise<Response>;
+import {
+  AppError,
+} from "@/lib/app-error";
 
-export function asyncHandler<T extends RouteHandler>(
-  handler: T
-): T {
 
-  return (async (
-    ...args: Parameters<T>
+//--------------------------------------------------
+// Route Handler Types
+//--------------------------------------------------
+
+type RouteContext = {
+  params?:
+    Promise<
+      Record<
+        string,
+        string
+      >
+    >;
+};
+
+
+type RouteHandler<
+  TContext extends RouteContext =
+    RouteContext
+> = (
+  request: NextRequest,
+  context: TContext
+) =>
+  | Promise<Response>
+  | Response;
+
+
+//--------------------------------------------------
+// Async Handler
+//--------------------------------------------------
+
+export function asyncHandler<
+  TContext extends RouteContext =
+    RouteContext
+>(
+  handler:
+    RouteHandler<TContext>
+) {
+
+  return async (
+    request: NextRequest,
+    context: TContext
   ): Promise<Response> => {
-
-    const request =
-      args[0] as Request | NextRequest;
-
-    const requestId =
-      generateRequestId();
-
-    const log =
-      createRequestLogger(
-        requestId
-      );
-
-    const start =
-      performance.now();
-
-    log.info({
-
-      message: "Incoming Request",
-
-      requestId,
-
-      method: request.method,
-
-      url: request.url,
-
-    });
 
     try {
 
-      const response =
-        await handler(...args);
-
-      const duration =
-        performance.now() - start;
-
-      log.info({
-
-        message: "Request Completed",
-
-        requestId,
-
-        status: response.status,
-
-        duration: `${duration.toFixed(2)} ms`,
-
-      });
-
-      response.headers.set(
-        "x-request-id",
-        requestId
+      return await handler(
+        request,
+        context
       );
 
-      return response;
+    } catch (error) {
 
-    } catch (err) {
+      return handleRouteError(
+        error
+      );
 
-      const duration =
-        performance.now() - start;
+    }
 
-      if (err instanceof AppError) {
+  };
 
-        log.warn({
+}
 
-          message: err.message,
 
-          requestId,
+//--------------------------------------------------
+// Central Error Mapping
+//--------------------------------------------------
 
-          status: err.statusCode,
+function handleRouteError(
+  error: unknown
+): NextResponse {
 
-          duration: `${duration.toFixed(2)} ms`,
+  //----------------------------------------
+  // Typed Application Error
+  //----------------------------------------
 
-        });
+  if (
+    error instanceof
+    AppError
+  ) {
 
-        return NextResponse.json(
-          {
-            success: false,
-            message: err.message,
-          },
-          {
-            status: err.statusCode,
-            headers: {
-              "x-request-id": requestId,
-            },
-          }
-        );
+    return NextResponse.json(
+      {
+        success:
+          false,
 
+        message:
+          error.message,
+
+        code:
+          error.code,
+
+        details:
+          error.details,
+      },
+      {
+        status:
+          error.statusCode,
       }
+    );
 
-      log.error({
+  }
 
-        message: "Unhandled Error",
 
-        requestId,
+  //----------------------------------------
+  // Zod Validation Error
+  //----------------------------------------
 
-        duration: `${duration.toFixed(2)} ms`,
+  if (
+    error instanceof
+    ZodError
+  ) {
 
-        error:
-          err instanceof Error
-            ? {
-                name: err.name,
-                message: err.message,
-                stack: err.stack,
-              }
-            : err,
+    return NextResponse.json(
+      {
+        success:
+          false,
 
-      });
+        message:
+          "Request validation failed",
+
+        code:
+          "VALIDATION_ERROR",
+
+        details:
+          error.flatten(),
+      },
+      {
+        status:
+          400,
+      }
+    );
+
+  }
+
+
+  //----------------------------------------
+  // Prisma Known Errors
+  //----------------------------------------
+
+  if (
+    error instanceof
+    Prisma.PrismaClientKnownRequestError
+  ) {
+
+    if (
+      error.code ===
+      "P2025"
+    ) {
 
       return NextResponse.json(
         {
-          success: false,
-          message: "Internal Server Error",
+          success:
+            false,
+
+          message:
+            "Requested record was not found",
+
+          code:
+            "RECORD_NOT_FOUND",
         },
         {
-          status: 500,
-          headers: {
-            "x-request-id": requestId,
-          },
+          status:
+            404,
         }
       );
 
     }
 
-  }) as T;
+
+    if (
+      error.code ===
+      "P2002"
+    ) {
+
+      return NextResponse.json(
+        {
+          success:
+            false,
+
+          message:
+            "A record with this value already exists",
+
+          code:
+            "DUPLICATE_RECORD",
+
+          details:
+            error.meta,
+        },
+        {
+          status:
+            409,
+        }
+      );
+
+    }
+
+  }
+
+
+  //----------------------------------------
+  // Unexpected Error
+  //----------------------------------------
+
+  console.error(
+    "Unhandled API route error",
+    {
+      error:
+        normalizeError(
+          error
+        ),
+    }
+  );
+
+
+  return NextResponse.json(
+    {
+      success:
+        false,
+
+      message:
+        "Internal server error",
+
+      code:
+        "INTERNAL_SERVER_ERROR",
+    },
+    {
+      status:
+        500,
+    }
+  );
+
+}
+
+
+//--------------------------------------------------
+// Normalize Error For Logging
+//--------------------------------------------------
+
+function normalizeError(
+  error: unknown
+) {
+
+  if (
+    error instanceof
+    Error
+  ) {
+
+    const errorWithCode =
+      error as Error & {
+        code?:
+          string |
+          number;
+      };
+
+
+    return {
+      name:
+        error.name,
+
+      message:
+        error.message,
+
+      code:
+        errorWithCode.code,
+
+      stack:
+        error.stack,
+    };
+
+  }
+
+
+  return {
+    message:
+      String(
+        error
+      ),
+  };
 
 }

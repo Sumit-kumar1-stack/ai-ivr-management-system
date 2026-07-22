@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "tsx watch src/server/bootstrap.ts",
+    "dev:media": "tsx watch --env-file=.env src/server/twilio-media-server.ts",
     "start": "tsx src/server/bootstrap.ts",
     "build": "next build",
     "lint": "eslint",
@@ -21,6 +22,7 @@
     "@xyflow/react": "^12.11.2",
     "axios": "^1.18.1",
     "bcrypt": "^6.0.0",
+    "bullmq": "^5.80.9",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "csv-parse": "^7.0.1",

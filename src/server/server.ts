@@ -2,33 +2,38 @@ import http from "http";
 import next from "next";
 
 import {
-  initializeTwilioWebSocket,
-} from "./twilio-websocket";
-
-import {
   initializeSocket,
 } from "./socket";
+
 
 const development =
   process.env.NODE_ENV !==
   "production";
 
+
 const PORT =
   Number(
-    process.env.PORT ?? 3000
+    process.env.PORT ??
+    3000
   );
 
-async function startServer() {
+
+async function startServer():
+  Promise<void> {
 
   const app =
     next({
-      dev: development,
+      dev:
+        development,
     });
+
 
   const handle =
     app.getRequestHandler();
 
+
   await app.prepare();
+
 
   const server =
     http.createServer(
@@ -41,14 +46,13 @@ async function startServer() {
           request,
           response
         ).catch(
-          (
-            error
-          ) => {
+          error => {
 
             console.error(
-              "Next request handling error:",
+              "Next request handling error",
               error
             );
+
 
             if (
               !response.headersSent
@@ -69,21 +73,15 @@ async function startServer() {
       }
     );
 
-  //------------------------------------
-  // Register Twilio WebSocket FIRST
-  //------------------------------------
-
-  initializeTwilioWebSocket(
-    server
-  );
 
   //------------------------------------
-  // Register Socket.IO SECOND
+  // Dashboard Socket.IO
   //------------------------------------
 
   initializeSocket(
     server
   );
+
 
   //------------------------------------
   // Diagnostics
@@ -96,33 +94,13 @@ async function startServer() {
     )
   );
 
-  server.listeners(
-    "upgrade"
-  ).forEach(
-    (
-      listener,
-      index
-    ) => {
-
-      console.log(
-        `Upgrade listener #${index + 1}:`,
-        listener.name ||
-        "anonymous"
-      );
-
-    }
-  );
-
-  //------------------------------------
-  // Start HTTP Server
-  //------------------------------------
 
   server.listen(
     PORT,
     () => {
 
       console.log(
-        `🚀 Server listening on http://localhost:${PORT}`
+        `Server listening on http://localhost:${PORT}`
       );
 
     }
@@ -130,17 +108,18 @@ async function startServer() {
 
 }
 
+
 startServer().catch(
-  (
-    error
-  ) => {
+  error => {
 
     console.error(
-      "Server startup failed:",
+      "Server startup failed",
       error
     );
 
-    process.exit(1);
+    process.exit(
+      1
+    );
 
   }
 );

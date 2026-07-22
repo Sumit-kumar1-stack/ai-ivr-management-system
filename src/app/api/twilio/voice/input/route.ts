@@ -1,101 +1,168 @@
-import { NextRequest, NextResponse } from "next/server";
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
+
+import {
+  createTwilioAuthErrorResponse,
+  validateTwilioWebhook,
+} from "@/lib/twilio-webhook-auth";
 
 
 export async function POST(
-    req: NextRequest
+  request: NextRequest
 ) {
 
+  try {
 
-    const formData =
-        await req.formData();
-
-
-    const digits =
-        formData.get("Digits");
-
-
-    console.log(
-        "User pressed:",
-        digits
+    const {
+      params,
+    } = await validateTwilioWebhook(
+      request
     );
 
 
-    let message = "";
+    const digits =
+      String(
+        params.Digits ??
+        ""
+      ).trim();
 
 
-    switch(digits){
+    let message:
+      string;
 
 
-        case "1":
+    switch (
+      digits
+    ) {
 
-            message =
-            `
-            You selected Sales.
-            Connecting you to the sales team.
-            `;
+      case "1":
 
-            break;
+        message =
+          "You selected Sales. Connecting you to the sales team.";
 
-
-
-        case "2":
-
-            message =
-            `
-            You selected Support.
-            Our support team will assist you.
-            `;
-
-            break;
+        break;
 
 
+      case "2":
 
-        case "3":
+        message =
+          "You selected Support. Our support team will assist you.";
 
-            message =
-            `
-            Connecting you to a human agent.
-            `;
-
-            break;
+        break;
 
 
+      case "3":
 
-        default:
+        message =
+          "Connecting you to a human agent.";
 
-            message =
-            `
-            Invalid option.
-            Please try again.
-            `;
+        break;
+
+
+      default:
+
+        message =
+          "Invalid option. Please try again.";
 
     }
 
 
-
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
-
+    return createTwimlResponse(
+      `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
+  <Say voice="alice">
+    ${escapeXml(message)}
+  </Say>
+</Response>`
+    );
 
-    <Say voice="alice">
+  } catch (error) {
 
-        ${message}
-
-    </Say>
-
-</Response>
-`;
+    const authResponse =
+      createTwilioAuthErrorResponse(
+        error
+      );
 
 
+    if (
+      authResponse
+    ) {
 
-    return new NextResponse(
-        xml,
-        {
-            headers:{
-                "Content-Type":
-                    "text/xml",
-            },
-        }
+      return authResponse;
+
+    }
+
+
+    console.error(
+      "Twilio DTMF input failed",
+      error
+    );
+
+
+    return createTwimlResponse(
+      `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">
+    An error occurred while processing your selection.
+  </Say>
+  <Hangup />
+</Response>`
+    );
+
+  }
+
+}
+
+
+function createTwimlResponse(
+  xml: string
+): NextResponse {
+
+  return new NextResponse(
+    xml,
+    {
+      status:
+        200,
+
+      headers: {
+        "Content-Type":
+          "text/xml; charset=utf-8",
+
+        "Cache-Control":
+          "no-store",
+      },
+    }
+  );
+
+}
+
+
+function escapeXml(
+  value: string
+): string {
+
+  return value
+    .replace(
+      /&/g,
+      "&amp;"
+    )
+    .replace(
+      /</g,
+      "&lt;"
+    )
+    .replace(
+      />/g,
+      "&gt;"
+    )
+    .replace(
+      /"/g,
+      "&quot;"
+    )
+    .replace(
+      /'/g,
+      "&apos;"
     );
 
 }

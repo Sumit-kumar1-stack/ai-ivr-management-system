@@ -15,12 +15,10 @@ import {
 } from "./playback-state.service";
 
 import {
+  clearCallPlayback,
   streamToCall,
 } from "@/providers/telephony/stream.service";
 
-import {
-  AudioSessionService,
-} from "@/providers/telephony/audio-session.service";
 
 import {
   ConversationStateService,
@@ -228,7 +226,7 @@ export class VoiceWorker {
     //----------------------------------------
 
     const cleared =
-      AudioSessionService.clearPlayback(
+      clearCallPlayback(
         callId
       );
 
@@ -293,7 +291,7 @@ export class VoiceWorker {
     // Clear Twilio buffered playback
     //----------------------------------------
 
-    AudioSessionService.clearPlayback(
+    clearCallPlayback(
       callId
     );
 
@@ -419,7 +417,7 @@ export class VoiceWorker {
             callId
           );
 
-          AudioSessionService.clearPlayback(
+          clearCallPlayback(
             callId
           );
 

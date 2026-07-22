@@ -1,30 +1,305 @@
-import { asyncHandler } from "@/lib/async-handler";
-import { success } from "@/lib/api-response";
-import { prisma } from "@/lib/prisma";
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
 
-export const GET = asyncHandler(
-  async (
-    req,
-    { params }: {
-      params: Promise<{ id: string }>;
-    }
-  ) => {
+import {
+  prisma,
+} from "@/lib/prisma";
 
-    const { id } = await params;
+import {
+  asyncHandler,
+} from "@/lib/async-handler";
 
-    const campaign =
-      await prisma.campaign.findUnique({
+import {
+  requireRole,
+} from "@/lib/auth";
 
-        where:{
-          id,
-        },
+import {
+  CampaignNotFoundError,
+} from "@/lib/app-error";
 
-        include:{
-          contacts:true,
-        },
 
+//--------------------------------------------------
+// Context
+//--------------------------------------------------
+
+interface RouteContext {
+  params:
+    Promise<{
+      id: string;
+    }>;
+}
+
+
+//--------------------------------------------------
+// Get Campaign
+//--------------------------------------------------
+
+export const GET =
+  asyncHandler<RouteContext>(
+    async (
+      _request:
+        NextRequest,
+      context:
+        RouteContext
+    ) => {
+
+      await requireRole([
+        "AGENT",
+        "ADMIN",
+        "SUPER_ADMIN",
+      ]);
+
+
+      const {
+        id:
+          campaignId,
+      } = await context.params;
+
+
+      const campaign =
+        await prisma.campaign.findUnique({
+          where: {
+            id:
+              campaignId,
+          },
+
+          include: {
+            contacts: {
+              include: {
+                contact:
+                  true,
+              },
+            },
+
+            runs: {
+              orderBy: {
+                createdAt:
+                  "desc",
+              },
+
+              take:
+                10,
+            },
+
+            calls: {
+              orderBy: {
+                createdAt:
+                  "desc",
+              },
+
+              take:
+                50,
+
+              include: {
+                contact: {
+                  select: {
+                    id:
+                      true,
+
+                    fullName:
+                      true,
+
+                    phone:
+                      true,
+                  },
+                },
+              },
+            },
+          },
+        });
+
+
+      if (
+        !campaign
+      ) {
+
+        throw new CampaignNotFoundError(
+          campaignId
+        );
+
+      }
+
+
+      return NextResponse.json({
+        success:
+          true,
+
+        message:
+          "Campaign fetched successfully",
+
+        data:
+          campaign,
       });
 
-    return success(campaign);
-  }
-);
+    }
+  );
+
+
+//--------------------------------------------------
+// Update Campaign
+//--------------------------------------------------
+
+export const PATCH =
+  asyncHandler<RouteContext>(
+    async (
+      request:
+        NextRequest,
+      context:
+        RouteContext
+    ) => {
+
+      await requireRole([
+        "ADMIN",
+        "SUPER_ADMIN",
+      ]);
+
+
+      const {
+        id:
+          campaignId,
+      } = await context.params;
+
+
+      const existingCampaign =
+        await prisma.campaign.findUnique({
+          where: {
+            id:
+              campaignId,
+          },
+
+          select: {
+            id:
+              true,
+          },
+        });
+
+
+      if (
+        !existingCampaign
+      ) {
+
+        throw new CampaignNotFoundError(
+          campaignId
+        );
+
+      }
+
+
+      const body =
+        await request.json();
+
+
+      const campaign =
+        await prisma.campaign.update({
+          where: {
+            id:
+              campaignId,
+          },
+
+          data: {
+            name:
+              typeof body.name ===
+              "string"
+                ? body.name.trim()
+                : undefined,
+
+            description:
+              typeof body.description ===
+              "string"
+                ? body.description.trim()
+                : undefined,
+
+            language:
+              typeof body.language ===
+              "string"
+                ? body.language.trim()
+                : undefined,
+          },
+        });
+
+
+      return NextResponse.json({
+        success:
+          true,
+
+        message:
+          "Campaign updated successfully",
+
+        data:
+          campaign,
+      });
+
+    }
+  );
+
+
+//--------------------------------------------------
+// Delete Campaign
+//--------------------------------------------------
+
+export const DELETE =
+  asyncHandler<RouteContext>(
+    async (
+      _request:
+        NextRequest,
+      context:
+        RouteContext
+    ) => {
+
+      await requireRole([
+        "ADMIN",
+        "SUPER_ADMIN",
+      ]);
+
+
+      const {
+        id:
+          campaignId,
+      } = await context.params;
+
+
+      const existingCampaign =
+        await prisma.campaign.findUnique({
+          where: {
+            id:
+              campaignId,
+          },
+
+          select: {
+            id:
+              true,
+          },
+        });
+
+
+      if (
+        !existingCampaign
+      ) {
+
+        throw new CampaignNotFoundError(
+          campaignId
+        );
+
+      }
+
+
+      await prisma.campaign.delete({
+        where: {
+          id:
+            campaignId,
+        },
+      });
+
+
+      return NextResponse.json({
+        success:
+          true,
+
+        message:
+          "Campaign deleted successfully",
+      });
+
+    }
+  );

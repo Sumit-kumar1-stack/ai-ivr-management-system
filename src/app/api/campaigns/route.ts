@@ -1,49 +1,151 @@
-import { asyncHandler } from "@/lib/async-handler";
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
 
-import { success } from "@/lib/api-response";
+import {
+  UserRole,
+} from "@prisma/client";
 
-import { CampaignService } from "@/features/campaigns/campaign.service";
+import {
+  CampaignService,
+} from "@/features/campaigns/campaign.service";
 
-export const GET=
+import {
+  requireRole,
+} from "@/lib/auth";
 
-asyncHandler(async()=>{
+import {
+  createAuthErrorResponse,
+} from "@/lib/auth-response";
 
-const campaigns=
+import {
+  success,
+} from "@/lib/api-response";
 
-await CampaignService.getCampaigns();
 
-return success(
+const CAMPAIGN_ROLES = [
+  UserRole.SUPER_ADMIN,
+  UserRole.ADMIN,
+] as const;
 
-campaigns,
 
-"Campaigns fetched"
+//--------------------------------------------------
+// Get Campaigns
+//--------------------------------------------------
 
-);
+export async function GET() {
 
-});
+  try {
 
-export const POST=
+    await requireRole(
+      CAMPAIGN_ROLES
+    );
 
-asyncHandler(async(req)=>{
 
-const body=
+    const campaigns =
+      await CampaignService.getCampaigns();
 
-await req.json();
 
-const campaign=
+    return success(
+      campaigns,
+      "Campaigns fetched successfully"
+    );
 
-await CampaignService.createCampaign(
+  } catch (error) {
 
-body
+    return handleError(
+      error,
+      "Failed to fetch campaigns"
+    );
 
-);
+  }
 
-return success(
+}
 
-campaign,
 
-"Campaign created"
+//--------------------------------------------------
+// Create Campaign
+//--------------------------------------------------
 
-);
+export async function POST(
+  request: NextRequest
+) {
 
-});
+  try {
+
+    await requireRole(
+      CAMPAIGN_ROLES
+    );
+
+
+    const body =
+      await request.json();
+
+
+    const campaign =
+      await CampaignService.createCampaign(
+        body
+      );
+
+
+    return success(
+      campaign,
+      "Campaign created successfully"
+    );
+
+  } catch (error) {
+
+    return handleError(
+      error,
+      "Failed to create campaign"
+    );
+
+  }
+
+}
+
+
+//--------------------------------------------------
+// Error Handler
+//--------------------------------------------------
+
+function handleError(
+  error: unknown,
+  fallbackMessage: string
+): NextResponse {
+
+  const authResponse =
+    createAuthErrorResponse(
+      error
+    );
+
+
+  if (
+    authResponse
+  ) {
+    return authResponse;
+  }
+
+
+  console.error(
+    fallbackMessage,
+    error
+  );
+
+
+  return NextResponse.json(
+    {
+      success:
+        false,
+
+      message:
+        fallbackMessage,
+    },
+    {
+      status:
+        500,
+    }
+  );
+
+}
