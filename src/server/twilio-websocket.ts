@@ -834,17 +834,19 @@ function validateTwilioWebSocketSignature(
 function getTrustedPublicWebSocketOrigin():
   string {
 
-  const configuredUrl =
-    (
-      process.env
-        .TWILIO_PUBLIC_BASE_URL ??
-      process.env.APP_URL
-    )
+ const configuredUrl =
+  (
+    process.env
+      .TWILIO_PUBLIC_BASE_URL
+      ?.trim() ||
+    process.env
+      .APP_URL
       ?.trim()
-      .replace(
-        /\/+$/,
-        ""
-      );
+  )
+    ?.replace(
+      /\/+$/,
+      ""
+    );
 
 
   if (

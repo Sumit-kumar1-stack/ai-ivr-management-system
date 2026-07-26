@@ -66,8 +66,8 @@ export class VoiceService {
     }
 
     const model =
-      process.env.GEMINI_TTS_MODEL ||
-      "gemini-2.5-flash-preview-tts";
+      process.env.GEMINI_TTS_MODEL?.trim() ||
+"gemini-3.1-flash-tts-preview";
 
     const voice =
       process.env.GEMINI_TTS_VOICE ||
@@ -127,39 +127,67 @@ export class VoiceService {
     // Generate raw 24 kHz PCM audio
     //----------------------------------------------
 
-    const response =
-      await ai.models.generateContent({
-        model,
+    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+    let response;
+    let attempt = 0;
+    while (true) {
+      try {
+        attempt++;
+        response =
+          await ai.models.generateContent({
+            model,
 
-        contents: [
-          {
-            role:
-              "user",
-
-            parts: [
+            contents: [
               {
-                text:
-                  prompt,
+                role:
+                  "user",
+
+                parts: [
+                  {
+                    text:
+                      prompt,
+                  },
+                ],
               },
             ],
-          },
-        ],
 
-        config: {
-          responseModalities: [
-            "AUDIO",
-          ],
+            config: {
+              responseModalities: [
+                "AUDIO",
+              ],
 
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: {
-                voiceName:
-                  voice,
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: {
+                    voiceName:
+                      voice,
+                  },
+                },
               },
             },
-          },
-        },
-      });
+          });
+        break;
+      } catch (error) {
+        const err = error as { status?: number; statusCode?: number; response?: { status?: number } };
+        const status = err.status || err.statusCode || err.response?.status;
+        log.error({ error, attempt, status }, `Gemini TTS synthesis attempt ${attempt} failed`);
+
+        if (status === 429) {
+          log.error("HTTP 429 Rate Limit Exceeded. Disabling retry. Final failure.");
+          throw error;
+        }
+
+        const is5xx = typeof status === "number" && status >= 500 && status < 600;
+        if (is5xx && attempt === 1) {
+          log.warn(`Transient 5xx error encountered. Retrying in 1000ms...`);
+          await sleep(1000);
+          continue;
+        }
+
+        log.error(`Gemini TTS synthesis failed permanently after attempt ${attempt}`);
+        throw error;
+      }
+    }
 
     //----------------------------------------------
     // Extract base64 PCM

@@ -6,27 +6,53 @@ import {
   Server,
 } from "socket.io";
 
+import {
+  createServerLogger,
+  getDurationMs,
+  normalizeError,
+} from "@/lib/logger";
 
-let io: Server | null =
-  null;
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
 
+const log =
+  createServerLogger(
+    "socket-server"
+  );
+
+//--------------------------------------------------
+// Socket.IO State
+//--------------------------------------------------
+
+let io:
+  Server |
+  null =
+    null;
+
+//--------------------------------------------------
+// Initialize Socket.IO
+//--------------------------------------------------
 
 export function initializeSocket(
   server: HttpServer
 ): Server {
-
   if (
     io
   ) {
+    log.debug(
+      {
+        event:
+          "socket.initialize.skipped",
 
-    console.log(
-      "⚡ Socket.IO already initialized"
+        reason:
+          "already_initialized",
+      },
+      "Socket.IO is already initialized"
     );
 
     return io;
-
   }
-
 
   io =
     new Server(
@@ -46,14 +72,8 @@ export function initializeSocket(
         },
 
         /*
-         * IMPORTANT:
-         *
-         * Use HTTP long-polling only.
-         *
-         * This prevents Socket.IO/Engine.IO from
-         * registering a competing WebSocket upgrade
-         * handler on the same HTTP server used by
-         * Twilio Media Streams.
+         * Use polling only so Socket.IO does not
+         * compete with the Twilio WebSocket server.
          */
         transports: [
           "polling",
@@ -64,64 +84,229 @@ export function initializeSocket(
       }
     );
 
-
   io.on(
     "connection",
     socket => {
-
-      console.log(
-        `🟢 Dashboard Connected: ${socket.id}`,
+      log.info(
         {
+          event:
+            "socket.client.connected",
+
+          socketId:
+            socket.id,
+
           transport:
             socket.conn
               .transport
               .name,
-        }
-      );
 
+          connectedClients:
+            io?.engine
+              .clientsCount ??
+            0,
+        },
+        "Dashboard socket connected"
+      );
 
       socket.on(
         "disconnect",
         reason => {
-
-          console.log(
-            `🔴 Dashboard Disconnected: ${socket.id}`,
+          log.info(
             {
-              reason,
-            }
-          );
+              event:
+                "socket.client.disconnected",
 
+              socketId:
+                socket.id,
+
+              reason,
+
+              connectedClients:
+                io?.engine
+                  .clientsCount ??
+                0,
+            },
+            "Dashboard socket disconnected"
+          );
         }
       );
 
+      socket.on(
+        "error",
+        error => {
+          log.warn(
+            {
+              event:
+                "socket.client.error",
+
+              socketId:
+                socket.id,
+
+              error:
+                normalizeError(
+                  error
+                ),
+            },
+            "Dashboard socket error"
+          );
+        }
+      );
     }
   );
 
+  log.info(
+    {
+      event:
+        "socket.initialize.completed",
 
-  console.log(
-    "🚀 Socket.IO initialized using polling transport"
+      path:
+        "/socket.io",
+
+      transports: [
+        "polling",
+      ],
+
+      upgradesAllowed:
+        false,
+    },
+    "Socket.IO initialized"
   );
 
-
   return io;
-
 }
 
+//--------------------------------------------------
+// Get Socket.IO
+//--------------------------------------------------
 
 export function getIO():
   Server {
-
   if (
     !io
   ) {
-
     throw new Error(
       "Socket.IO not initialized. Call initializeSocket() first."
     );
-
   }
 
-
   return io;
+}
 
+//--------------------------------------------------
+// Socket.IO State
+//--------------------------------------------------
+
+export function isSocketServerInitialized():
+  boolean {
+  return io !==
+    null;
+}
+
+//--------------------------------------------------
+// Close Socket.IO
+//--------------------------------------------------
+
+export async function closeSocketServer():
+  Promise<void> {
+  if (
+    !io
+  ) {
+    log.debug(
+      {
+        event:
+          "socket.close.skipped",
+
+        reason:
+          "not_initialized",
+      },
+      "Socket.IO is not initialized"
+    );
+
+    return;
+  }
+
+  const startedAt =
+    process.hrtime.bigint();
+
+  const socketServer =
+    io;
+
+  /*
+   * Clear the module reference first so no new code
+   * treats the server as available during shutdown.
+   */
+  io =
+    null;
+
+  log.info(
+    {
+      event:
+        "socket.close.started",
+
+      connectedClients:
+        socketServer.engine
+          .clientsCount,
+    },
+    "Socket.IO shutdown started"
+  );
+
+  try {
+    await new Promise<void>(
+      (
+        resolve,
+        reject
+      ) => {
+        socketServer.close(
+          error => {
+            if (
+              error
+            ) {
+              reject(
+                error
+              );
+
+              return;
+            }
+
+            resolve();
+          }
+        );
+      }
+    );
+
+    log.info(
+      {
+        event:
+          "socket.close.completed",
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+      },
+      "Socket.IO closed"
+    );
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "socket.close.failed",
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Socket.IO shutdown failed"
+    );
+
+    throw error;
+  }
 }

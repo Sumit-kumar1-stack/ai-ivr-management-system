@@ -1,17 +1,32 @@
-import { NextResponse } from "next/server";
+import {
+  NextResponse,
+} from "next/server";
 
-import { updateCallStatus } from "@/services/calls/call.service";
+//--------------------------------------------------
+// Disabled Legacy Telephony Webhook
+//--------------------------------------------------
 
-export async function POST(req: Request) {
-  const body = await req.json();
+export async function POST():
+  Promise<NextResponse> {
+  console.warn(
+    "Rejected request to disabled legacy telephony webhook",
+    {
+      route:
+        "/api/webhooks/telephony",
+    }
+  );
 
-  await updateCallStatus({
-    providerCallId: body.callId,
-    status: body.status,
-    duration: body.duration,
-  });
+  return NextResponse.json(
+    {
+      success:
+        false,
 
-  return NextResponse.json({
-    success: true,
-  });
+      message:
+        "This webhook endpoint is disabled",
+    },
+    {
+      status:
+        410,
+    }
+  );
 }

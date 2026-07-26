@@ -1,62 +1,24 @@
-import { performance } from "perf_hooks";
+import {
+  performance,
+} from "node:perf_hooks";
 
 import {
-  ConversationService,
-  saveConversationAnalysis,
-} from "./conversation.service";
-
-import {
-  buildPrompt,
-} from "./prompt-builder.service";
-
-import {
-  EventPublisher,
   AppEvent,
+  EventPublisher,
 } from "@/core/events";
-
-import {
-  generateAIResponseStream,
-} from "./ai-response.service";
-
-import {
-  generateConversationSummary,
-} from "./summary.service";
-
-import {
-  generateConversationAnalysis,
-} from "./analysis.service";
-
-import {
-  detectAction,
-} from "./action-detector.service";
-
-import {
-  executeAction,
-} from "./action.service";
 
 import {
   createCallLogger,
 } from "@/lib/logger";
 
 import {
-  updateConversationMemory,
-} from "./memory.service";
+  AudioSessionService,
+} from "@/providers/telephony/audio-session.service";
 
 import {
-  ConversationAbort,
-} from "./abort.service";
-
-import {
-  ConversationStateService,
-} from "./conversation-state.service";
-
-import {
-  ConversationEvents,
-} from "./conversation-events.service";
-
-import {
-  SilenceDetector,
-} from "./silence-detector.service";
+  getCall,
+  updateCall,
+} from "@/services/calls/call.service";
 
 import {
   RealtimeService,
@@ -67,66 +29,90 @@ import {
 } from "@/services/voice/sentence-buffer.service";
 
 import {
+  voiceQueue,
+} from "@/services/voice/voice-queue.service";
+
+import {
   VoiceWorker,
 } from "@/services/voice/voice-worker.service";
 
+import {
+  detectAction,
+} from "./action-detector.service";
+
+import {
+  executeAction,
+} from "./action.service";
+
+import {
+  generateConversationAnalysis,
+} from "./analysis.service";
+
+import {
+  generateAIResponseStream,
+} from "./ai-response.service";
+
+import {
+  ConversationAbort,
+} from "./abort.service";
+
+import {
+  ConversationEvents,
+} from "./conversation-events.service";
+
+import {
+  ConversationService,
+  getCompleteConversation,
+  saveConversationAnalysis,
+} from "./conversation.service";
+
+import {
+  ConversationStateService,
+} from "./conversation-state.service";
+
+import {
+  updateConversationMemory,
+} from "./memory.service";
+
+import {
+  buildPrompt,
+} from "./prompt-builder.service";
+
+import {
+  SilenceDetector,
+} from "./silence-detector.service";
+
+import {
+  generateConversationSummary,
+} from "./summary.service";
+
 /**
- * Initializes a new AI conversation.
+ * Return an active call to LISTENING when
+ * no generated audio is going to be played.
  */
-export async function startConversation(
+function returnToListening(
   callId: string
-): Promise<boolean> {
+): void {
+  const state =
+    ConversationStateService.getState(
+      callId
+    );
 
-  const greeting =
-    "Hello. Welcome to ABC Company. How may I help you today?";
+  if (
+    state === "ENDED" ||
+    state === "INTERRUPTING" ||
+    state === "INTERRUPTED"
+  ) {
+    return;
+  }
 
-  //----------------------------------------
-  // Save Greeting
-  //----------------------------------------
-
-  await ConversationService.addMessage({
-    callId,
-    role: "ASSISTANT",
-    content: greeting,
-  });
-
-  //----------------------------------------
-  // Dashboard Event
-  //----------------------------------------
-
-  await EventPublisher.publish(
-    AppEvent.CONVERSATION_MESSAGE,
-    {
-      callId,
-      role: "ASSISTANT",
-      text: greeting,
-      timestamp: Date.now(),
-    }
-  );
-
-  RealtimeService.assistant(
-    callId,
-    greeting
-  );
-
-  //----------------------------------------
-  // Start Voice Worker
-  //----------------------------------------
-
-  void VoiceWorker.start(callId);
-
-  //----------------------------------------
-  // Queue Greeting for Streaming Call
-  //----------------------------------------
-
-  await VoiceWorker.addText(
-    callId,
-    greeting
-  );
-
-  //----------------------------------------
-  // Listening State
-  //----------------------------------------
+  if (
+    !AudioSessionService.getByCallId(
+      callId
+    )
+  ) {
+    return;
+  }
 
   ConversationStateService.setState(
     callId,
@@ -137,75 +123,72 @@ export async function startConversation(
     "listening",
     callId
   );
-
-  return true;
 }
 
 /**
- * Processes one final user transcript.
+ * Initializes a conversation and optionally
+ * queues the initial spoken greeting.
  */
-export async function processUserMessage(
-  callId: string,
-  message: string
-): Promise<string> {
-
+export async function startConversation(
+  callId: string
+): Promise<boolean> {
   const log =
-    createCallLogger(callId);
-
-  const normalizedMessage =
-    message.trim();
-
-  if (!normalizedMessage) {
-
-    log.warn(
-      "Empty user message ignored"
+    createCallLogger(
+      callId
     );
 
-    return "";
-
-  }
-
-  log.info(
-    {
-      transcript: normalizedMessage,
-    },
-    "Conversation processing started"
-  );
+  const greeting =
+    "Hello. Welcome to ABC Company. How may I help you today?";
 
   //----------------------------------------
-  // Stop Pending Silence Timer
-  //----------------------------------------
-
-  SilenceDetector.stop(callId);
-
-  //----------------------------------------
-  // Remove Old Sentence Data
-  //----------------------------------------
-
-  sentenceBuffer.clear(callId);
-
-  //----------------------------------------
-  // Save User Message
+  // Persist greeting
   //----------------------------------------
 
   await ConversationService.addMessage({
     callId,
-    role: "USER",
-    content: normalizedMessage,
+
+    role:
+      "ASSISTANT",
+
+    content:
+      greeting,
   });
+
+  //----------------------------------------
+  // Publish greeting
+  //----------------------------------------
 
   await EventPublisher.publish(
     AppEvent.CONVERSATION_MESSAGE,
     {
       callId,
-      role: "USER",
-      text: normalizedMessage,
-      timestamp: Date.now(),
+
+      role:
+        "ASSISTANT",
+
+      text:
+        greeting,
+
+      timestamp:
+        Date.now(),
     }
   );
 
+  RealtimeService.assistant(
+    callId,
+    greeting
+  );
+
   //----------------------------------------
-  // Thinking State
+  // Start playback worker
+  //----------------------------------------
+
+  void VoiceWorker.start(
+    callId
+  );
+
+  //----------------------------------------
+  // Generate greeting audio
   //----------------------------------------
 
   ConversationStateService.setState(
@@ -213,570 +196,962 @@ export async function processUserMessage(
     "THINKING"
   );
 
-  ConversationEvents.emit(
-    "thinking",
-    callId
-  );
-
-  //----------------------------------------
-  // Build RAG Prompt
-  //----------------------------------------
-
-  const prompt =
-    await buildPrompt(
+  const greetingQueued =
+    await VoiceWorker.addText(
       callId,
-      normalizedMessage
+      greeting
     );
+
+  if (!greetingQueued) {
+    log.warn(
+      {
+        callId,
+      },
+      "Greeting TTS failed; returning to LISTENING"
+    );
+
+    returnToListening(
+      callId
+    );
+  }
+
+  return true;
+}
+
+/**
+ * Processes one final caller transcript.
+ */
+export async function processUserMessage(
+  callId: string,
+  message: string
+): Promise<string> {
+  const log =
+    createCallLogger(
+      callId
+    );
+
+  const normalizedMessage =
+    message.trim();
+
+  if (!normalizedMessage) {
+    log.warn(
+      "Empty user message ignored"
+    );
+
+    return "";
+  }
 
   log.info(
     {
-      promptLength:
-        prompt.length,
+      transcript:
+        normalizedMessage,
     },
-    "Prompt generated"
+    "Conversation processing started"
   );
 
-  //----------------------------------------
-  // No Relevant Knowledge
-  //----------------------------------------
+  SilenceDetector.stop(
+    callId
+  );
 
-  if (
-    prompt ===
-    "NO_RELEVANT_KNOWLEDGE"
-  ) {
+  sentenceBuffer.clear(
+    callId
+  );
 
-    const reply =
-      "I couldn't find that information in our knowledge base.";
+  try {
+    //----------------------------------------
+    // Persist user message
+    //----------------------------------------
 
     await ConversationService.addMessage({
       callId,
-      role: "ASSISTANT",
-      content: reply,
+
+      role:
+        "USER",
+
+      content:
+        normalizedMessage,
     });
 
     await EventPublisher.publish(
       AppEvent.CONVERSATION_MESSAGE,
       {
         callId,
-        role: "ASSISTANT",
-        text: reply,
-        timestamp: Date.now(),
+
+        role:
+          "USER",
+
+        text:
+          normalizedMessage,
+
+        timestamp:
+          Date.now(),
       }
     );
 
-    RealtimeService.assistant(
-      callId,
-      reply
-    );
-
     //----------------------------------------
-    // Send Fallback Reply to Voice Pipeline
+    // Thinking state
     //----------------------------------------
-
-    void VoiceWorker.start(callId);
-
-    await VoiceWorker.addText(
-      callId,
-      reply
-    );
-
-    return reply;
-  }
-
-  //----------------------------------------
-  // Start Voice Playback Worker
-  //----------------------------------------
-
-  void VoiceWorker.start(callId);
-
-  //----------------------------------------
-  // Gemini Streaming State
-  //----------------------------------------
-
-  const generationStartedAt =
-    performance.now();
-
-  let firstToken = true;
-
-  let fullReply = "";
-
-  let wasAborted = false;
-
-  //----------------------------------------
-  // Create Per-Call Abort Controller
-  //----------------------------------------
-
-  const controller =
-    ConversationAbort.create(callId);
-
-  log.info(
-    "Gemini streaming started"
-  );
-
-  try {
-
-    for await (
-      const chunk of generateAIResponseStream(
-        prompt,
-        controller.signal
-      )
-    ) {
-
-      //----------------------------------------
-      // Stop Processing After Barge-In
-      //----------------------------------------
-
-      if (controller.signal.aborted) {
-
-        wasAborted = true;
-
-        log.info(
-          "Gemini stream interrupted by caller"
-        );
-
-        break;
-
-      }
-
-      if (!chunk) {
-
-        continue;
-
-      }
-
-      //----------------------------------------
-      // Time To First Token
-      //----------------------------------------
-
-      if (firstToken) {
-
-        firstToken = false;
-
-        log.info(
-          {
-            latencyMs: Number(
-              (
-                performance.now() -
-                generationStartedAt
-              ).toFixed(0)
-            ),
-          },
-          "First Gemini token received"
-        );
-
-      }
-
-      process.stdout.write(chunk);
-
-      fullReply += chunk;
-
-      //----------------------------------------
-      // Add Tokens to Sentence Buffer
-      //----------------------------------------
-
-      sentenceBuffer.append(
-        callId,
-        chunk
-      );
-
-      //----------------------------------------
-      // Queue Every Complete Sentence for TTS
-      //----------------------------------------
-
-      await sentenceBuffer
-        .flushCompleteSentences(
-          callId,
-          async (sentence) => {
-
-            if (
-              controller.signal.aborted
-            ) {
-
-              return;
-
-            }
-
-            log.debug(
-              {
-                sentence,
-              },
-              "Complete sentence ready for TTS"
-            );
-
-            await VoiceWorker.addText(
-              callId,
-              sentence
-            );
-
-          }
-        );
-
-    }
-
-    //----------------------------------------
-    // Queue Remaining Incomplete Sentence
-    //----------------------------------------
-
-    if (
-      !controller.signal.aborted
-    ) {
-
-      await sentenceBuffer
-        .flushRemaining(
-          callId,
-          async (sentence) => {
-
-            if (
-              controller.signal.aborted
-            ) {
-
-              return;
-
-            }
-
-            log.debug(
-              {
-                sentence,
-              },
-              "Remaining sentence ready for TTS"
-            );
-
-            await VoiceWorker.addText(
-              callId,
-              sentence
-            );
-
-          }
-        );
-
-    }
-
-  } catch (error) {
-
-    if (
-      error instanceof Error &&
-      error.name === "AbortError"
-    ) {
-
-      wasAborted = true;
-
-      log.info(
-        "Gemini stream aborted"
-      );
-
-    } else {
-
-      log.error(
-        {
-          error,
-        },
-        "Gemini streaming failed"
-      );
-
-      throw error;
-
-    }
-
-  } finally {
-
-    ConversationAbort.clear(
-      callId
-    );
-
-  }
-
-  //----------------------------------------
-  // Interrupted Response
-  //----------------------------------------
-
-  if (
-    wasAborted ||
-    controller.signal.aborted
-  ) {
-
-    sentenceBuffer.clear(callId);
-
-    log.info(
-      {
-        generatedCharacters:
-          fullReply.length,
-      },
-      "Interrupted AI response discarded"
-    );
-
-    return "";
-
-  }
-
-  log.info(
-    {
-      replyLength:
-        fullReply.length,
-
-      totalGenerationMs:
-        Number(
-          (
-            performance.now() -
-            generationStartedAt
-          ).toFixed(0)
-        ),
-    },
-    "Gemini stream finished"
-  );
-
-  //----------------------------------------
-  // Prevent Empty Assistant Messages
-  //----------------------------------------
-
-  const finalReply =
-    fullReply.trim();
-
-  if (!finalReply) {
-
-    log.warn(
-      "Gemini returned an empty response"
-    );
 
     ConversationStateService.setState(
       callId,
-      "LISTENING"
+      "THINKING"
     );
 
     ConversationEvents.emit(
-      "listening",
+      "thinking",
       callId
     );
 
-    return "";
+    //----------------------------------------
+    // Build RAG prompt
+    //----------------------------------------
 
-  }
+    const prompt =
+      await buildPrompt(
+        callId,
+        normalizedMessage
+      );
 
-  //----------------------------------------
-  // Save Assistant Reply
-  //----------------------------------------
+    log.info(
+      {
+        promptLength:
+          prompt.length,
+      },
+      "Prompt generated"
+    );
 
-  await ConversationService.addMessage({
-    callId,
-    role: "ASSISTANT",
-    content: finalReply,
-  });
+    //----------------------------------------
+    // No relevant knowledge fallback
+    //----------------------------------------
 
-  RealtimeService.assistant(
-    callId,
-    finalReply
-  );
+    if (
+      prompt ===
+      "NO_RELEVANT_KNOWLEDGE"
+    ) {
+      const reply =
+        "I couldn't find that information in our knowledge base.";
 
-  await EventPublisher.publish(
-    AppEvent.CONVERSATION_MESSAGE,
-    {
-      callId,
-      role: "ASSISTANT",
-      text: finalReply,
-      timestamp: Date.now(),
+      await ConversationService.addMessage({
+        callId,
+
+        role:
+          "ASSISTANT",
+
+        content:
+          reply,
+      });
+
+      await EventPublisher.publish(
+        AppEvent.CONVERSATION_MESSAGE,
+        {
+          callId,
+
+          role:
+            "ASSISTANT",
+
+          text:
+            reply,
+
+          timestamp:
+            Date.now(),
+        }
+      );
+
+      RealtimeService.assistant(
+        callId,
+        reply
+      );
+
+      void VoiceWorker.start(
+        callId
+      );
+
+      const fallbackQueued =
+        await VoiceWorker.addText(
+          callId,
+          reply
+        );
+
+      if (!fallbackQueued) {
+        log.warn(
+          {
+            callId,
+          },
+          "Fallback TTS failed; returning to LISTENING"
+        );
+
+        returnToListening(
+          callId
+        );
+      }
+
+      log.info(
+        {
+          replyLength:
+            reply.length,
+
+          audioQueued:
+            fallbackQueued,
+        },
+        "Conversation fallback turn completed"
+      );
+
+      RealtimeService.completed(
+        callId
+      );
+
+      return reply;
     }
-  );
 
-  //----------------------------------------
-  // Load Full Conversation
-  //----------------------------------------
+    //----------------------------------------
+    // Start playback worker
+    //----------------------------------------
 
-  const conversation =
-    await ConversationService
-      .getConversation(callId);
+    void VoiceWorker.start(
+      callId
+    );
 
-  if (!conversation) {
+    //----------------------------------------
+    // Stream Gemini text
+    //----------------------------------------
 
-    log.warn(
-      "Conversation not found after AI response"
+    const generationStartedAt =
+      performance.now();
+
+    let firstToken =
+      true;
+
+    let fullReply =
+      "";
+
+    let wasAborted =
+      false;
+
+    const controller =
+      ConversationAbort.create(
+        callId
+      );
+
+    log.info(
+      "Gemini streaming started"
+    );
+
+    try {
+      for await (
+        const chunk of generateAIResponseStream(
+          prompt,
+          controller.signal
+        )
+      ) {
+        if (
+          controller.signal.aborted
+        ) {
+          wasAborted =
+            true;
+
+          log.info(
+            "Gemini stream interrupted by caller"
+          );
+
+          break;
+        }
+
+        if (!chunk) {
+          continue;
+        }
+
+        if (firstToken) {
+          firstToken =
+            false;
+
+          log.info(
+            {
+              latencyMs:
+                Number(
+                  (
+                    performance.now() -
+                    generationStartedAt
+                  ).toFixed(
+                    0
+                  )
+                ),
+            },
+            "First Gemini token received"
+          );
+        }
+
+        process.stdout.write(
+          chunk
+        );
+
+        /*
+         * Collect the complete response.
+         *
+         * Do not generate TTS for each streamed
+         * sentence because it can duplicate final
+         * sentence playback and consume extra quota.
+         */
+        fullReply +=
+          chunk;
+      }
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.name ===
+          "AbortError"
+      ) {
+        wasAborted =
+          true;
+
+        log.info(
+          "Gemini stream aborted"
+        );
+      } else {
+        log.error(
+          {
+            error,
+          },
+          "Gemini streaming failed"
+        );
+
+        throw error;
+      }
+    } finally {
+      ConversationAbort.clear(
+        callId
+      );
+    }
+
+    //----------------------------------------
+    // Interrupted response
+    //----------------------------------------
+
+    if (
+      wasAborted ||
+      controller.signal.aborted
+    ) {
+      sentenceBuffer.clear(
+        callId
+      );
+
+      log.info(
+        {
+          generatedCharacters:
+            fullReply.length,
+        },
+        "Interrupted AI response discarded"
+      );
+
+      returnToListening(
+        callId
+      );
+
+      return "";
+    }
+
+    log.info(
+      {
+        replyLength:
+          fullReply.length,
+
+        totalGenerationMs:
+          Number(
+            (
+              performance.now() -
+              generationStartedAt
+            ).toFixed(
+              0
+            )
+          ),
+      },
+      "Gemini stream finished"
+    );
+
+    //----------------------------------------
+    // Validate response
+    //----------------------------------------
+
+    const finalReply =
+      fullReply.trim();
+
+    if (!finalReply) {
+      log.warn(
+        "Gemini returned an empty response"
+      );
+
+      returnToListening(
+        callId
+      );
+
+      return "";
+    }
+
+    //----------------------------------------
+    // Generate exactly one TTS request
+    //----------------------------------------
+
+    const audioQueued =
+      await VoiceWorker.addText(
+        callId,
+        finalReply
+      );
+
+    if (!audioQueued) {
+      log.warn(
+        {
+          callId,
+        },
+        "TTS failed or no audio was queued; returning to LISTENING"
+      );
+
+      returnToListening(
+        callId
+      );
+    }
+
+    //----------------------------------------
+    // Persist assistant reply
+    //----------------------------------------
+
+    await ConversationService.addMessage({
+      callId,
+
+      role:
+        "ASSISTANT",
+
+      content:
+        finalReply,
+    });
+
+    RealtimeService.assistant(
+      callId,
+      finalReply
+    );
+
+    await EventPublisher.publish(
+      AppEvent.CONVERSATION_MESSAGE,
+      {
+        callId,
+
+        role:
+          "ASSISTANT",
+
+        text:
+          finalReply,
+
+        timestamp:
+          Date.now(),
+      }
+    );
+
+    //----------------------------------------
+    // Load recent conversation context
+    //----------------------------------------
+
+    const conversation =
+      await ConversationService
+        .getConversation(
+          callId
+        );
+
+    if (!conversation) {
+      log.warn(
+        "Conversation not found after AI response"
+      );
+
+      sentenceBuffer.clear(
+        callId
+      );
+
+      return finalReply;
+    }
+
+    const transcript =
+      conversation.messages
+        .map(
+          (item) =>
+            `${item.role}: ${item.content}`
+        )
+        .join(
+          "\n"
+        );
+
+    log.debug(
+      {
+        transcript,
+      },
+      "Conversation transcript built"
+    );
+
+    //----------------------------------------
+    // Update live memory every five messages
+    //----------------------------------------
+
+    if (
+      conversation.messages.length >
+        0 &&
+      conversation.messages.length %
+        5 ===
+        0
+    ) {
+      try {
+        log.info(
+          "Updating conversation memory"
+        );
+
+        const summary =
+          await generateConversationSummary(
+            transcript
+          );
+
+        await updateConversationMemory(
+          callId,
+          summary
+        );
+
+        await EventPublisher.publish(
+          AppEvent.CONVERSATION_SUMMARY,
+          {
+            callId,
+
+            summary,
+
+            timestamp:
+              Date.now(),
+          }
+        );
+
+        log.info(
+          "Conversation memory updated"
+        );
+      } catch (error) {
+        log.error(
+          {
+            error,
+          },
+          "Conversation memory update failed"
+        );
+      }
+    }
+
+    //----------------------------------------
+    // Optional per-turn analysis
+    //----------------------------------------
+
+    const enablePostTurn =
+      process.env
+        .ENABLE_POST_TURN_ANALYSIS !==
+      "false";
+
+    if (enablePostTurn) {
+      try {
+        log.info(
+          "Generating conversation analysis"
+        );
+
+        const analysis =
+          await generateConversationAnalysis(
+            transcript
+          );
+
+        await saveConversationAnalysis(
+          conversation.id,
+          analysis
+        );
+
+        await EventPublisher.publish(
+          AppEvent.CONVERSATION_ANALYSIS,
+          {
+            callId,
+
+            analysis,
+
+            timestamp:
+              Date.now(),
+          }
+        );
+
+        log.info(
+          "Conversation analysis saved"
+        );
+      } catch (error) {
+        log.error(
+          {
+            error,
+          },
+          "Conversation analysis failed"
+        );
+      }
+
+      try {
+        log.info(
+          "Detecting conversation actions"
+        );
+
+        const action =
+          await detectAction(
+            transcript
+          );
+
+        if (
+          action.action !==
+          "NONE"
+        ) {
+          log.info(
+            {
+              action:
+                action.action,
+
+              reason:
+                action.reason,
+            },
+            "Conversation action detected"
+          );
+
+          await executeAction(
+            action.action,
+            callId
+          );
+        } else {
+          log.info(
+            "No conversation action required"
+          );
+        }
+      } catch (error) {
+        log.error(
+          {
+            error,
+          },
+          "Action detection failed"
+        );
+      }
+    }
+
+    //----------------------------------------
+    // Turn completed
+    //----------------------------------------
+
+    log.info(
+      {
+        replyLength:
+          finalReply.length,
+
+        audioQueued,
+      },
+      "Conversation turn completed"
+    );
+
+    RealtimeService.completed(
+      callId
+    );
+
+    sentenceBuffer.clear(
+      callId
     );
 
     return finalReply;
+  } catch (error) {
+    log.error(
+      {
+        error,
+        callId,
+      },
+      "Conversation processing failed"
+    );
 
+    sentenceBuffer.clear(
+      callId
+    );
+
+    voiceQueue.clear(
+      callId
+    );
+
+    returnToListening(
+      callId
+    );
+
+    throw error;
+  }
+}
+
+/**
+ * Runs durable post-call persistence and analysis.
+ *
+ * It:
+ * - loads every conversation message;
+ * - saves the full transcript to Call;
+ * - generates one structured analysis;
+ * - saves analysis to Conversation;
+ * - saves the summary to Call;
+ * - optionally performs a separate action request.
+ */
+export async function runPostCallProcessing(
+  callId: string
+): Promise<void> {
+  const log =
+    createCallLogger(
+      callId
+    );
+
+  log.info(
+    "Running post-call processing"
+  );
+
+  //----------------------------------------
+  // Confirm call exists
+  //----------------------------------------
+
+  const call =
+    await getCall(
+      callId
+    );
+
+  if (!call) {
+    log.warn(
+      "Call not found for post-call processing"
+    );
+
+    return;
   }
 
   //----------------------------------------
-  // Build Full Transcript
+  // Durable idempotency check
+  //----------------------------------------
+
+  if (
+    call.transcript &&
+    call.summary
+  ) {
+    log.info(
+      {
+        callId,
+      },
+      "Post-call processing already completed; skipping"
+    );
+
+    return;
+  }
+
+  //----------------------------------------
+  // Load every conversation message
+  //----------------------------------------
+
+  const conversation =
+    await getCompleteConversation(
+      callId
+    );
+
+  if (!conversation) {
+    log.warn(
+      "Conversation not found for post-call processing"
+    );
+
+    return;
+  }
+
+  if (
+    conversation.messages.length ===
+    0
+  ) {
+    log.warn(
+      "Conversation contains no messages; post-call processing skipped"
+    );
+
+    return;
+  }
+
+  //----------------------------------------
+  // Build complete transcript
   //----------------------------------------
 
   const transcript =
     conversation.messages
       .map(
-        (item) =>
-          `${item.role}: ${item.content}`
+        (message) =>
+          `${message.role}: ${message.content}`
       )
-      .join("\n");
+      .join(
+        "\n"
+      );
 
-  log.debug(
+  log.info(
     {
-      transcript,
+      callId,
+
+      messageCount:
+        conversation.messages.length,
+
+      transcriptLength:
+        transcript.length,
     },
-    "Conversation transcript built"
+    "Complete call transcript built"
   );
 
   //----------------------------------------
-  // Update Memory Every Five Messages
+  // Persist transcript before AI analysis
   //----------------------------------------
 
-  if (
-    conversation.messages.length > 0 &&
-    conversation.messages.length % 5 === 0
-  ) {
+  await updateCall(
+    callId,
+    {
+      transcript,
+    }
+  );
 
+  //----------------------------------------
+  // Generate one structured analysis
+  //----------------------------------------
+
+  let analysis:
+    Awaited<
+      ReturnType<
+        typeof generateConversationAnalysis
+      >
+    >;
+
+  try {
+    log.info(
+      "Generating post-call conversation analysis"
+    );
+
+    analysis =
+      await generateConversationAnalysis(
+        transcript
+      );
+  } catch (error) {
+    log.error(
+      {
+        error,
+      },
+      "Post-call analysis generation failed"
+    );
+
+    /*
+     * The transcript remains safely persisted.
+     * The analysis may be retried later.
+     */
+    return;
+  }
+
+  //----------------------------------------
+  // Persist conversation analysis
+  //----------------------------------------
+
+  await saveConversationAnalysis(
+    conversation.id,
+    analysis
+  );
+
+  //----------------------------------------
+  // Persist call summary
+  //----------------------------------------
+
+  await updateCall(
+    callId,
+    {
+      transcript,
+
+      summary:
+        analysis.summary,
+    }
+  );
+
+  //----------------------------------------
+  // Publish analysis event
+  //----------------------------------------
+
+  await EventPublisher.publish(
+    AppEvent.CONVERSATION_ANALYSIS,
+    {
+      callId,
+
+      analysis,
+
+      timestamp:
+        Date.now(),
+    }
+  );
+
+  //----------------------------------------
+  // Optional additional action request
+  //----------------------------------------
+
+  const enablePostCallActions =
+    process.env
+      .ENABLE_POST_CALL_ACTIONS ===
+    "true";
+
+  if (enablePostCallActions) {
     try {
-
       log.info(
-        "Updating conversation memory"
+        "Detecting post-call conversation action"
       );
 
-      const summary =
-        await generateConversationSummary(
+      const action =
+        await detectAction(
           transcript
         );
 
-      await updateConversationMemory(
-        callId,
-        summary
-      );
+      if (
+        action.action !==
+        "NONE"
+      ) {
+        log.info(
+          {
+            action:
+              action.action,
 
-      await EventPublisher.publish(
-        AppEvent.CONVERSATION_SUMMARY,
-        {
-          callId,
-          summary,
-          timestamp: Date.now(),
-        }
-      );
+            reason:
+              action.reason,
+          },
+          "Post-call action detected"
+        );
 
-      log.info(
-        "Conversation memory updated"
-      );
-
+        await executeAction(
+          action.action,
+          callId
+        );
+      } else {
+        log.info(
+          "No post-call action required"
+        );
+      }
     } catch (error) {
-
       log.error(
         {
           error,
         },
-        "Conversation memory update failed"
+        "Post-call action detection failed"
       );
-
     }
-
   }
-
-  //----------------------------------------
-  // Conversation Analysis
-  //----------------------------------------
-
-  try {
-
-    log.info(
-      "Generating conversation analysis"
-    );
-
-    const analysis =
-      await generateConversationAnalysis(
-        transcript
-      );
-
-    await saveConversationAnalysis(
-      conversation.id,
-      analysis
-    );
-
-    await EventPublisher.publish(
-      AppEvent.CONVERSATION_ANALYSIS,
-      {
-        callId,
-        analysis,
-        timestamp: Date.now(),
-      }
-    );
-
-    log.info(
-      "Conversation analysis saved"
-    );
-
-  } catch (error) {
-
-    log.error(
-      {
-        error,
-      },
-      "Conversation analysis failed"
-    );
-
-  }
-
-  //----------------------------------------
-  // Detect and Execute AI Actions
-  //----------------------------------------
-
-  try {
-
-    log.info(
-      "Detecting conversation actions"
-    );
-
-    const action =
-      await detectAction(
-        transcript
-      );
-
-    if (
-      action.action !== "NONE"
-    ) {
-
-      log.info(
-        {
-          action:
-            action.action,
-
-          reason:
-            action.reason,
-        },
-        "Conversation action detected"
-      );
-
-      await executeAction(
-        action.action,
-        callId
-      );
-
-    } else {
-
-      log.info(
-        "No conversation action required"
-      );
-
-    }
-
-  } catch (error) {
-
-    log.error(
-      {
-        error,
-      },
-      "Action detection failed"
-    );
-
-  }
-
-  //----------------------------------------
-  // Conversation Turn Completed
-  //----------------------------------------
 
   log.info(
     {
-      replyLength:
-        finalReply.length,
+      callId,
+
+      transcriptLength:
+        transcript.length,
+
+      summaryLength:
+        analysis.summary.length,
+
+      intent:
+        analysis.intent,
+
+      sentiment:
+        analysis.sentiment,
+
+      priority:
+        analysis.priority,
+
+      followUp:
+        analysis.followUp,
+
+      actionItemCount:
+        analysis.actionItems.length,
     },
-    "Conversation turn completed"
+    "Post-call processing completed successfully"
   );
-
-  RealtimeService.completed(
-    callId
-  );
-
-  return finalReply;
 }

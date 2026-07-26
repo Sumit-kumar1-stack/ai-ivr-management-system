@@ -1,0 +1,717 @@
+import {
+  CallStatus,
+  CampaignRunStatus,
+  CampaignStatus,
+} from "@prisma/client";
+
+import {
+  prisma,
+} from "@/lib/prisma";
+
+//--------------------------------------------------
+// Finalizer Result
+//--------------------------------------------------
+
+export interface CampaignFinalizationResult {
+  campaignId: string;
+
+  campaignRunId: string;
+
+  finalized: boolean;
+
+  skipped: boolean;
+
+  reason: string;
+
+  runStatus: CampaignRunStatus;
+
+  totalContacts: number;
+
+  processedContacts: number;
+
+  settledContacts: number;
+
+  unresolvedContacts: number;
+
+  completedContacts: number;
+
+  unsuccessfulContacts: number;
+}
+
+//--------------------------------------------------
+// Final Call Statuses
+//--------------------------------------------------
+
+const TERMINAL_CALL_STATUSES:
+  CallStatus[] = [
+    CallStatus.COMPLETED,
+    CallStatus.FAILED,
+    CallStatus.BUSY,
+    CallStatus.NO_ANSWER,
+    CallStatus.CANCELED,
+  ];
+
+//--------------------------------------------------
+// Finalize Campaign Run When Ready
+//--------------------------------------------------
+
+export async function finalizeCampaignRunIfReady(
+  campaignRunId: string
+): Promise<CampaignFinalizationResult> {
+  //------------------------------------------------
+  // Load Campaign Run
+  //------------------------------------------------
+
+  const campaignRun =
+    await prisma.campaignRun.findUnique({
+      where: {
+        id:
+          campaignRunId,
+      },
+
+      select: {
+        id:
+          true,
+
+        campaignId:
+          true,
+
+        status:
+          true,
+
+        total:
+          true,
+
+        processed:
+          true,
+
+        completedAt:
+          true,
+      },
+    });
+
+  if (
+    !campaignRun
+  ) {
+    throw new Error(
+      `Campaign run not found: ${campaignRunId}`
+    );
+  }
+
+  //------------------------------------------------
+  // Already Final
+  //------------------------------------------------
+
+  if (
+    campaignRun.status ===
+      CampaignRunStatus.COMPLETED ||
+    campaignRun.status ===
+      CampaignRunStatus.FAILED ||
+    campaignRun.status ===
+      CampaignRunStatus.CANCELLED
+  ) {
+    return {
+      campaignId:
+        campaignRun.campaignId,
+
+      campaignRunId:
+        campaignRun.id,
+
+      finalized:
+        false,
+
+      skipped:
+        true,
+
+      reason:
+        "Campaign run is already in a terminal state",
+
+      runStatus:
+        campaignRun.status,
+
+      totalContacts:
+        campaignRun.total,
+
+      processedContacts:
+        campaignRun.processed,
+
+      settledContacts:
+        0,
+
+      unresolvedContacts:
+        0,
+
+      completedContacts:
+        0,
+
+      unsuccessfulContacts:
+        0,
+    };
+  }
+
+  //------------------------------------------------
+  // Wait Until Initial Dispatch Is Finished
+  //------------------------------------------------
+
+  if (
+    campaignRun.processed <
+    campaignRun.total
+  ) {
+    return {
+      campaignId:
+        campaignRun.campaignId,
+
+      campaignRunId:
+        campaignRun.id,
+
+      finalized:
+        false,
+
+      skipped:
+        true,
+
+      reason:
+        "Initial campaign dispatch is still running",
+
+      runStatus:
+        campaignRun.status,
+
+      totalContacts:
+        campaignRun.total,
+
+      processedContacts:
+        campaignRun.processed,
+
+      settledContacts:
+        0,
+
+      unresolvedContacts:
+        Math.max(
+          campaignRun.total -
+            campaignRun.processed,
+          0
+        ),
+
+      completedContacts:
+        0,
+
+      unsuccessfulContacts:
+        0,
+    };
+  }
+
+  //------------------------------------------------
+  // Empty Campaign
+  //------------------------------------------------
+
+  if (
+    campaignRun.total ===
+    0
+  ) {
+    return finalizeEmptyCampaignRun({
+      campaignId:
+        campaignRun.campaignId,
+
+      campaignRunId:
+        campaignRun.id,
+    });
+  }
+
+  //------------------------------------------------
+  // Load Every Call Attempt
+  //------------------------------------------------
+
+  const calls =
+    await prisma.call.findMany({
+      where: {
+        campaignRunId:
+          campaignRun.id,
+      },
+
+      select: {
+        id:
+          true,
+
+        contactId:
+          true,
+
+        status:
+          true,
+
+        attemptNumber:
+          true,
+
+        maxAttempts:
+          true,
+
+        nextRetryAt:
+          true,
+
+        createdAt:
+          true,
+      },
+
+      orderBy: [
+        {
+          contactId:
+            "asc",
+        },
+
+        {
+          attemptNumber:
+            "desc",
+        },
+
+        {
+          createdAt:
+            "desc",
+        },
+      ],
+    });
+
+  //------------------------------------------------
+  // Latest Attempt Per Contact
+  //------------------------------------------------
+
+  const latestCallByContact =
+    new Map<
+      string,
+      typeof calls[number]
+    >();
+
+  for (
+    const call of
+    calls
+  ) {
+    if (
+      !latestCallByContact.has(
+        call.contactId
+      )
+    ) {
+      latestCallByContact.set(
+        call.contactId,
+        call
+      );
+    }
+  }
+
+  //------------------------------------------------
+  // Calculate Final Outcome State
+  //------------------------------------------------
+
+  let unresolvedContacts =
+    0;
+
+  let completedContacts =
+    0;
+
+  let unsuccessfulContacts =
+    0;
+
+  for (
+    const latestCall of
+    latestCallByContact.values()
+  ) {
+    const isTerminal =
+      TERMINAL_CALL_STATUSES.includes(
+        latestCall.status
+      );
+
+    const hasPendingRetry =
+      latestCall.nextRetryAt !==
+      null;
+
+    if (
+      !isTerminal ||
+      hasPendingRetry
+    ) {
+      unresolvedContacts +=
+        1;
+
+      continue;
+    }
+
+    if (
+      latestCall.status ===
+      CallStatus.COMPLETED
+    ) {
+      completedContacts +=
+        1;
+    } else {
+      unsuccessfulContacts +=
+        1;
+    }
+  }
+
+  /*
+   * A contact whose initial dispatch failed may have
+   * no Call record. Such contacts are already counted
+   * in CampaignRun.failed.
+   */
+  const contactsWithoutCall =
+    Math.max(
+      campaignRun.processed -
+        latestCallByContact.size,
+      0
+    );
+
+  unsuccessfulContacts +=
+    contactsWithoutCall;
+
+  const settledContacts =
+    completedContacts +
+    unsuccessfulContacts;
+
+  //------------------------------------------------
+  // Do Not Finalize While Calls Or Retries Remain
+  //------------------------------------------------
+
+  if (
+    unresolvedContacts >
+    0
+  ) {
+    return {
+      campaignId:
+        campaignRun.campaignId,
+
+      campaignRunId:
+        campaignRun.id,
+
+      finalized:
+        false,
+
+      skipped:
+        true,
+
+      reason:
+        "Calls or retries are still unresolved",
+
+      runStatus:
+        CampaignRunStatus.RUNNING,
+
+      totalContacts:
+        campaignRun.total,
+
+      processedContacts:
+        campaignRun.processed,
+
+      settledContacts,
+
+      unresolvedContacts,
+
+      completedContacts,
+
+      unsuccessfulContacts,
+    };
+  }
+
+  //------------------------------------------------
+  // Ensure Every Processed Contact Is Settled
+  //------------------------------------------------
+
+  if (
+    settledContacts <
+    campaignRun.processed
+  ) {
+    return {
+      campaignId:
+        campaignRun.campaignId,
+
+      campaignRunId:
+        campaignRun.id,
+
+      finalized:
+        false,
+
+      skipped:
+        true,
+
+      reason:
+        "Not every processed contact has a settled outcome",
+
+      runStatus:
+        CampaignRunStatus.RUNNING,
+
+      totalContacts:
+        campaignRun.total,
+
+      processedContacts:
+        campaignRun.processed,
+
+      settledContacts,
+
+      unresolvedContacts:
+        Math.max(
+          campaignRun.processed -
+            settledContacts,
+          0
+        ),
+
+      completedContacts,
+
+      unsuccessfulContacts,
+    };
+  }
+
+  //------------------------------------------------
+  // Resolve Final Campaign Status
+  //------------------------------------------------
+
+  const finalRunStatus =
+    completedContacts >
+    0
+      ? CampaignRunStatus.COMPLETED
+      : CampaignRunStatus.FAILED;
+
+  const finalCampaignStatus =
+    finalRunStatus ===
+    CampaignRunStatus.COMPLETED
+      ? CampaignStatus.COMPLETED
+      : CampaignStatus.FAILED;
+
+  const completedAt =
+    new Date();
+
+  //------------------------------------------------
+  // Protect Against Old Run Finalizing New Campaign
+  //------------------------------------------------
+
+  const latestRun =
+    await prisma.campaignRun.findFirst({
+      where: {
+        campaignId:
+          campaignRun.campaignId,
+      },
+
+      orderBy: {
+        createdAt:
+          "desc",
+      },
+
+      select: {
+        id:
+          true,
+      },
+    });
+
+  const isLatestRun =
+    latestRun?.id ===
+    campaignRun.id;
+
+  //------------------------------------------------
+  // Persist Final Run State
+  //------------------------------------------------
+
+  await prisma.$transaction(
+    async transaction => {
+      await transaction.campaignRun.updateMany({
+        where: {
+          id:
+            campaignRun.id,
+
+          status:
+            CampaignRunStatus.RUNNING,
+        },
+
+        data: {
+          status:
+            finalRunStatus,
+
+          completedAt,
+        },
+      });
+
+      /*
+       * Only the latest run may change the parent
+       * campaign's current status.
+       */
+      if (
+        isLatestRun
+      ) {
+        await transaction.campaign.updateMany({
+          where: {
+            id:
+              campaignRun.campaignId,
+
+            status:
+              CampaignStatus.RUNNING,
+          },
+
+          data: {
+            status:
+              finalCampaignStatus,
+
+            completedAt,
+          },
+        });
+      }
+    }
+  );
+
+  console.info(
+    "Campaign run finalized from call outcomes",
+    {
+      campaignId:
+        campaignRun.campaignId,
+
+      campaignRunId:
+        campaignRun.id,
+
+      finalRunStatus,
+
+      finalCampaignStatus:
+        isLatestRun
+          ? finalCampaignStatus
+          : undefined,
+
+      totalContacts:
+        campaignRun.total,
+
+      processedContacts:
+        campaignRun.processed,
+
+      settledContacts,
+
+      completedContacts,
+
+      unsuccessfulContacts,
+
+      isLatestRun,
+
+      completedAt:
+        completedAt.toISOString(),
+    }
+  );
+
+  return {
+    campaignId:
+      campaignRun.campaignId,
+
+    campaignRunId:
+      campaignRun.id,
+
+    finalized:
+      true,
+
+    skipped:
+      false,
+
+    reason:
+      "Every processed contact has a settled final outcome",
+
+    runStatus:
+      finalRunStatus,
+
+    totalContacts:
+      campaignRun.total,
+
+    processedContacts:
+      campaignRun.processed,
+
+    settledContacts,
+
+    unresolvedContacts:
+      0,
+
+    completedContacts,
+
+    unsuccessfulContacts,
+  };
+}
+
+//--------------------------------------------------
+// Finalize Empty Campaign
+//--------------------------------------------------
+
+async function finalizeEmptyCampaignRun(
+  input: {
+    campaignId: string;
+
+    campaignRunId: string;
+  }
+): Promise<CampaignFinalizationResult> {
+  const completedAt =
+    new Date();
+
+  await prisma.$transaction([
+    prisma.campaignRun.updateMany({
+      where: {
+        id:
+          input.campaignRunId,
+
+        status: {
+          in: [
+            CampaignRunStatus.QUEUED,
+            CampaignRunStatus.RUNNING,
+          ],
+        },
+      },
+
+      data: {
+        status:
+          CampaignRunStatus.COMPLETED,
+
+        completedAt,
+      },
+    }),
+
+    prisma.campaign.updateMany({
+      where: {
+        id:
+          input.campaignId,
+
+        status: {
+          in: [
+            CampaignStatus.QUEUED,
+            CampaignStatus.RUNNING,
+          ],
+        },
+      },
+
+      data: {
+        status:
+          CampaignStatus.COMPLETED,
+
+        completedAt,
+      },
+    }),
+  ]);
+
+  return {
+    campaignId:
+      input.campaignId,
+
+    campaignRunId:
+      input.campaignRunId,
+
+    finalized:
+      true,
+
+    skipped:
+      false,
+
+    reason:
+      "Empty campaign run finalized",
+
+    runStatus:
+      CampaignRunStatus.COMPLETED,
+
+    totalContacts:
+      0,
+
+    processedContacts:
+      0,
+
+    settledContacts:
+      0,
+
+    unresolvedContacts:
+      0,
+
+    completedContacts:
+      0,
+
+    unsuccessfulContacts:
+      0,
+  };
+}

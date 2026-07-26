@@ -4,17 +4,65 @@ import {
   DeepgramEvents,
 } from "./deepgram.events";
 
+//--------------------------------------------------
+// Deepgram Session
+//--------------------------------------------------
+
 interface DeepgramSession {
   callId: string;
 
   socket: WebSocket;
+
+  /*
+   * Twilio may begin sending media packets before
+   * the Deepgram WebSocket reaches OPEN.
+   *
+   * These packets are preserved here and flushed
+   * in their original order once Deepgram connects.
+   */
+  pendingAudio: Buffer[];
+
+  pendingAudioBytes: number;
+
+  flushingAudio: boolean;
+
+  waitingLogWritten: boolean;
 }
+
+//--------------------------------------------------
+// Session Store
+//--------------------------------------------------
 
 const sessions =
   new Map<
     string,
     DeepgramSession
   >();
+
+//--------------------------------------------------
+// Buffer Configuration
+//--------------------------------------------------
+
+/*
+ * Twilio commonly sends approximately 160 bytes
+ * every 20 ms for 8 kHz μ-law audio.
+ *
+ * A 5-second buffer therefore needs roughly 40 KB.
+ * We use a slightly larger default to provide a
+ * safe margin while Deepgram establishes a socket.
+ */
+const DEFAULT_MAX_BUFFER_BYTES =
+  64 * 1024;
+
+const MAX_BUFFER_BYTES =
+  getPositiveIntegerEnvironmentValue(
+    "DEEPGRAM_AUDIO_BUFFER_MAX_BYTES",
+    DEFAULT_MAX_BUFFER_BYTES
+  );
+
+//--------------------------------------------------
+// Deepgram Socket
+//--------------------------------------------------
 
 export class DeepgramSocket {
   //---------------------------------------
@@ -29,13 +77,25 @@ export class DeepgramSocket {
         callId
       );
 
+    //-------------------------------------
+    // Already Connected
+    //-------------------------------------
+
     if (
       existingSession?.socket
         .readyState ===
       WebSocket.OPEN
     ) {
+      this.flushPendingAudio(
+        existingSession
+      );
+
       return;
     }
+
+    //-------------------------------------
+    // Connection Already In Progress
+    //-------------------------------------
 
     if (
       existingSession?.socket
@@ -47,18 +107,33 @@ export class DeepgramSocket {
         existingSession.socket
       );
 
+      this.flushPendingAudio(
+        existingSession
+      );
+
       return;
     }
 
+    //-------------------------------------
+    // Validate Configuration
+    //-------------------------------------
+
     const apiKey =
       process.env
-        .DEEPGRAM_API_KEY;
+        .DEEPGRAM_API_KEY
+        ?.trim();
 
-    if (!apiKey) {
+    if (
+      !apiKey
+    ) {
       throw new Error(
         "DEEPGRAM_API_KEY is missing"
       );
     }
+
+    //-------------------------------------
+    // Create Deepgram WebSocket
+    //-------------------------------------
 
     const socket =
       new WebSocket(
@@ -70,7 +145,9 @@ export class DeepgramSocket {
           "&channels=1",
           "&interim_results=true",
           "&endpointing=300",
-        ].join(""),
+        ].join(
+          ""
+        ),
         {
           headers: {
             Authorization:
@@ -79,11 +156,57 @@ export class DeepgramSocket {
         }
       );
 
+    const session:
+      DeepgramSession = {
+        callId,
+
+        socket,
+
+        pendingAudio:
+          [],
+
+        pendingAudioBytes:
+          0,
+
+        flushingAudio:
+          false,
+
+        waitingLogWritten:
+          false,
+      };
+
     sessions.set(
       callId,
-      {
-        callId,
-        socket,
+      session
+    );
+
+    //---------------------------------------
+    // Open
+    //---------------------------------------
+
+    socket.on(
+      "open",
+      () => {
+        const currentSession =
+          sessions.get(
+            callId
+          );
+
+        if (
+          !currentSession ||
+          currentSession.socket !==
+            socket
+        ) {
+          return;
+        }
+
+        console.log(
+          `✅ Deepgram Connected (${callId})`
+        );
+
+        this.flushPendingAudio(
+          currentSession
+        );
       }
     );
 
@@ -106,10 +229,14 @@ export class DeepgramSocket {
             callId,
             data
           );
-        } catch (error) {
+        } catch (
+          error
+        ) {
           console.error(
             `Deepgram message processing failed (${callId})`,
-            error
+            normalizeError(
+              error
+            )
           );
         }
       }
@@ -145,6 +272,10 @@ export class DeepgramSocket {
             ?.socket ===
           socket
         ) {
+          this.clearPendingAudio(
+            currentSession
+          );
+
           sessions.delete(
             callId
           );
@@ -163,33 +294,87 @@ export class DeepgramSocket {
       ) => {
         console.error(
           `Deepgram Error (${callId})`,
-          error
+          normalizeError(
+            error
+          )
         );
       }
     );
 
     //---------------------------------------
-    // Wait for actual connection
+    // Wait For Actual Connection
     //---------------------------------------
 
-    await this.waitUntilOpen(
-      callId,
-      socket
-    );
+    try {
+      await this.waitUntilOpen(
+        callId,
+        socket
+      );
 
-    console.log(
-      `✅ Deepgram Connected (${callId})`
-    );
+      /*
+       * The open event normally performs this flush.
+       * Calling it here as well is safe and protects
+       * against event-ordering edge cases.
+       */
+      const currentSession =
+        sessions.get(
+          callId
+        );
+
+      if (
+        currentSession?.socket ===
+        socket
+      ) {
+        this.flushPendingAudio(
+          currentSession
+        );
+      }
+    } catch (
+      error
+    ) {
+      const currentSession =
+        sessions.get(
+          callId
+        );
+
+      if (
+        currentSession?.socket ===
+        socket
+      ) {
+        this.clearPendingAudio(
+          currentSession
+        );
+
+        sessions.delete(
+          callId
+        );
+      }
+
+      if (
+        socket.readyState ===
+          WebSocket.OPEN ||
+        socket.readyState ===
+          WebSocket.CONNECTING
+      ) {
+        socket.close(
+          1011,
+          "Deepgram connection failed"
+        );
+      }
+
+      throw error;
+    }
   }
 
   //---------------------------------------
-  // Wait until open
+  // Wait Until Open
   //---------------------------------------
 
   private static waitUntilOpen(
     callId: string,
     socket: WebSocket,
-    timeoutMs = 10000
+    timeoutMs =
+      10_000
   ): Promise<void> {
     return new Promise(
       (
@@ -201,6 +386,21 @@ export class DeepgramSocket {
           WebSocket.OPEN
         ) {
           resolve();
+
+          return;
+        }
+
+        if (
+          socket.readyState ===
+            WebSocket.CLOSED ||
+          socket.readyState ===
+            WebSocket.CLOSING
+        ) {
+          reject(
+            new Error(
+              `Deepgram socket is already closing or closed for call ${callId}`
+            )
+          );
 
           return;
         }
@@ -246,7 +446,13 @@ export class DeepgramSocket {
 
             reject(
               new Error(
-                `Deepgram closed before opening for call ${callId}. Code: ${code}, reason: ${reason.toString()}`
+                [
+                  `Deepgram closed before opening for call ${callId}.`,
+                  `Code: ${code},`,
+                  `reason: ${reason.toString()}`,
+                ].join(
+                  " "
+                )
               )
             );
           };
@@ -299,12 +505,32 @@ export class DeepgramSocket {
     callId: string,
     audio: Buffer
   ): Promise<boolean> {
+    //-------------------------------------
+    // Validate Audio
+    //-------------------------------------
+
+    if (
+      !Buffer.isBuffer(
+        audio
+      ) ||
+      audio.length ===
+        0
+    ) {
+      return false;
+    }
+
+    //-------------------------------------
+    // Locate Session
+    //-------------------------------------
+
     const session =
       sessions.get(
         callId
       );
 
-    if (!session) {
+    if (
+      !session
+    ) {
       console.warn(
         `No Deepgram session for call ${callId}`
       );
@@ -312,32 +538,348 @@ export class DeepgramSocket {
       return false;
     }
 
+    //-------------------------------------
+    // Buffer While Connecting
+    //-------------------------------------
+
+    if (
+      session.socket
+        .readyState ===
+      WebSocket.CONNECTING
+    ) {
+      this.bufferAudio(
+        session,
+        audio
+      );
+
+      if (
+        !session.waitingLogWritten
+      ) {
+        session.waitingLogWritten =
+          true;
+
+        console.log(
+          "Waiting for Deepgram; buffering incoming audio",
+          {
+            callId,
+
+            bufferedBytes:
+              session.pendingAudioBytes,
+
+            maximumBufferBytes:
+              MAX_BUFFER_BYTES,
+          }
+        );
+      }
+
+      /*
+       * Returning true means the audio packet was
+       * accepted by this service, even though it has
+       * not yet been transmitted to Deepgram.
+       */
+      return true;
+    }
+
+    //-------------------------------------
+    // Reject Closed Socket
+    //-------------------------------------
+
     if (
       session.socket
         .readyState !==
       WebSocket.OPEN
     ) {
       console.warn(
-        `Deepgram socket is not open for call ${callId}`
+        "Deepgram audio rejected because socket is unavailable",
+        {
+          callId,
+
+          readyState:
+            session.socket
+              .readyState,
+        }
       );
 
       return false;
     }
 
+    //-------------------------------------
+    // Preserve Ordering
+    //-------------------------------------
+
+    /*
+     * If earlier packets are waiting, add this packet
+     * behind them and flush everything in FIFO order.
+     */
     if (
-      !Buffer.isBuffer(
-        audio
-      ) ||
-      audio.length === 0
+      session.pendingAudio
+        .length >
+        0 ||
+      session.flushingAudio
     ) {
-      return false;
+      this.bufferAudio(
+        session,
+        audio
+      );
+
+      this.flushPendingAudio(
+        session
+      );
+
+      return true;
     }
 
-    session.socket.send(
-      audio
+    //-------------------------------------
+    // Send Live Audio
+    //-------------------------------------
+
+    try {
+      session.socket.send(
+        audio
+      );
+
+      return true;
+    } catch (
+      error
+    ) {
+      console.error(
+        `Failed to send audio to Deepgram (${callId})`,
+        normalizeError(
+          error
+        )
+      );
+
+      return false;
+    }
+  }
+
+  //---------------------------------------
+  // Buffer Audio
+  //---------------------------------------
+
+  private static bufferAudio(
+    session:
+      DeepgramSession,
+    audio:
+      Buffer
+  ): void {
+    /*
+     * Copy the buffer because the caller may reuse or
+     * mutate its original Buffer after this function.
+     */
+    const packet =
+      Buffer.from(
+        audio
+      );
+
+    session.pendingAudio.push(
+      packet
     );
 
-    return true;
+    session.pendingAudioBytes +=
+      packet.length;
+
+    //-------------------------------------
+    // Enforce Bounded Memory
+    //-------------------------------------
+
+    let droppedBytes =
+      0;
+
+    let droppedPackets =
+      0;
+
+    /*
+     * Remove the oldest packets first. Recent caller
+     * audio is more valuable than very old audio if
+     * connection establishment takes too long.
+     */
+    while (
+      session.pendingAudioBytes >
+        MAX_BUFFER_BYTES &&
+      session.pendingAudio.length >
+        0
+    ) {
+      const droppedPacket =
+        session.pendingAudio.shift();
+
+      if (
+        !droppedPacket
+      ) {
+        break;
+      }
+
+      session.pendingAudioBytes -=
+        droppedPacket.length;
+
+      droppedBytes +=
+        droppedPacket.length;
+
+      droppedPackets +=
+        1;
+    }
+
+    if (
+      droppedPackets >
+      0
+    ) {
+      console.warn(
+        "Deepgram audio buffer limit reached; oldest packets dropped",
+        {
+          callId:
+            session.callId,
+
+          droppedPackets,
+
+          droppedBytes,
+
+          bufferedBytes:
+            session.pendingAudioBytes,
+
+          maximumBufferBytes:
+            MAX_BUFFER_BYTES,
+        }
+      );
+    }
+  }
+
+  //---------------------------------------
+  // Flush Pending Audio
+  //---------------------------------------
+
+  private static flushPendingAudio(
+    session:
+      DeepgramSession
+  ): void {
+    if (
+      session.flushingAudio
+    ) {
+      return;
+    }
+
+    if (
+      session.socket
+        .readyState !==
+      WebSocket.OPEN
+    ) {
+      return;
+    }
+
+    if (
+      session.pendingAudio
+        .length ===
+      0
+    ) {
+      session.waitingLogWritten =
+        false;
+
+      return;
+    }
+
+    session.flushingAudio =
+      true;
+
+    const initialPackets =
+      session.pendingAudio
+        .length;
+
+    const initialBytes =
+      session.pendingAudioBytes;
+
+    try {
+      while (
+        session.pendingAudio
+          .length >
+        0
+      ) {
+        if (
+          session.socket
+            .readyState !==
+          WebSocket.OPEN
+        ) {
+          break;
+        }
+
+        const packet =
+          session.pendingAudio.shift();
+
+        if (
+          !packet
+        ) {
+          break;
+        }
+
+        session.pendingAudioBytes =
+          Math.max(
+            session.pendingAudioBytes -
+              packet.length,
+            0
+          );
+
+        session.socket.send(
+          packet
+        );
+      }
+
+      console.log(
+        "Buffered audio flushed to Deepgram",
+        {
+          callId:
+            session.callId,
+
+          packets:
+            initialPackets,
+
+          bytes:
+            initialBytes,
+
+          remainingPackets:
+            session.pendingAudio
+              .length,
+
+          remainingBytes:
+            session.pendingAudioBytes,
+        }
+      );
+    } catch (
+      error
+    ) {
+      console.error(
+        `Failed to flush buffered Deepgram audio (${session.callId})`,
+        normalizeError(
+          error
+        )
+      );
+    } finally {
+      session.flushingAudio =
+        false;
+
+      session.waitingLogWritten =
+        session.pendingAudio
+          .length >
+        0;
+    }
+  }
+
+  //---------------------------------------
+  // Clear Pending Audio
+  //---------------------------------------
+
+  private static clearPendingAudio(
+    session:
+      DeepgramSession
+  ): void {
+    session.pendingAudio.length =
+      0;
+
+    session.pendingAudioBytes =
+      0;
+
+    session.flushingAudio =
+      false;
+
+    session.waitingLogWritten =
+      false;
   }
 
   //---------------------------------------
@@ -352,12 +894,18 @@ export class DeepgramSocket {
         callId
       );
 
-    if (!session) {
+    if (
+      !session
+    ) {
       return;
     }
 
     sessions.delete(
       callId
+    );
+
+    this.clearPendingAudio(
+      session
     );
 
     if (
@@ -393,4 +941,111 @@ export class DeepgramSocket {
       WebSocket.OPEN
     );
   }
+
+  //---------------------------------------
+  // Buffered Audio Diagnostics
+  //---------------------------------------
+
+  static getBufferedAudioStats(
+    callId: string
+  ): {
+    packets: number;
+
+    bytes: number;
+  } {
+    const session =
+      sessions.get(
+        callId
+      );
+
+    return {
+      packets:
+        session?.pendingAudio
+          .length ??
+        0,
+
+      bytes:
+        session?.pendingAudioBytes ??
+        0,
+    };
+  }
+}
+
+//--------------------------------------------------
+// Environment Integer Helper
+//--------------------------------------------------
+
+function getPositiveIntegerEnvironmentValue(
+  name: string,
+  fallback: number
+): number {
+  const rawValue =
+    process.env[
+      name
+    ]
+      ?.trim();
+
+  if (
+    !rawValue
+  ) {
+    return fallback;
+  }
+
+  const parsedValue =
+    Number(
+      rawValue
+    );
+
+  if (
+    !Number.isInteger(
+      parsedValue
+    ) ||
+    parsedValue <=
+      0
+  ) {
+    console.warn(
+      `Invalid ${name}; using default`,
+      {
+        configuredValue:
+          rawValue,
+
+        fallback,
+      }
+    );
+
+    return fallback;
+  }
+
+  return parsedValue;
+}
+
+//--------------------------------------------------
+// Normalize Error
+//--------------------------------------------------
+
+function normalizeError(
+  error: unknown
+) {
+  if (
+    error instanceof
+    Error
+  ) {
+    return {
+      name:
+        error.name,
+
+      message:
+        error.message,
+
+      stack:
+        error.stack,
+    };
+  }
+
+  return {
+    message:
+      String(
+        error
+      ),
+  };
 }

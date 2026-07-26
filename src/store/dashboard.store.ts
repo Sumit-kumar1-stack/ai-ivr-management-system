@@ -1,14 +1,18 @@
 "use client";
 
-import { create } from "zustand";
+import {
+  create,
+} from "zustand";
 
 export interface TimelineEvent {
+  id?: string;
+  callId?: string;
   event: string;
   payload: unknown;
   timestamp: number;
 }
 
-interface DashboardMetrics {
+export interface DashboardMetrics {
   activeCalls: number;
   queuedCalls: number;
   thinkingCalls: number;
@@ -24,30 +28,51 @@ export interface ActiveCall {
   startedAt: number;
   language?: string;
   duration?: number;
+  customerName?: string;
+  campaignName?: string;
+  providerCallId?:
+    | string
+    | null;
 }
 
 export interface ConversationMessage {
   id: string;
-  role: "user" | "assistant";
+  role:
+    | "user"
+    | "assistant";
   content: string;
 }
 
 export interface LiveConversation {
   callId: string;
-  messages: ConversationMessage[];
+  messages:
+    ConversationMessage[];
 }
 
 interface DashboardState {
-  metrics: DashboardMetrics;
+  metrics:
+    DashboardMetrics;
 
-  timeline: TimelineEvent[];
+  timeline:
+    TimelineEvent[];
 
-  activeCalls: ActiveCall[];
+  activeCalls:
+    ActiveCall[];
 
-  conversations: Record<string, LiveConversation>;
+  conversations:
+    Record<
+      string,
+      LiveConversation
+    >;
 
   setMetrics: (
-    metrics: Partial<DashboardMetrics>
+    metrics:
+      Partial<DashboardMetrics>
+  ) => void;
+
+  setTimeline: (
+    events:
+      TimelineEvent[]
   ) => void;
 
   addEvent: (
@@ -55,14 +80,24 @@ interface DashboardState {
     payload: unknown
   ) => void;
 
-  clearTimeline: () => void;
+  clearTimeline:
+    () => void;
 
   setActiveCalls: (
-    calls: ActiveCall[]
+    calls:
+      ActiveCall[]
   ) => void;
 
   upsertActiveCall: (
-    call: ActiveCall
+    call:
+      ActiveCall
+  ) => void;
+
+  updateActiveCallStatus: (
+    id: string,
+    status: string,
+    fallback?:
+      Partial<ActiveCall>
   ) => void;
 
   removeActiveCall: (
@@ -71,118 +106,337 @@ interface DashboardState {
 
   appendMessage: (
     callId: string,
-    role: "user" | "assistant",
+    role:
+      | "user"
+      | "assistant",
     content: string
   ) => void;
 }
 
-export const useDashboardStore = create<DashboardState>((set) => ({
-  metrics: {
-    activeCalls: 0,
-    queuedCalls: 0,
-    thinkingCalls: 0,
-    speakingCalls: 0,
-    completedCalls: 0,
-    failedCalls: 0,
-  },
+const initialMetrics:
+  DashboardMetrics = {
+    activeCalls:
+      0,
 
-  timeline: [],
+    queuedCalls:
+      0,
 
-  activeCalls: [],
+    thinkingCalls:
+      0,
 
-  conversations: {},
+    speakingCalls:
+      0,
 
-  setMetrics: (metrics) =>
-    set((state) => ({
+    completedCalls:
+      0,
+
+    failedCalls:
+      0,
+  };
+
+export const useDashboardStore =
+  create<DashboardState>(
+    (
+      set
+    ) => ({
       metrics: {
-        ...state.metrics,
-        ...metrics,
+        ...initialMetrics,
       },
-    })),
 
-  addEvent: (event, payload) =>
-    set((state) => ({
-      timeline: [
-        {
-          event,
-          payload,
-          timestamp: Date.now(),
-        },
-        ...state.timeline,
-      ].slice(0, 100),
-    })),
+      timeline:
+        [],
 
-  clearTimeline: () =>
-    set({
-      timeline: [],
-    }),
+      activeCalls:
+        [],
 
-  setActiveCalls: (calls) =>
-    set({
-      activeCalls: calls,
-    }),
+      conversations:
+        {},
 
-  upsertActiveCall: (call) =>
-    set((state) => {
-      const index = state.activeCalls.findIndex(
-        (c) => c.id === call.id
-      );
-
-      if (index === -1) {
-        return {
-          activeCalls: [
-            ...state.activeCalls,
-            call,
-          ],
-        };
-      }
-
-      const updated = [...state.activeCalls];
-
-      updated[index] = call;
-
-      return {
-        activeCalls: updated,
-      };
-    }),
-
-  removeActiveCall: (id) =>
-    set((state) => ({
-      activeCalls: state.activeCalls.filter(
-        (c) => c.id !== id
-      ),
-    })),
-
-  appendMessage: (
-    callId,
-    role,
-    content
-  ) =>
-    set((state) => {
-      const conversation =
-        state.conversations[callId] ?? {
-          callId,
-          messages: [],
-        };
-
-      return {
-        conversations: {
-          ...state.conversations,
-
-          [callId]: {
-            ...conversation,
-
-            messages: [
-              ...conversation.messages,
-
-              {
-                id: crypto.randomUUID(),
-                role,
-                content,
+      setMetrics:
+        (
+          metrics
+        ) =>
+          set(
+            (
+              state
+            ) => ({
+              metrics: {
+                ...state.metrics,
+                ...metrics,
               },
-            ],
-          },
-        },
-      };
-    }),
-}));
+            })
+          ),
+
+      setTimeline:
+        (
+          events
+        ) =>
+          set({
+            timeline:
+              events.slice(
+                0,
+                100
+              ),
+          }),
+
+      addEvent:
+        (
+          event,
+          payload
+        ) =>
+          set(
+            (
+              state
+            ) => ({
+              timeline: [
+                {
+                  event,
+                  payload,
+                  timestamp:
+                    Date.now(),
+                },
+                ...state.timeline,
+              ].slice(
+                0,
+                100
+              ),
+            })
+          ),
+
+      clearTimeline:
+        () =>
+          set({
+            timeline:
+              [],
+          }),
+
+      setActiveCalls:
+        (
+          calls
+        ) =>
+          set({
+            activeCalls:
+              calls,
+          }),
+
+      upsertActiveCall:
+        (
+          call
+        ) =>
+          set(
+            (
+              state
+            ) => {
+              const existing =
+                state.activeCalls.find(
+                  (
+                    currentCall
+                  ) =>
+                    currentCall.id ===
+                    call.id
+                );
+
+              if (
+                !existing
+              ) {
+                return {
+                  activeCalls: [
+                    call,
+                    ...state.activeCalls,
+                  ],
+                };
+              }
+
+              return {
+                activeCalls:
+                  state.activeCalls.map(
+                    (
+                      currentCall
+                    ) =>
+                      currentCall.id ===
+                      call.id
+                        ? {
+                            ...currentCall,
+                            ...call,
+
+                            startedAt:
+                              currentCall.startedAt ??
+                              call.startedAt,
+                          }
+                        : currentCall
+                  ),
+              };
+            }
+          ),
+
+      updateActiveCallStatus:
+        (
+          id,
+          status,
+          fallback
+        ) =>
+          set(
+            (
+              state
+            ) => {
+              const existing =
+                state.activeCalls.find(
+                  (
+                    call
+                  ) =>
+                    call.id ===
+                    id
+                );
+
+              if (
+                existing
+              ) {
+                return {
+                  activeCalls:
+                    state.activeCalls.map(
+                      (
+                        call
+                      ) =>
+                        call.id ===
+                        id
+                          ? {
+                              ...call,
+                              ...fallback,
+                              status,
+                            }
+                          : call
+                    ),
+                };
+              }
+
+              return {
+                activeCalls: [
+                  {
+                    id,
+
+                    phone:
+                      fallback
+                        ?.phone ??
+                      "Unknown",
+
+                    status,
+
+                    startedAt:
+                      fallback
+                        ?.startedAt ??
+                      Date.now(),
+
+                    language:
+                      fallback
+                        ?.language,
+
+                    duration:
+                      fallback
+                        ?.duration,
+
+                    customerName:
+                      fallback
+                        ?.customerName,
+
+                    campaignName:
+                      fallback
+                        ?.campaignName,
+
+                    providerCallId:
+                      fallback
+                        ?.providerCallId,
+                  },
+                  ...state.activeCalls,
+                ],
+              };
+            }
+          ),
+
+      removeActiveCall:
+        (
+          id
+        ) =>
+          set(
+            (
+              state
+            ) => ({
+              activeCalls:
+                state.activeCalls.filter(
+                  (
+                    call
+                  ) =>
+                    call.id !==
+                    id
+                ),
+            })
+          ),
+
+      appendMessage:
+        (
+          callId,
+          role,
+          content
+        ) =>
+          set(
+            (
+              state
+            ) => {
+              if (
+                !content.trim()
+              ) {
+                return state;
+              }
+
+              const conversation =
+                state.conversations[
+                  callId
+                ] ?? {
+                  callId,
+                  messages:
+                    [],
+                };
+
+              const previousMessage =
+                conversation.messages[
+                  conversation
+                    .messages
+                    .length -
+                    1
+                ];
+
+              if (
+                previousMessage &&
+                previousMessage.role ===
+                  role &&
+                previousMessage.content ===
+                  content
+              ) {
+                return state;
+              }
+
+              return {
+                conversations: {
+                  ...state.conversations,
+
+                  [callId]: {
+                    ...conversation,
+
+                    messages: [
+                      ...conversation.messages,
+
+                      {
+                        id:
+                          crypto.randomUUID(),
+
+                        role,
+
+                        content,
+                      },
+                    ],
+                  },
+                },
+              };
+            }
+          ),
+    })
+  );

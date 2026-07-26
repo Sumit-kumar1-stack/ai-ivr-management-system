@@ -8,6 +8,7 @@ import {
 
 import {
   CallRequest,
+  CallResponse,
   ProviderCallRequest,
 } from "./types";
 
@@ -28,18 +29,19 @@ import {
   createCallLogger,
 } from "@/lib/logger";
 
+//--------------------------------------------------
+// Start Outbound Call
+//--------------------------------------------------
 
 export async function startCall(
   request: CallRequest
-) {
-
+): Promise<CallResponse> {
   //----------------------------------------
   // Get Telephony Provider
   //----------------------------------------
 
   const provider =
     ProviderFactory.getProvider();
-
 
   //----------------------------------------
   // Normalize Phone Values
@@ -48,10 +50,8 @@ export async function startCall(
   const normalizedContactPhone =
     request.contactPhone.trim();
 
-
   const normalizedProviderDestination =
     request.to.trim();
-
 
   if (
     !normalizedContactPhone
@@ -61,7 +61,6 @@ export async function startCall(
     );
   }
 
-
   if (
     !normalizedProviderDestination
   ) {
@@ -70,6 +69,50 @@ export async function startCall(
     );
   }
 
+  //----------------------------------------
+  // Resolve Attempt Metadata
+  //----------------------------------------
+
+  const attemptNumber =
+    request.attemptNumber ??
+    1;
+
+  const maxAttempts =
+    request.maxAttempts ??
+    3;
+
+  if (
+    !Number.isInteger(
+      attemptNumber
+    ) ||
+    attemptNumber <
+      1
+  ) {
+    throw new Error(
+      "Call attempt number must be a positive integer"
+    );
+  }
+
+  if (
+    !Number.isInteger(
+      maxAttempts
+    ) ||
+    maxAttempts <
+      1
+  ) {
+    throw new Error(
+      "Maximum call attempts must be a positive integer"
+    );
+  }
+
+  if (
+    attemptNumber >
+    maxAttempts
+  ) {
+    throw new Error(
+      "Call attempt number cannot exceed maximum attempts"
+    );
+  }
 
   //----------------------------------------
   // Atomically Create Idempotent Call
@@ -78,48 +121,56 @@ export async function startCall(
   const {
     call,
     created,
-  } = await createCall({
-    campaignId:
-      request.campaignId,
+  } =
+    await createCall({
+      campaignId:
+        request.campaignId,
 
-    campaignRunId:
-      request.campaignRunId,
+      campaignRunId:
+        request.campaignRunId,
 
-    contactId:
-      request.contactId,
+      contactId:
+        request.contactId,
 
-    contactPhoneSnapshot:
-      normalizedContactPhone,
+      contactPhoneSnapshot:
+        normalizedContactPhone,
 
-    providerDestination:
-      normalizedProviderDestination,
+      providerDestination:
+        normalizedProviderDestination,
 
-    usedDevelopmentOverride:
-      request.usedDevelopmentOverride ??
-      false,
+      usedDevelopmentOverride:
+        request.usedDevelopmentOverride ??
+        false,
 
-    destinationOverrideSource:
-      request.destinationOverrideSource,
+      destinationOverrideSource:
+        request.destinationOverrideSource,
 
-    language:
-      request.language,
-  });
+      language:
+        request.language,
 
+      attemptNumber,
+
+      maxAttempts,
+
+      retryOfCallId:
+        request.retryOfCallId,
+
+      retryReason:
+        request.retryReason,
+    });
 
   const log =
     createCallLogger(
       call.id
     );
 
-
   //----------------------------------------
-  // Existing Campaign Call
+  // Existing Campaign Call Attempt
   //----------------------------------------
 
   if (
     !created
   ) {
-
     log.warn(
       {
         campaignId:
@@ -130,6 +181,18 @@ export async function startCall(
 
         contactId:
           request.contactId,
+
+        attemptNumber:
+          call.attemptNumber,
+
+        maxAttempts:
+          call.maxAttempts,
+
+        retryOfCallId:
+          call.retryOfCallId,
+
+        retryReason:
+          call.retryReason,
 
         contactPhoneSnapshot:
           call.contactPhoneSnapshot,
@@ -146,13 +209,12 @@ export async function startCall(
         status:
           call.status,
       },
-      "Duplicate campaign call prevented"
+      "Duplicate campaign call attempt prevented"
     );
 
-
     /*
-     * Never contact the provider again when
-     * the campaign-run/contact call already exists.
+     * Never contact the provider again when the same
+     * campaign-run/contact/attempt already exists.
      */
     return {
       callId:
@@ -167,10 +229,11 @@ export async function startCall(
 
       duplicate:
         true,
+
+      attemptNumber:
+        call.attemptNumber,
     };
-
   }
-
 
   //----------------------------------------
   // Initialization Log
@@ -186,6 +249,18 @@ export async function startCall(
 
       contactId:
         request.contactId,
+
+      attemptNumber:
+        call.attemptNumber,
+
+      maxAttempts:
+        call.maxAttempts,
+
+      retryOfCallId:
+        call.retryOfCallId,
+
+      retryReason:
+        call.retryReason,
 
       contactPhoneSnapshot:
         normalizedContactPhone,
@@ -212,9 +287,7 @@ export async function startCall(
     "Outbound call initialization started"
   );
 
-
   try {
-
     //----------------------------------------
     // Create Conversation Record
     //----------------------------------------
@@ -223,11 +296,13 @@ export async function startCall(
       call.id
     );
 
-
     log.info(
+      {
+        attemptNumber:
+          call.attemptNumber,
+      },
       "Conversation record created"
     );
-
 
     //----------------------------------------
     // Build Provider Request
@@ -243,10 +318,23 @@ export async function startCall(
         to:
           normalizedProviderDestination,
 
+        attemptNumber:
+          call.attemptNumber,
+
+        maxAttempts:
+          call.maxAttempts,
+
+        retryOfCallId:
+          call.retryOfCallId ??
+          undefined,
+
+        retryReason:
+          call.retryReason ??
+          undefined,
+
         callId:
           call.id,
       };
-
 
     log.info(
       {
@@ -255,10 +343,12 @@ export async function startCall(
 
         destination:
           normalizedProviderDestination,
+
+        attemptNumber:
+          call.attemptNumber,
       },
       "Sending outbound call request to provider"
     );
-
 
     //----------------------------------------
     // Request Outbound Call
@@ -268,7 +358,6 @@ export async function startCall(
       await provider.makeCall(
         providerRequest
       );
-
 
     log.info(
       {
@@ -280,10 +369,12 @@ export async function startCall(
 
         providerDestination:
           normalizedProviderDestination,
+
+        attemptNumber:
+          call.attemptNumber,
       },
       "Provider accepted outbound call request"
     );
-
 
     //----------------------------------------
     // Map Provider Status
@@ -294,10 +385,8 @@ export async function startCall(
         result.status
       );
 
-
     const acceptedAt =
       new Date();
-
 
     //----------------------------------------
     // Save Provider Details
@@ -312,8 +401,8 @@ export async function startCall(
         status,
 
         /*
-         * Twilio accepting the REST request
-         * does not mean that the call was answered.
+         * Twilio accepting the REST request does not
+         * mean the call was answered.
          */
         queuedAt:
           status ===
@@ -328,13 +417,11 @@ export async function startCall(
             : undefined,
 
         /*
-         * Do not set answeredAt here.
-         * It must come from a verified provider
-         * status callback.
+         * Do not set answeredAt here. It must come
+         * from a verified provider status callback.
          */
       }
     );
-
 
     log.info(
       {
@@ -350,13 +437,21 @@ export async function startCall(
             ? acceptedAt
             : undefined,
 
+        ringingAt:
+          status ===
+          CallStatus.RINGING
+            ? acceptedAt
+            : undefined,
+
         usedDevelopmentOverride:
           request.usedDevelopmentOverride ??
           false,
+
+        attemptNumber:
+          call.attemptNumber,
       },
       "Outbound call request accepted by provider"
     );
-
 
     return {
       callId:
@@ -369,18 +464,19 @@ export async function startCall(
 
       duplicate:
         false,
+
+      attemptNumber:
+        call.attemptNumber,
     };
-
   } catch (error) {
-
     const failedAt =
       new Date();
-
 
     log.error(
       {
         error:
-          error instanceof Error
+          error instanceof
+          Error
             ? {
                 name:
                   error.name,
@@ -402,18 +498,25 @@ export async function startCall(
           request.usedDevelopmentOverride ??
           false,
 
+        attemptNumber:
+          call.attemptNumber,
+
+        maxAttempts:
+          call.maxAttempts,
+
+        retryOfCallId:
+          call.retryOfCallId,
+
         failedAt,
       },
       "Outbound call initialization failed"
     );
-
 
     //----------------------------------------
     // Mark Internal Call As Failed
     //----------------------------------------
 
     try {
-
       await updateCall(
         call.id,
         {
@@ -424,23 +527,29 @@ export async function startCall(
 
           completedAt:
             failedAt,
+
+          endedAt:
+            failedAt,
         }
       );
-
 
       log.info(
         {
           failedAt,
+
+          attemptNumber:
+            call.attemptNumber,
         },
         "Call record marked as failed"
       );
-
-    } catch (updateError) {
-
+    } catch (
+      updateError
+    ) {
       log.error(
         {
           error:
-            updateError instanceof Error
+            updateError instanceof
+            Error
               ? {
                   name:
                     updateError.name,
@@ -454,15 +563,14 @@ export async function startCall(
               : String(
                   updateError
                 ),
+
+          attemptNumber:
+            call.attemptNumber,
         },
         "Failed to mark call record as failed"
       );
-
     }
 
-
     throw error;
-
   }
-
 }

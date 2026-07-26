@@ -1,68 +1,128 @@
 "use client";
 
-import { Card } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 
-export default function ContactStats(){
+export interface ContactStatistics {
+  total: number;
+  pending: number;
+  called: number;
+  failed: number;
+}
 
-return(
+interface ContactStatsProps {
+  statistics: ContactStatistics;
+  loading?: boolean;
+}
 
-<div
-className="grid grid-cols-4 gap-5">
+function StatCard({
+  title,
+  value,
+  loading,
+}: {
+  title: string;
+  value: number;
+  loading: boolean;
+}) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle
+          className="
+            text-sm
+            font-medium
+            text-muted-foreground
+          "
+        >
+          {title}
+        </CardTitle>
+      </CardHeader>
 
-<Card
-className="p-5">
+      <CardContent>
+        {loading ? (
+          <div
+            className="
+              h-8
+              w-20
+              animate-pulse
+              rounded-md
+              bg-muted
+            "
+          />
+        ) : (
+          <p
+            className="
+              text-3xl
+              font-bold
+              tracking-tight
+            "
+          >
+            {value.toLocaleString(
+              "en-IN"
+            )}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
-<h3>Total</h3>
+export default function ContactStats({
+  statistics,
+  loading = false,
+}: ContactStatsProps) {
+  return (
+    <div
+      className="
+        grid
+        gap-5
+        sm:grid-cols-2
+        xl:grid-cols-4
+      "
+    >
+      <StatCard
+        title="Total Contacts"
+        value={
+          statistics.total
+        }
+        loading={
+          loading
+        }
+      />
 
-<h1>
+      <StatCard
+        title="Pending"
+        value={
+          statistics.pending
+        }
+        loading={
+          loading
+        }
+      />
 
-520
+      <StatCard
+        title="Called"
+        value={
+          statistics.called
+        }
+        loading={
+          loading
+        }
+      />
 
-</h1>
-
-</Card>
-
-<Card
-className="p-5">
-
-<h3>Pending</h3>
-
-<h1>
-
-240
-
-</h1>
-
-</Card>
-
-<Card
-className="p-5">
-
-<h3>Called</h3>
-
-<h1>
-
-200
-
-</h1>
-
-</Card>
-
-<Card
-className="p-5">
-
-<h3>Failed</h3>
-
-<h1>
-
-80
-
-</h1>
-
-</Card>
-
-</div>
-
-);
-
+      <StatCard
+        title="Failed"
+        value={
+          statistics.failed
+        }
+        loading={
+          loading
+        }
+      />
+    </div>
+  );
 }

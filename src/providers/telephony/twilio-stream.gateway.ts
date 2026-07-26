@@ -14,6 +14,10 @@ import {
   STTProviderFactory,
 } from "@/services/stt/providers/provider.factory";
 
+import {
+  ConversationStateService,
+} from "@/services/conversations/conversation-state.service";
+
 type TwilioStartEvent = {
   event: "start";
 
@@ -102,13 +106,11 @@ export class TwilioStreamGateway {
 
       case "start": {
         const streamSid =
-          event.start
-            .streamSid ||
+          event.start.streamSid ||
           event.streamSid;
 
         const twilioCallSid =
-          event.start
-            .callSid;
+          event.start.callSid;
 
         const internalCallId =
           event.start
@@ -166,7 +168,7 @@ export class TwilioStreamGateway {
         );
 
         //--------------------------------------
-        // Register socket before STT/playback
+        // Register Twilio audio session
         //--------------------------------------
 
         AudioSessionService.create({
@@ -197,6 +199,19 @@ export class TwilioStreamGateway {
           console.log(
             `✅ STT connected (${callId})`
           );
+
+          //--------------------------------------
+          // Call is ready for speech
+          //--------------------------------------
+
+          ConversationStateService.setState(
+            callId,
+            "LISTENING"
+          );
+
+          console.log(
+            `📍 Call initialized in LISTENING state (${callId})`
+          );
         } catch (error) {
           log.error(
             {
@@ -213,62 +228,66 @@ export class TwilioStreamGateway {
             1011,
             "STT connection failed"
           );
+
+          return;
         }
 
         break;
       }
 
       //--------------------------------------
-// Incoming Twilio audio
-//--------------------------------------
+      // Incoming Twilio audio
+      //--------------------------------------
 
-case "media": {
-  const session =
-    AudioSessionService.get(
-      event.streamSid
-    );
+      case "media": {
+        const session =
+          AudioSessionService.get(
+            event.streamSid
+          );
 
-  if (!session) {
-    console.warn(
-      `Twilio audio received before session registration (${event.streamSid})`
-    );
+        if (!session) {
+          console.warn(
+            `Twilio audio received before session registration (${event.streamSid})`
+          );
 
-    return;
-  }
+          return;
+        }
 
-  const payload =
-    event.media?.payload;
+        const payload =
+          event.media?.payload;
 
-  if (!payload) {
-    return;
-  }
+        if (!payload) {
+          return;
+        }
 
-  const audio =
-    Buffer.from(
-      payload,
-      "base64"
-    );
+        const audio =
+          Buffer.from(
+            payload,
+            "base64"
+          );
 
-  if (audio.length === 0) {
-    return;
-  }
+        if (
+          audio.length === 0
+        ) {
+          return;
+        }
 
-  try {
-    await STTProviderFactory
-      .get()
-      .sendAudio(
-        session.callId,
-        audio
-      );
-  } catch (error) {
-    console.error(
-      `Failed to send Twilio audio to STT (${session.callId})`,
-      error
-    );
-  }
+        try {
+          await STTProviderFactory
+            .get()
+            .sendAudio(
+              session.callId,
+              audio
+            );
+        } catch (error) {
+          console.error(
+            `Failed to send Twilio audio to STT (${session.callId})`,
+            error
+          );
+        }
 
-  break;
-}
+        break;
+      }
 
       //--------------------------------------
       // Stop
@@ -300,6 +319,11 @@ case "media": {
             error
           );
         } finally {
+          ConversationStateService.setState(
+            session.callId,
+            "ENDED"
+          );
+
           AudioSessionService.close(
             event.streamSid
           );

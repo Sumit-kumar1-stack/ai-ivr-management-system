@@ -1,7 +1,15 @@
-import { prisma } from "@/lib/prisma";
+import {
+  prisma,
+} from "@/lib/prisma";
 
 export const ConversationRepository = {
-  create(callId: string) {
+  //------------------------------------------------
+  // Create conversation
+  //------------------------------------------------
+
+  create(
+    callId: string
+  ) {
     return prisma.conversation.create({
       data: {
         callId,
@@ -9,31 +17,82 @@ export const ConversationRepository = {
     });
   },
 
-  findByCall(callId: string) {
+  //------------------------------------------------
+  // Get conversation for live AI context
+  //
+  // Only the latest 10 messages are required
+  // during an active conversation.
+  //------------------------------------------------
+
+  findByCall(
+    callId: string
+  ) {
     return prisma.conversation.findUnique({
       where: {
         callId,
       },
+
       include: {
         messages: {
           orderBy: {
-            createdAt: "asc",
+            createdAt:
+              "asc",
           },
-          take: -10,
+
+          take:
+            -10,
         },
       },
     });
   },
 
-  addMessage(data: {
-    conversationId: string;
-    role: "SYSTEM" | "USER" | "ASSISTANT";
-    content: string;
-  }) {
+  //------------------------------------------------
+  // Get complete conversation for post-call work
+  //------------------------------------------------
+
+  findCompleteByCall(
+    callId: string
+  ) {
+    return prisma.conversation.findUnique({
+      where: {
+        callId,
+      },
+
+      include: {
+        messages: {
+          orderBy: {
+            createdAt:
+              "asc",
+          },
+        },
+      },
+    });
+  },
+
+  //------------------------------------------------
+  // Add conversation message
+  //------------------------------------------------
+
+  addMessage(
+    data: {
+      conversationId: string;
+
+      role:
+        | "SYSTEM"
+        | "USER"
+        | "ASSISTANT";
+
+      content: string;
+    }
+  ) {
     return prisma.conversationMessage.create({
       data,
     });
   },
+
+  //------------------------------------------------
+  // Update summary only
+  //------------------------------------------------
 
   updateSummary(
     id: string,
@@ -43,34 +102,57 @@ export const ConversationRepository = {
       where: {
         id,
       },
+
       data: {
         summary,
       },
     });
   },
 
+  //------------------------------------------------
+  // Update complete analysis
+  //------------------------------------------------
+
   updateAnalysis(
     conversationId: string,
     analysis: {
       summary: string;
+
       intent: string;
+
       sentiment: string;
+
       priority: string;
+
       followUp: boolean;
+
       actionItems: string[];
     }
   ) {
     return prisma.conversation.update({
       where: {
-        id: conversationId,
+        id:
+          conversationId,
       },
+
       data: {
-        summary: analysis.summary,
-        intent: analysis.intent,
-        sentiment: analysis.sentiment,
-        priority: analysis.priority,
-        followUp: analysis.followUp,
-        actionItems: analysis.actionItems,
+        summary:
+          analysis.summary,
+
+        intent:
+          analysis.intent,
+
+        sentiment:
+          analysis.sentiment,
+
+        priority:
+          analysis.priority,
+
+        followUp:
+          analysis.followUp,
+
+        actionItems:
+          analysis.actionItems,
       },
     });
   },

@@ -1,23 +1,32 @@
-import { NextRequest, NextResponse } from "next/server";
+import {
+  NextResponse,
+} from "next/server";
 
-import { updateCallStatus } from "@/services/calls/call.service";
-import { CallWebhookSchema } from "@/lib/validators/call-webhook";
+//--------------------------------------------------
+// Disabled Legacy Webhook
+//--------------------------------------------------
 
-export async function POST(
-  req: NextRequest
-) {
-  const body = await req.json();
+export async function POST():
+  Promise<NextResponse> {
+  console.warn(
+    "Rejected request to disabled legacy webhook",
+    {
+      route:
+        "/api/calls/webhook",
+    }
+  );
 
-  // Validate request payload
-  const payload = CallWebhookSchema.parse(body);
+  return NextResponse.json(
+    {
+      success:
+        false,
 
-  await updateCallStatus({
-    providerCallId: payload.providerCallId,
-    status: payload.status,
-    duration: payload.duration,
-  });
-
-  return NextResponse.json({
-    success: true,
-  });
+      message:
+        "This webhook endpoint is disabled",
+    },
+    {
+      status:
+        410,
+    }
+  );
 }

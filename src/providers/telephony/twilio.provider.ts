@@ -19,10 +19,8 @@ import {
   CallResponse,
 } from "@/services/telephony/types";
 
-
 export class TwilioProvider
   extends BaseTelephonyProvider {
-
 
   //--------------------------------------------------
   // Normalize Phone Number
@@ -31,62 +29,66 @@ export class TwilioProvider
   private formatPhoneNumber(
     phone: string
   ): string {
-
     const cleaned =
       phone
         .trim()
-        .replace(/\s+/g, "")
-        .replace(/-/g, "")
-        .replace(/\(/g, "")
-        .replace(/\)/g, "");
-
+        .replace(
+          /\s+/g,
+          ""
+        )
+        .replace(
+          /-/g,
+          ""
+        )
+        .replace(
+          /\(/g,
+          ""
+        )
+        .replace(
+          /\)/g,
+          ""
+        );
 
     //------------------------------------------------
     // Already E.164 format
     //------------------------------------------------
 
     if (
-      cleaned.startsWith("+")
+      cleaned.startsWith(
+        "+"
+      )
     ) {
-
       return cleaned;
-
     }
-
 
     //------------------------------------------------
     // Indian 10-digit number
     //------------------------------------------------
 
     if (
-      /^\d{10}$/.test(cleaned)
+      /^\d{10}$/.test(
+        cleaned
+      )
     ) {
-
       return `+91${cleaned}`;
-
     }
-
 
     //------------------------------------------------
     // Indian number beginning with 91
     //------------------------------------------------
 
     if (
-      /^91\d{10}$/.test(cleaned)
+      /^91\d{10}$/.test(
+        cleaned
+      )
     ) {
-
       return `+${cleaned}`;
-
     }
-
 
     throw new Error(
       `Invalid phone number format: ${phone}`
     );
-
   }
-
-
 
   //--------------------------------------------------
   // Make Outbound Call
@@ -95,17 +97,12 @@ export class TwilioProvider
   async makeCall(
     request: ProviderCallRequest
   ): Promise<CallResponse> {
-
-
     const log =
       createCallLogger(
         request.callId
       );
 
-
     try {
-
-
       //------------------------------------------------
       // Validate request
       //------------------------------------------------
@@ -113,25 +110,18 @@ export class TwilioProvider
       if (
         !request.callId
       ) {
-
         throw new Error(
           "callId is required to create a Twilio call"
         );
-
       }
-
 
       if (
         !request.to
       ) {
-
         throw new Error(
           "Destination phone number is required"
         );
-
       }
-
-
 
       //------------------------------------------------
       // Format destination number
@@ -141,8 +131,6 @@ export class TwilioProvider
         this.formatPhoneNumber(
           request.to
         );
-
-
 
       //------------------------------------------------
       // Build Twilio webhook URLs
@@ -155,7 +143,6 @@ export class TwilioProvider
           request.callId
         )}`;
 
-
       const statusCallbackUrl =
         `${twilioConfig.appUrl}` +
         `/api/twilio/status` +
@@ -163,7 +150,12 @@ export class TwilioProvider
           request.callId
         )}`;
 
-
+      const recordingCallbackUrl =
+        `${twilioConfig.appUrl}` +
+        `/api/twilio/recording` +
+        `?callId=${encodeURIComponent(
+          request.callId
+        )}`;
 
       log.info(
         {
@@ -178,12 +170,12 @@ export class TwilioProvider
           voiceUrl,
 
           statusCallbackUrl,
+
+          recordingCallbackUrl,
         },
 
         "Creating Twilio outbound call"
       );
-
-
 
       //------------------------------------------------
       // Create Twilio call
@@ -191,7 +183,6 @@ export class TwilioProvider
 
       const call =
         await twilioClient.calls.create({
-
           to:
             formattedNumber,
 
@@ -203,6 +194,10 @@ export class TwilioProvider
 
           method:
             "POST",
+
+          //------------------------------------------
+          // Call lifecycle callback
+          //------------------------------------------
 
           statusCallback:
             statusCallbackUrl,
@@ -217,9 +212,30 @@ export class TwilioProvider
             "completed",
           ],
 
+          //------------------------------------------
+          // Call recording
+          //------------------------------------------
+
+          record:
+            true,
+
+          recordingChannels:
+            "dual",
+
+          trim:
+            "do-not-trim",
+
+          recordingStatusCallback:
+            recordingCallbackUrl,
+
+          recordingStatusCallbackMethod:
+            "POST",
+
+          recordingStatusCallbackEvent: [
+            "completed",
+            "absent",
+          ],
         });
-
-
 
       log.info(
         {
@@ -234,33 +250,31 @@ export class TwilioProvider
 
           to:
             formattedNumber,
+
+          recordingEnabled:
+            true,
+
+          recordingChannels:
+            "dual",
         },
 
         "Twilio call created successfully"
       );
-
-
 
       //------------------------------------------------
       // Return provider response
       //------------------------------------------------
 
       return {
-
         callId:
           call.sid,
 
         status:
           call.status,
-
       };
-
-
-    }
-
-    catch (error) {
-
-
+    } catch (
+      error
+    ) {
       log.error(
         {
           callId:
@@ -272,20 +286,17 @@ export class TwilioProvider
           error:
             error instanceof Error
               ? error.message
-              : String(error),
+              : String(
+                  error
+                ),
         },
 
         "Failed to create Twilio outbound call"
       );
 
-
       throw error;
-
     }
-
   }
-
-
 
   //--------------------------------------------------
   // End Call
@@ -294,27 +305,19 @@ export class TwilioProvider
   async endCall(
     callId: string
   ): Promise<void> {
-
-
     const log =
       createCallLogger(
         callId
       );
 
-
     try {
-
-
       if (
         !callId
       ) {
-
         throw new Error(
           "Twilio provider call ID is required"
         );
-
       }
-
 
       log.info(
         {
@@ -325,18 +328,14 @@ export class TwilioProvider
         "Ending Twilio call"
       );
 
-
-
       await twilioClient
-        .calls(callId)
+        .calls(
+          callId
+        )
         .update({
-
           status:
             "completed",
-
         });
-
-
 
       log.info(
         {
@@ -346,13 +345,9 @@ export class TwilioProvider
 
         "Twilio call ended successfully"
       );
-
-
-    }
-
-    catch (error) {
-
-
+    } catch (
+      error
+    ) {
       log.error(
         {
           providerCallId:
@@ -361,20 +356,17 @@ export class TwilioProvider
           error:
             error instanceof Error
               ? error.message
-              : String(error),
+              : String(
+                  error
+                ),
         },
 
         "Failed to end Twilio call"
       );
 
-
       throw error;
-
     }
-
   }
-
-
 
   //--------------------------------------------------
   // Handle Webhook
@@ -383,12 +375,9 @@ export class TwilioProvider
   async handleWebhook(
     body: unknown
   ): Promise<void> {
-
-
     console.log(
       "Twilio webhook received"
     );
-
 
     console.dir(
       body,
@@ -397,8 +386,5 @@ export class TwilioProvider
           null,
       }
     );
-
   }
-
-
 }

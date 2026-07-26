@@ -19,18 +19,15 @@ import {
   CampaignNotFoundError,
 } from "@/lib/app-error";
 
-
 //--------------------------------------------------
 // Context
 //--------------------------------------------------
 
 interface RouteContext {
-  params:
-    Promise<{
-      id: string;
-    }>;
+  params: Promise<{
+    id: string;
+  }>;
 }
-
 
 //--------------------------------------------------
 // Get Campaign
@@ -39,70 +36,53 @@ interface RouteContext {
 export const GET =
   asyncHandler<RouteContext>(
     async (
-      _request:
-        NextRequest,
-      context:
-        RouteContext
+      _request: NextRequest,
+      context: RouteContext
     ) => {
-
       await requireRole([
         "AGENT",
         "ADMIN",
         "SUPER_ADMIN",
       ]);
 
-
       const {
-        id:
-          campaignId,
+        id: campaignId,
       } = await context.params;
-
 
       const campaign =
         await prisma.campaign.findUnique({
           where: {
-            id:
-              campaignId,
+            id: campaignId,
           },
 
           include: {
             contacts: {
               include: {
-                contact:
-                  true,
+                contact: true,
               },
             },
 
             runs: {
               orderBy: {
-                createdAt:
-                  "desc",
+                createdAt: "desc",
               },
 
-              take:
-                10,
+              take: 10,
             },
 
             calls: {
               orderBy: {
-                createdAt:
-                  "desc",
+                createdAt: "desc",
               },
 
-              take:
-                50,
+              take: 50,
 
               include: {
                 contact: {
                   select: {
-                    id:
-                      true,
-
-                    fullName:
-                      true,
-
-                    phone:
-                      true,
+                    id: true,
+                    fullName: true,
+                    phone: true,
                   },
                 },
               },
@@ -110,32 +90,27 @@ export const GET =
           },
         });
 
-
-      if (
-        !campaign
-      ) {
-
+      if (!campaign) {
         throw new CampaignNotFoundError(
           campaignId
         );
-
       }
 
-
       return NextResponse.json({
-        success:
-          true,
+        success: true,
 
         message:
           "Campaign fetched successfully",
 
-        data:
-          campaign,
-      });
+        data: {
+          ...campaign,
 
+          contactCount:
+            campaign.contacts.length,
+        },
+      });
     }
   );
-
 
 //--------------------------------------------------
 // Update Campaign
@@ -144,64 +119,47 @@ export const GET =
 export const PATCH =
   asyncHandler<RouteContext>(
     async (
-      request:
-        NextRequest,
-      context:
-        RouteContext
+      request: NextRequest,
+      context: RouteContext
     ) => {
-
       await requireRole([
         "ADMIN",
         "SUPER_ADMIN",
       ]);
 
-
       const {
-        id:
-          campaignId,
+        id: campaignId,
       } = await context.params;
-
 
       const existingCampaign =
         await prisma.campaign.findUnique({
           where: {
-            id:
-              campaignId,
+            id: campaignId,
           },
 
           select: {
-            id:
-              true,
+            id: true,
           },
         });
 
-
-      if (
-        !existingCampaign
-      ) {
-
+      if (!existingCampaign) {
         throw new CampaignNotFoundError(
           campaignId
         );
-
       }
-
 
       const body =
         await request.json();
 
-
       const campaign =
         await prisma.campaign.update({
           where: {
-            id:
-              campaignId,
+            id: campaignId,
           },
 
           data: {
             name:
-              typeof body.name ===
-              "string"
+              typeof body.name === "string"
                 ? body.name.trim()
                 : undefined,
 
@@ -219,21 +177,16 @@ export const PATCH =
           },
         });
 
-
       return NextResponse.json({
-        success:
-          true,
+        success: true,
 
         message:
           "Campaign updated successfully",
 
-        data:
-          campaign,
+        data: campaign,
       });
-
     }
   );
-
 
 //--------------------------------------------------
 // Delete Campaign
@@ -242,64 +195,46 @@ export const PATCH =
 export const DELETE =
   asyncHandler<RouteContext>(
     async (
-      _request:
-        NextRequest,
-      context:
-        RouteContext
+      _request: NextRequest,
+      context: RouteContext
     ) => {
-
       await requireRole([
         "ADMIN",
         "SUPER_ADMIN",
       ]);
 
-
       const {
-        id:
-          campaignId,
+        id: campaignId,
       } = await context.params;
-
 
       const existingCampaign =
         await prisma.campaign.findUnique({
           where: {
-            id:
-              campaignId,
+            id: campaignId,
           },
 
           select: {
-            id:
-              true,
+            id: true,
           },
         });
 
-
-      if (
-        !existingCampaign
-      ) {
-
+      if (!existingCampaign) {
         throw new CampaignNotFoundError(
           campaignId
         );
-
       }
-
 
       await prisma.campaign.delete({
         where: {
-          id:
-            campaignId,
+          id: campaignId,
         },
       });
 
-
       return NextResponse.json({
-        success:
-          true,
+        success: true,
 
         message:
           "Campaign deleted successfully",
       });
-
     }
   );

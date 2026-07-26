@@ -37,6 +37,12 @@ class AudioSessionManager {
       string
     >();
 
+  private closeListeners: ((callId: string) => void)[] = [];
+
+  onClose(listener: (callId: string) => void): void {
+    this.closeListeners.push(listener);
+  }
+
   //--------------------------------------------
   // Create
   //--------------------------------------------
@@ -366,6 +372,14 @@ class AudioSessionManager {
 
     if (!session) {
       return;
+    }
+
+    for (const listener of this.closeListeners) {
+      try {
+        listener(session.callId);
+      } catch (error) {
+        console.error("Error in AudioSessionService onClose listener:", error);
+      }
     }
 
     this.sessionsByStreamSid.delete(

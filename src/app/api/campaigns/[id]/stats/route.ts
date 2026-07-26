@@ -1,7 +1,5 @@
 import {
   CallStatus,
-  CampaignRunStatus,
-  CampaignStatus,
 } from "@prisma/client";
 
 import {
@@ -25,7 +23,6 @@ import {
   CampaignNotFoundError,
 } from "@/lib/app-error";
 
-
 //--------------------------------------------------
 // Route Context
 //--------------------------------------------------
@@ -36,6 +33,25 @@ interface RouteContext {
   }>;
 }
 
+//--------------------------------------------------
+// Latest Call Shape
+//--------------------------------------------------
+
+interface LatestRunCall {
+  id: string;
+
+  contactId: string;
+
+  status: CallStatus;
+
+  attemptNumber: number;
+
+  maxAttempts: number;
+
+  nextRetryAt: Date | null;
+
+  createdAt: Date;
+}
 
 //--------------------------------------------------
 // Campaign Statistics
@@ -44,16 +60,12 @@ interface RouteContext {
 export const GET =
   asyncHandler<RouteContext>(
     async (
-      _request:
-        NextRequest,
-
-      context:
-        RouteContext
+      _request: NextRequest,
+      context: RouteContext
     ): Promise<NextResponse> => {
-
-      //----------------------------------------
+      //------------------------------------------------
       // Authorization
-      //----------------------------------------
+      //------------------------------------------------
 
       await requireRole([
         "AGENT",
@@ -61,20 +73,17 @@ export const GET =
         "SUPER_ADMIN",
       ]);
 
-
-      //----------------------------------------
-      // Read Campaign ID
-      //----------------------------------------
+      //------------------------------------------------
+      // Campaign ID
+      //------------------------------------------------
 
       const {
-        id:
-          campaignId,
+        id: campaignId,
       } = await context.params;
 
-
-      //----------------------------------------
-      // Confirm Campaign Exists
-      //----------------------------------------
+      //------------------------------------------------
+      // Campaign
+      //------------------------------------------------
 
       const campaign =
         await prisma.campaign.findUnique({
@@ -119,366 +128,595 @@ export const GET =
           },
         });
 
-
       if (
         !campaign
       ) {
-
         throw new CampaignNotFoundError(
           campaignId
         );
-
       }
 
-
-      //----------------------------------------
-      // Fetch Campaign-Specific Aggregates
-      //----------------------------------------
+      //------------------------------------------------
+      // Assigned Contacts And Latest Run
+      //------------------------------------------------
 
       const [
-        statusGroups,
         assignedContacts,
         latestRun,
-        durationAggregate,
-        lifecycleAggregate,
-      ] = await Promise.all([
+      ] =
+        await Promise.all([
+          prisma.campaignContact.count({
+            where: {
+              campaignId,
+            },
+          }),
 
-        //--------------------------------------
-        // Call outcome counts
-        //--------------------------------------
+          prisma.campaignRun.findFirst({
+            where: {
+              campaignId,
+            },
 
-        prisma.call.groupBy({
-          by: [
-            "status",
-          ],
+            orderBy: {
+              createdAt:
+                "desc",
+            },
 
-          where: {
-            campaignId,
-          },
+            select: {
+              id:
+                true,
 
-          _count: {
-            _all:
-              true,
-          },
-        }),
+              campaignId:
+                true,
 
+              status:
+                true,
 
-        //--------------------------------------
-        // Assigned campaign contacts
-        //--------------------------------------
+              total:
+                true,
 
-        prisma.campaignContact.count({
-          where: {
-            campaignId,
-          },
-        }),
+              processed:
+                true,
 
+              successful:
+                true,
 
-        //--------------------------------------
-        // Latest campaign run
-        //--------------------------------------
+              failed:
+                true,
 
-        prisma.campaignRun.findFirst({
-          where: {
-            campaignId,
-          },
+              startedAt:
+                true,
 
-          orderBy: {
-            createdAt:
-              "desc",
-          },
+              completedAt:
+                true,
 
-          select: {
-            id:
-              true,
+              createdAt:
+                true,
 
-            campaignId:
-              true,
+              updatedAt:
+                true,
+            },
+          }),
+        ]);
 
-            status:
-              true,
+      const latestRunId =
+        latestRun?.id ??
+        "__NO_CAMPAIGN_RUN__";
 
-            total:
-              true,
+      //------------------------------------------------
+      // Load Statistics
+      //------------------------------------------------
 
-            processed:
-              true,
+      const [
+        latestRunCalls,
+        latestRunStatusGroups,
+        historicalStatusGroups,
+        latestRunDuration,
+        latestRunLifecycle,
+        historicalDuration,
+      ] =
+        await Promise.all([
+          //--------------------------------------------
+          // All attempts from latest run
+          //--------------------------------------------
 
-            successful:
-              true,
+          prisma.call.findMany({
+            where: {
+              campaignId,
 
-            failed:
-              true,
+              campaignRunId:
+                latestRunId,
+            },
 
-            startedAt:
-              true,
+            select: {
+              id:
+                true,
 
-            completedAt:
-              true,
+              contactId:
+                true,
 
-            createdAt:
-              true,
+              status:
+                true,
 
-            updatedAt:
-              true,
-          },
-        }),
+              attemptNumber:
+                true,
 
+              maxAttempts:
+                true,
 
-        //--------------------------------------
-        // Completed-call duration
-        //--------------------------------------
+              nextRetryAt:
+                true,
 
-        prisma.call.aggregate({
-          where: {
-            campaignId,
+              createdAt:
+                true,
+            },
 
-            status:
-              CallStatus.COMPLETED,
-          },
+            orderBy: [
+              {
+                contactId:
+                  "asc",
+              },
 
-          _sum: {
-            duration:
-              true,
-          },
+              {
+                attemptNumber:
+                  "desc",
+              },
 
-          _avg: {
-            duration:
-              true,
-          },
+              {
+                createdAt:
+                  "desc",
+              },
+            ],
+          }),
 
-          _max: {
-            duration:
-              true,
-          },
+          //--------------------------------------------
+          // Latest run attempt status groups
+          //--------------------------------------------
 
-          _min: {
-            duration:
-              true,
-          },
-        }),
+          prisma.call.groupBy({
+            by: [
+              "status",
+            ],
 
+            where: {
+              campaignId,
 
-        //--------------------------------------
-        // Lifecycle timestamps
-        //--------------------------------------
+              campaignRunId:
+                latestRunId,
+            },
 
-        prisma.call.aggregate({
-          where: {
-            campaignId,
-          },
+            _count: {
+              _all:
+                true,
+            },
+          }),
 
-          _min: {
-            requestedAt:
-              true,
+          //--------------------------------------------
+          // Historical attempt status groups
+          //--------------------------------------------
 
-            queuedAt:
-              true,
+          prisma.call.groupBy({
+            by: [
+              "status",
+            ],
 
-            ringingAt:
-              true,
+            where: {
+              campaignId,
+            },
 
-            answeredAt:
-              true,
+            _count: {
+              _all:
+                true,
+            },
+          }),
 
-            completedAt:
-              true,
-          },
+          //--------------------------------------------
+          // Latest run completed durations
+          //--------------------------------------------
 
-          _max: {
-            requestedAt:
-              true,
+          prisma.call.aggregate({
+            where: {
+              campaignId,
 
-            queuedAt:
-              true,
+              campaignRunId:
+                latestRunId,
 
-            ringingAt:
-              true,
+              status:
+                CallStatus.COMPLETED,
+            },
 
-            answeredAt:
-              true,
+            _sum: {
+              duration:
+                true,
+            },
 
-            completedAt:
-              true,
-          },
-        }),
-      ]);
+            _avg: {
+              duration:
+                true,
+            },
 
+            _min: {
+              duration:
+                true,
+            },
 
-      //----------------------------------------
-      // Initialize Every Call Status
-      //----------------------------------------
+            _max: {
+              duration:
+                true,
+            },
+          }),
 
-      const statusCounts:
-        Record<
-          CallStatus,
-          number
-        > = {
+          //--------------------------------------------
+          // Latest run lifecycle
+          //--------------------------------------------
 
-          [CallStatus.QUEUED]:
-            0,
+          prisma.call.aggregate({
+            where: {
+              campaignId,
 
-          [CallStatus.RINGING]:
-            0,
+              campaignRunId:
+                latestRunId,
+            },
 
-          [CallStatus.ANSWERED]:
-            0,
+            _min: {
+              requestedAt:
+                true,
 
-          [CallStatus.COMPLETED]:
-            0,
+              queuedAt:
+                true,
 
-          [CallStatus.FAILED]:
-            0,
+              ringingAt:
+                true,
 
-          [CallStatus.BUSY]:
-            0,
+              answeredAt:
+                true,
 
-          [CallStatus.NO_ANSWER]:
-            0,
+              completedAt:
+                true,
+            },
 
-          [CallStatus.CANCELED]:
-            0,
-        };
+            _max: {
+              requestedAt:
+                true,
 
+              queuedAt:
+                true,
 
-      //----------------------------------------
-      // Populate Grouped Results
-      //----------------------------------------
+              ringingAt:
+                true,
 
-      for (
-        const group of
-        statusGroups
-      ) {
+              answeredAt:
+                true,
 
-        statusCounts[
-          group.status
-        ] =
-          group._count._all;
+              completedAt:
+                true,
+            },
+          }),
 
-      }
+          //--------------------------------------------
+          // Historical completed durations
+          //--------------------------------------------
 
+          prisma.call.aggregate({
+            where: {
+              campaignId,
 
-      //----------------------------------------
-      // Calculate Call Totals
-      //----------------------------------------
+              status:
+                CallStatus.COMPLETED,
+            },
 
-      const totalCalls =
-        statusGroups.reduce(
-          (
-            total,
-            group
-          ) =>
-            total +
-            group._count._all,
-          0
+            _sum: {
+              duration:
+                true,
+            },
+
+            _avg: {
+              duration:
+                true,
+            },
+
+            _min: {
+              duration:
+                true,
+            },
+
+            _max: {
+              duration:
+                true,
+            },
+          }),
+        ]);
+
+      //------------------------------------------------
+      // Attempt-Level Status Counts
+      //------------------------------------------------
+
+      const latestCounts =
+        buildStatusCounts(
+          latestRunStatusGroups
         );
 
+      const historicalCounts =
+        buildStatusCounts(
+          historicalStatusGroups
+        );
 
-      const queuedCalls =
-        statusCounts[
+      const latestTotalAttempts =
+        sumStatusGroups(
+          latestRunStatusGroups
+        );
+
+      const latestInitialAttempts =
+        latestRunCalls.filter(
+          call =>
+            call.attemptNumber ===
+            1
+        ).length;
+
+      const latestRetryAttempts =
+        latestRunCalls.filter(
+          call =>
+            call.attemptNumber >
+            1
+        ).length;
+
+      const latestQueuedAttempts =
+        latestCounts[
           CallStatus.QUEUED
         ];
 
-
-      const ringingCalls =
-        statusCounts[
+      const latestRingingAttempts =
+        latestCounts[
           CallStatus.RINGING
         ];
 
-
-      const currentlyAnsweredCalls =
-        statusCounts[
+      const latestCurrentlyAnsweredAttempts =
+        latestCounts[
           CallStatus.ANSWERED
         ];
 
-
-      const completedCalls =
-        statusCounts[
+      const latestCompletedAttempts =
+        latestCounts[
           CallStatus.COMPLETED
         ];
 
+      const latestAnsweredAttempts =
+        latestCurrentlyAnsweredAttempts +
+        latestCompletedAttempts;
 
-      /*
-       * A completed call must previously have
-       * reached the answered/in-progress state.
-       */
-      const everAnsweredCalls =
-        currentlyAnsweredCalls +
-        completedCalls;
-
-
-      const failedCalls =
-        statusCounts[
+      const latestFailedAttempts =
+        latestCounts[
           CallStatus.FAILED
         ];
 
-
-      const busyCalls =
-        statusCounts[
+      const latestBusyAttempts =
+        latestCounts[
           CallStatus.BUSY
         ];
 
-
-      const noAnswerCalls =
-        statusCounts[
+      const latestNoAnswerAttempts =
+        latestCounts[
           CallStatus.NO_ANSWER
         ];
 
-
-      const canceledCalls =
-        statusCounts[
+      const latestCanceledAttempts =
+        latestCounts[
           CallStatus.CANCELED
         ];
 
+      const latestUnsuccessfulAttempts =
+        latestFailedAttempts +
+        latestBusyAttempts +
+        latestNoAnswerAttempts +
+        latestCanceledAttempts;
 
-      const unsuccessfulCalls =
-        failedCalls +
-        busyCalls +
-        noAnswerCalls +
-        canceledCalls;
+      const latestActiveAttempts =
+        latestQueuedAttempts +
+        latestRingingAttempts +
+        latestCurrentlyAnsweredAttempts;
 
+      //------------------------------------------------
+      // Latest Attempt Per Contact
+      //------------------------------------------------
 
-      const activeCalls =
-        queuedCalls +
-        ringingCalls +
-        currentlyAnsweredCalls;
-
-
-      //----------------------------------------
-      // Calculate Rates
-      //----------------------------------------
-
-      const answerRate =
-        calculatePercentage(
-          everAnsweredCalls,
-          totalCalls
+      const latestCallByContact =
+        buildLatestCallByContact(
+          latestRunCalls
         );
 
+      let completedContacts =
+        0;
 
-      const completionRate =
-        calculatePercentage(
-          completedCalls,
-          totalCalls
+      let activeContacts =
+        0;
+
+      let awaitingRetryContacts =
+        0;
+
+      let unsuccessfulContacts =
+        0;
+
+      for (
+        const latestCall of
+        latestCallByContact.values()
+      ) {
+        if (
+          latestCall.status ===
+          CallStatus.COMPLETED
+        ) {
+          completedContacts +=
+            1;
+
+          continue;
+        }
+
+        if (
+          isActiveCallStatus(
+            latestCall.status
+          )
+        ) {
+          activeContacts +=
+            1;
+
+          continue;
+        }
+
+        if (
+          latestCall.nextRetryAt
+        ) {
+          awaitingRetryContacts +=
+            1;
+
+          continue;
+        }
+
+        if (
+          isTerminalCallStatus(
+            latestCall.status
+          )
+        ) {
+          unsuccessfulContacts +=
+            1;
+        }
+      }
+
+      //------------------------------------------------
+      // Contact-Level Dispatch Metrics
+      //------------------------------------------------
+
+      const processedContacts =
+        latestRun?.processed ??
+        0;
+
+      const attemptedContacts =
+        latestCallByContact.size;
+
+      /*
+       * Initial dispatch failures may not create a Call
+       * row. They are represented by processed contacts
+       * minus unique contacts that have call attempts.
+       */
+      const dispatchFailedContacts =
+        Math.max(
+          processedContacts -
+            attemptedContacts,
+          0
         );
 
+      const totalUnsuccessfulContacts =
+        unsuccessfulContacts +
+        dispatchFailedContacts;
 
-      const unsuccessfulRate =
-        calculatePercentage(
-          unsuccessfulCalls,
-          totalCalls
+      const notAttemptedContacts =
+        Math.max(
+          assignedContacts -
+            processedContacts,
+          0
         );
 
+      const accountedContacts =
+        completedContacts +
+        activeContacts +
+        awaitingRetryContacts +
+        unsuccessfulContacts +
+        dispatchFailedContacts;
+
+      //------------------------------------------------
+      // Dispatch Metrics
+      //------------------------------------------------
+
+      const dispatchTotal =
+        latestRun?.total ??
+        assignedContacts;
+
+      const dispatchProcessed =
+        latestRun?.processed ??
+        0;
+
+      const dispatchAccepted =
+        latestRun?.successful ??
+        0;
+
+      const dispatchFailed =
+        latestRun?.failed ??
+        0;
+
+      const dispatchRemaining =
+        Math.max(
+          dispatchTotal -
+            dispatchProcessed,
+          0
+        );
+
+      //------------------------------------------------
+      // Historical Attempt Metrics
+      //------------------------------------------------
+
+      const historicalTotalAttempts =
+        sumStatusGroups(
+          historicalStatusGroups
+        );
+
+      const historicalAnsweredAttempts =
+        historicalCounts[
+          CallStatus.ANSWERED
+        ] +
+        historicalCounts[
+          CallStatus.COMPLETED
+        ];
+
+      const historicalUnsuccessfulAttempts =
+        historicalCounts[
+          CallStatus.FAILED
+        ] +
+        historicalCounts[
+          CallStatus.BUSY
+        ] +
+        historicalCounts[
+          CallStatus.NO_ANSWER
+        ] +
+        historicalCounts[
+          CallStatus.CANCELED
+        ];
+
+      //------------------------------------------------
+      // Rates
+      //------------------------------------------------
 
       const contactCoverageRate =
         calculatePercentage(
-          totalCalls,
+          processedContacts,
           assignedContacts
         );
 
+      const contactCompletionRate =
+        calculatePercentage(
+          completedContacts,
+          processedContacts
+        );
 
-      //----------------------------------------
-      // Latest Run Progress
-      //----------------------------------------
+      const contactUnsuccessfulRate =
+        calculatePercentage(
+          totalUnsuccessfulContacts,
+          processedContacts
+        );
+
+      const attemptAnswerRate =
+        calculatePercentage(
+          latestAnsweredAttempts,
+          latestTotalAttempts
+        );
+
+      const attemptCompletionRate =
+        calculatePercentage(
+          latestCompletedAttempts,
+          latestTotalAttempts
+        );
+
+      const attemptUnsuccessfulRate =
+        calculatePercentage(
+          latestUnsuccessfulAttempts,
+          latestTotalAttempts
+        );
 
       const latestRunProgress =
         latestRun
@@ -488,10 +726,97 @@ export const GET =
             )
           : 0;
 
+      //------------------------------------------------
+      // Current Attempt Metrics Object
+      //------------------------------------------------
 
-      //----------------------------------------
-      // Return Statistics
-      //----------------------------------------
+      const currentRunAttempts = {
+        total:
+          latestTotalAttempts,
+
+        initial:
+          latestInitialAttempts,
+
+        retries:
+          latestRetryAttempts,
+
+        active:
+          latestActiveAttempts,
+
+        queued:
+          latestQueuedAttempts,
+
+        ringing:
+          latestRingingAttempts,
+
+        currentlyAnswered:
+          latestCurrentlyAnsweredAttempts,
+
+        answered:
+          latestAnsweredAttempts,
+
+        completed:
+          latestCompletedAttempts,
+
+        unsuccessful:
+          latestUnsuccessfulAttempts,
+
+        failed:
+          latestFailedAttempts,
+
+        busy:
+          latestBusyAttempts,
+
+        noAnswer:
+          latestNoAnswerAttempts,
+
+        canceled:
+          latestCanceledAttempts,
+      };
+
+      //------------------------------------------------
+      // Historical Attempt Metrics Object
+      //------------------------------------------------
+
+      const historicalAttempts = {
+        total:
+          historicalTotalAttempts,
+
+        answered:
+          historicalAnsweredAttempts,
+
+        completed:
+          historicalCounts[
+            CallStatus.COMPLETED
+          ],
+
+        unsuccessful:
+          historicalUnsuccessfulAttempts,
+
+        failed:
+          historicalCounts[
+            CallStatus.FAILED
+          ],
+
+        busy:
+          historicalCounts[
+            CallStatus.BUSY
+          ],
+
+        noAnswer:
+          historicalCounts[
+            CallStatus.NO_ANSWER
+          ],
+
+        canceled:
+          historicalCounts[
+            CallStatus.CANCELED
+          ],
+      };
+
+      //------------------------------------------------
+      // Response
+      //------------------------------------------------
 
       return NextResponse.json({
         success:
@@ -536,156 +861,72 @@ export const GET =
               campaign.updatedAt,
           },
 
+          //------------------------------------------
+          // Unique contact metrics
+          //------------------------------------------
 
           contacts: {
             assigned:
               assignedContacts,
 
+            processed:
+              processedContacts,
+
             attempted:
-              totalCalls,
+              attemptedContacts,
 
             notAttempted:
-              Math.max(
-                assignedContacts -
-                totalCalls,
-                0
-              ),
+              notAttemptedContacts,
+
+            completed:
+              completedContacts,
+
+            active:
+              activeContacts,
+
+            awaitingRetry:
+              awaitingRetryContacts,
+
+            unsuccessful:
+              unsuccessfulContacts,
+
+            dispatchFailed:
+              dispatchFailedContacts,
+
+            totalUnsuccessful:
+              totalUnsuccessfulContacts,
+
+            accounted:
+              accountedContacts,
 
             coverageRate:
               contactCoverageRate,
           },
 
+          //------------------------------------------
+          // Initial dispatch counters
+          //------------------------------------------
 
-          calls: {
+          dispatch: {
             total:
-              totalCalls,
+              dispatchTotal,
 
-            active:
-              activeCalls,
+            processed:
+              dispatchProcessed,
 
-            queued:
-              queuedCalls,
-
-            ringing:
-              ringingCalls,
-
-            currentlyAnswered:
-              currentlyAnsweredCalls,
-
-            everAnswered:
-              everAnsweredCalls,
-
-            completed:
-              completedCalls,
-
-            unsuccessful:
-              unsuccessfulCalls,
+            accepted:
+              dispatchAccepted,
 
             failed:
-              failedCalls,
+              dispatchFailed,
 
-            busy:
-              busyCalls,
-
-            noAnswer:
-              noAnswerCalls,
-
-            canceled:
-              canceledCalls,
+            remaining:
+              dispatchRemaining,
           },
 
-
-          rates: {
-            answerRate,
-
-            completionRate,
-
-            unsuccessfulRate,
-
-            contactCoverageRate,
-          },
-
-
-          duration: {
-            totalSeconds:
-              durationAggregate
-                ._sum
-                .duration ??
-              0,
-
-            averageSeconds:
-              roundNumber(
-                durationAggregate
-                  ._avg
-                  .duration
-              ),
-
-            minimumSeconds:
-              durationAggregate
-                ._min
-                .duration ??
-              0,
-
-            maximumSeconds:
-              durationAggregate
-                ._max
-                .duration ??
-              0,
-          },
-
-
-          lifecycle: {
-            firstRequestedAt:
-              lifecycleAggregate
-                ._min
-                .requestedAt,
-
-            lastRequestedAt:
-              lifecycleAggregate
-                ._max
-                .requestedAt,
-
-            firstQueuedAt:
-              lifecycleAggregate
-                ._min
-                .queuedAt,
-
-            lastQueuedAt:
-              lifecycleAggregate
-                ._max
-                .queuedAt,
-
-            firstRingingAt:
-              lifecycleAggregate
-                ._min
-                .ringingAt,
-
-            lastRingingAt:
-              lifecycleAggregate
-                ._max
-                .ringingAt,
-
-            firstAnsweredAt:
-              lifecycleAggregate
-                ._min
-                .answeredAt,
-
-            lastAnsweredAt:
-              lifecycleAggregate
-                ._max
-                .answeredAt,
-
-            firstCompletedAt:
-              lifecycleAggregate
-                ._min
-                .completedAt,
-
-            lastCompletedAt:
-              lifecycleAggregate
-                ._max
-                .completedAt,
-          },
-
+          //------------------------------------------
+          // Latest campaign run
+          //------------------------------------------
 
           latestRun:
             latestRun
@@ -702,6 +943,12 @@ export const GET =
                   processed:
                     latestRun.processed,
 
+                  /*
+                   * Compatibility fields.
+                   *
+                   * successful = dispatch accepted
+                   * failed     = dispatch failed
+                   */
                   successful:
                     latestRun.successful,
 
@@ -709,11 +956,7 @@ export const GET =
                     latestRun.failed,
 
                   remaining:
-                    Math.max(
-                      latestRun.total -
-                      latestRun.processed,
-                      0
-                    ),
+                    dispatchRemaining,
 
                   progressPercentage:
                     latestRunProgress,
@@ -731,69 +974,415 @@ export const GET =
                     latestRun.updatedAt,
                 }
               : null,
+
+          //------------------------------------------
+          // Latest-run attempt metrics
+          //------------------------------------------
+
+          currentRunAttempts,
+
+          /*
+           * Temporary backward-compatible alias.
+           * Remove after all frontend consumers use
+           * currentRunAttempts.
+           */
+          currentRunCalls:
+            currentRunAttempts,
+
+          //------------------------------------------
+          // Historical attempt metrics
+          //------------------------------------------
+
+          historicalAttempts,
+
+          /*
+           * Temporary backward-compatible alias.
+           */
+          historicalCalls:
+            historicalAttempts,
+
+          //------------------------------------------
+          // Contact and attempt rates
+          //------------------------------------------
+
+          rates: {
+            contactCoverageRate,
+
+            contactCompletionRate,
+
+            contactUnsuccessfulRate,
+
+            attemptAnswerRate,
+
+            attemptCompletionRate,
+
+            attemptUnsuccessfulRate,
+
+            /*
+             * Backward-compatible aliases.
+             */
+            answerRate:
+              attemptAnswerRate,
+
+            completionRate:
+              attemptCompletionRate,
+
+            unsuccessfulRate:
+              attemptUnsuccessfulRate,
+          },
+
+          //------------------------------------------
+          // Latest-run completed duration
+          //------------------------------------------
+
+          duration: {
+            totalSeconds:
+              latestRunDuration
+                ._sum
+                .duration ??
+              0,
+
+            averageSeconds:
+              roundNumber(
+                latestRunDuration
+                  ._avg
+                  .duration
+              ),
+
+            minimumSeconds:
+              latestRunDuration
+                ._min
+                .duration ??
+              0,
+
+            maximumSeconds:
+              latestRunDuration
+                ._max
+                .duration ??
+              0,
+          },
+
+          //------------------------------------------
+          // Latest-run lifecycle
+          //------------------------------------------
+
+          lifecycle: {
+            firstRequestedAt:
+              latestRunLifecycle
+                ._min
+                .requestedAt,
+
+            lastRequestedAt:
+              latestRunLifecycle
+                ._max
+                .requestedAt,
+
+            firstQueuedAt:
+              latestRunLifecycle
+                ._min
+                .queuedAt,
+
+            lastQueuedAt:
+              latestRunLifecycle
+                ._max
+                .queuedAt,
+
+            firstRingingAt:
+              latestRunLifecycle
+                ._min
+                .ringingAt,
+
+            lastRingingAt:
+              latestRunLifecycle
+                ._max
+                .ringingAt,
+
+            firstAnsweredAt:
+              latestRunLifecycle
+                ._min
+                .answeredAt,
+
+            lastAnsweredAt:
+              latestRunLifecycle
+                ._max
+                .answeredAt,
+
+            firstCompletedAt:
+              latestRunLifecycle
+                ._min
+                .completedAt,
+
+            lastCompletedAt:
+              latestRunLifecycle
+                ._max
+                .completedAt,
+          },
+
+          //------------------------------------------
+          // Historical duration
+          //------------------------------------------
+
+          historicalDuration: {
+            totalSeconds:
+              historicalDuration
+                ._sum
+                .duration ??
+              0,
+
+            averageSeconds:
+              roundNumber(
+                historicalDuration
+                  ._avg
+                  .duration
+              ),
+
+            minimumSeconds:
+              historicalDuration
+                ._min
+                .duration ??
+              0,
+
+            maximumSeconds:
+              historicalDuration
+                ._max
+                .duration ??
+              0,
+          },
         },
       });
-
     }
   );
 
+//--------------------------------------------------
+// Latest Attempt Per Contact
+//--------------------------------------------------
+
+function buildLatestCallByContact(
+  calls: LatestRunCall[]
+): Map<
+  string,
+  LatestRunCall
+> {
+  const latestByContact =
+    new Map<
+      string,
+      LatestRunCall
+    >();
+
+  for (
+    const call of
+    calls
+  ) {
+    const existing =
+      latestByContact.get(
+        call.contactId
+      );
+
+    if (
+      !existing
+    ) {
+      latestByContact.set(
+        call.contactId,
+        call
+      );
+
+      continue;
+    }
+
+    if (
+      call.attemptNumber >
+      existing.attemptNumber
+    ) {
+      latestByContact.set(
+        call.contactId,
+        call
+      );
+
+      continue;
+    }
+
+    if (
+      call.attemptNumber ===
+        existing.attemptNumber &&
+      call.createdAt.getTime() >
+        existing.createdAt.getTime()
+    ) {
+      latestByContact.set(
+        call.contactId,
+        call
+      );
+    }
+  }
+
+  return latestByContact;
+}
 
 //--------------------------------------------------
-// Percentage Helper
+// Active Call Status
+//--------------------------------------------------
+
+function isActiveCallStatus(
+  status: CallStatus
+): boolean {
+  return (
+    status ===
+      CallStatus.QUEUED ||
+    status ===
+      CallStatus.RINGING ||
+    status ===
+      CallStatus.ANSWERED
+  );
+}
+
+//--------------------------------------------------
+// Terminal Call Status
+//--------------------------------------------------
+
+function isTerminalCallStatus(
+  status: CallStatus
+): boolean {
+  return (
+    status ===
+      CallStatus.COMPLETED ||
+    status ===
+      CallStatus.FAILED ||
+    status ===
+      CallStatus.BUSY ||
+    status ===
+      CallStatus.NO_ANSWER ||
+    status ===
+      CallStatus.CANCELED
+  );
+}
+
+//--------------------------------------------------
+// Status Counts
+//--------------------------------------------------
+
+function buildStatusCounts(
+  groups: Array<{
+    status: CallStatus;
+
+    _count: {
+      _all: number;
+    };
+  }>
+): Record<
+  CallStatus,
+  number
+> {
+  const counts:
+    Record<
+      CallStatus,
+      number
+    > = {
+      [CallStatus.QUEUED]:
+        0,
+
+      [CallStatus.RINGING]:
+        0,
+
+      [CallStatus.ANSWERED]:
+        0,
+
+      [CallStatus.COMPLETED]:
+        0,
+
+      [CallStatus.FAILED]:
+        0,
+
+      [CallStatus.BUSY]:
+        0,
+
+      [CallStatus.NO_ANSWER]:
+        0,
+
+      [CallStatus.CANCELED]:
+        0,
+    };
+
+  for (
+    const group of
+    groups
+  ) {
+    counts[
+      group.status
+    ] =
+      group._count._all;
+  }
+
+  return counts;
+}
+
+//--------------------------------------------------
+// Sum Status Groups
+//--------------------------------------------------
+
+function sumStatusGroups(
+  groups: Array<{
+    _count: {
+      _all: number;
+    };
+  }>
+): number {
+  return groups.reduce(
+    (
+      total,
+      group
+    ) =>
+      total +
+      group._count._all,
+    0
+  );
+}
+
+//--------------------------------------------------
+// Percentage
 //--------------------------------------------------
 
 function calculatePercentage(
   value: number,
   total: number
 ): number {
-
   if (
     total <=
     0
   ) {
-
     return 0;
-
   }
-
 
   return Number(
     (
-      value /
-      total *
+      (
+        value /
+        total
+      ) *
       100
     ).toFixed(
       2
     )
   );
-
 }
 
-
 //--------------------------------------------------
-// Round Nullable Number
+// Round Number
 //--------------------------------------------------
 
 function roundNumber(
   value:
-    number |
-    null
+    | number
+    | null
 ): number {
-
   if (
     value ===
     null
   ) {
-
     return 0;
-
   }
-
 
   return Number(
     value.toFixed(
       2
     )
   );
-
 }

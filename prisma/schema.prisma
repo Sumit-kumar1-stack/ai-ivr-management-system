@@ -231,16 +231,34 @@ enum CallStatus {
 
 model Call {
   id             String  @id @default(cuid())
-  providerCallId String?
+  providerCallId String? @unique
 
   campaignId String
-  campaign   Campaign @relation(fields: [campaignId], references: [id])
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
   campaignRunId String?
   campaignRun   CampaignRun? @relation(fields: [campaignRunId], references: [id], onDelete: SetNull)
 
   contactId String
-  contact   Contact @relation(fields: [contactId], references: [id])
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  // ====================================================
+  // RETRY TRACKING
+  // ====================================================
+
+  retryOfCallId String?
+  retryOfCall   Call?   @relation("CallRetries", fields: [retryOfCallId], references: [id], onDelete: SetNull)
+  retryAttempts Call[]  @relation("CallRetries")
+
+  attemptNumber Int @default(1)
+  maxAttempts   Int @default(3)
+
+  nextRetryAt DateTime?
+  retryReason String?
+
+  // ====================================================
+  // DESTINATION TRACKING
+  // ====================================================
 
   contactPhoneSnapshot      String?
   providerDestination       String?
@@ -258,7 +276,9 @@ model Call {
 
   events CallEvent[]
 
-  // Explicit call lifecycle timestamps
+  // ====================================================
+  // CALL LIFECYCLE TIMESTAMPS
+  // ====================================================
 
   requestedAt DateTime  @default(now())
   queuedAt    DateTime?
@@ -267,8 +287,7 @@ model Call {
   completedAt DateTime?
   failedAt    DateTime?
 
-  // Keep temporarily for compatibility.
-  // Remove after dashboard/services stop using them.
+  // Temporary compatibility fields.
   startedAt DateTime?
   endedAt   DateTime?
 
@@ -277,11 +296,17 @@ model Call {
 
   conversation Conversation?
 
-  @@unique([campaignRunId, contactId])
+  /**
+   * A contact may have multiple call attempts in one
+   * campaign run, but each attempt number must be unique.
+   */
+  @@unique([campaignRunId, contactId, attemptNumber])
   @@index([campaignId])
   @@index([campaignRunId])
+  @@index([campaignRunId, contactId])
   @@index([contactId])
-  @@index([providerCallId])
+  @@index([retryOfCallId])
+  @@index([nextRetryAt])
   @@index([providerDestination])
   @@index([status])
   @@index([requestedAt])

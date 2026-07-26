@@ -1,24 +1,24 @@
 import {
+  AppEvent,
+  EventPublisher,
+} from "@/core/events";
+
+import {
   createCallLogger,
 } from "@/lib/logger";
 
 import {
-  VoiceService,
-} from "./voice.service";
-
-import {
-  voiceQueue,
-} from "./voice-queue.service";
-
-import {
-  PlaybackState,
-} from "./playback-state.service";
+  AudioSessionService,
+} from "@/providers/telephony/audio-session.service";
 
 import {
   clearCallPlayback,
   streamToCall,
 } from "@/providers/telephony/stream.service";
 
+import {
+  ConversationAbort,
+} from "@/services/conversations/abort.service";
 
 import {
   ConversationStateService,
@@ -29,66 +29,113 @@ import {
 } from "./audio-router.service";
 
 import {
+  PlaybackState,
+} from "./playback-state.service";
+
+import {
   sentenceBuffer,
 } from "./sentence-buffer.service";
 
 import {
-  EventPublisher,
-  AppEvent,
-} from "@/core/events";
+  VoiceService,
+} from "./voice.service";
 
 import {
-  ConversationAbort,
-} from "@/services/conversations/abort.service";
+  voiceQueue,
+} from "./voice-queue.service";
 
-
+/**
+ * Pause execution without blocking Node.js.
+ */
 function sleep(
-  ms: number
+  milliseconds: number
 ): Promise<void> {
   return new Promise(
     (resolve) => {
       setTimeout(
         resolve,
-        ms
+        milliseconds
       );
     }
   );
 }
 
-
 /**
- * Prevent multiple workers from running
- * for the same internal call ID.
+ * Prevent multiple playback workers from
+ * running for the same call.
  */
 const runningWorkers =
   new Set<string>();
 
-
 export class VoiceWorker {
-
   //------------------------------------------------
-  // Convert text → audio → queue
+  // Convert text to audio and enqueue it
   //------------------------------------------------
 
   static async addText(
     callId: string,
     text: string
-  ): Promise<void> {
+  ): Promise<boolean> {
     const log =
       createCallLogger(
         callId
       );
 
+    //----------------------------------------
+    // Confirm call exists before TTS
+    //----------------------------------------
+
+    if (
+      !AudioSessionService.getByCallId(
+        callId
+      )
+    ) {
+      log.warn(
+        {
+          callId,
+        },
+        "Skipping TTS because call session does not exist"
+      );
+
+      return false;
+    }
+
     const normalizedText =
       text.trim();
 
     if (!normalizedText) {
-      return;
+      return false;
+    }
+
+    //----------------------------------------
+    // Do not start TTS after call ended
+    //----------------------------------------
+
+    const initialState =
+      ConversationStateService.getState(
+        callId
+      );
+
+    if (
+      initialState === "ENDED" ||
+      initialState === "INTERRUPTING" ||
+      initialState === "INTERRUPTED"
+    ) {
+      log.warn(
+        {
+          callId,
+          state:
+            initialState,
+        },
+        "Skipping TTS because call is not active"
+      );
+
+      return false;
     }
 
     try {
       //----------------------------------------
-      // Generate TTS audio once
+      // Generate speech
       //----------------------------------------
 
       const tts =
@@ -96,6 +143,51 @@ export class VoiceWorker {
           callId,
           normalizedText
         );
+
+      //----------------------------------------
+      // Call may have ended during TTS
+      //----------------------------------------
+
+      if (
+        !AudioSessionService.getByCallId(
+          callId
+        )
+      ) {
+        log.warn(
+          {
+            callId,
+          },
+          "Discarding generated speech because call session ended"
+        );
+
+        return false;
+      }
+
+      //----------------------------------------
+      // Check state again after TTS
+      //----------------------------------------
+
+      const stateAfterTts =
+        ConversationStateService.getState(
+          callId
+        );
+
+      if (
+        stateAfterTts === "ENDED" ||
+        stateAfterTts === "INTERRUPTING" ||
+        stateAfterTts === "INTERRUPTED"
+      ) {
+        log.warn(
+          {
+            callId,
+            state:
+              stateAfterTts,
+          },
+          "Discarding generated speech because call is not active"
+        );
+
+        return false;
+      }
 
       //----------------------------------------
       // Validate generated audio
@@ -130,6 +222,8 @@ export class VoiceWorker {
 
       log.debug(
         {
+          callId,
+
           textLength:
             normalizedText.length,
 
@@ -141,23 +235,29 @@ export class VoiceWorker {
               callId
             ),
         },
-        "Audio added to queue"
+        "Audio added to voice queue"
       );
+
+      return true;
     } catch (error) {
       log.error(
         {
           error,
+
+          callId,
+
           textLength:
             normalizedText.length,
         },
         "Failed to synthesize speech"
       );
+
+      return false;
     }
   }
 
-
   //------------------------------------------------
-  // Interrupt playback
+  // Interrupt current playback
   //------------------------------------------------
 
   static async interrupt(
@@ -175,12 +275,17 @@ export class VoiceWorker {
 
     if (
       state === "INTERRUPTING" ||
+      state === "INTERRUPTED" ||
       state === "ENDED"
     ) {
       return;
     }
 
     log.warn(
+      {
+        callId,
+        state,
+      },
       "Voice playback interrupted"
     );
 
@@ -194,7 +299,7 @@ export class VoiceWorker {
     );
 
     //----------------------------------------
-    // Clear pending generated speech
+    // Clear pending speech
     //----------------------------------------
 
     voiceQueue.clear(
@@ -206,7 +311,7 @@ export class VoiceWorker {
     );
 
     //----------------------------------------
-    // Abort active LLM/conversation work
+    // Abort active conversation work
     //----------------------------------------
 
     ConversationAbort.abort(
@@ -214,7 +319,7 @@ export class VoiceWorker {
     );
 
     //----------------------------------------
-    // Stop local playback state
+    // Stop local playback
     //----------------------------------------
 
     PlaybackState.stop(
@@ -222,18 +327,29 @@ export class VoiceWorker {
     );
 
     //----------------------------------------
-    // Clear audio already buffered by Twilio
+    // Clear Twilio playback buffer
     //----------------------------------------
 
-    const cleared =
+    const playbackCleared =
       clearCallPlayback(
         callId
       );
 
+    //----------------------------------------
+    // Mark interruption complete
+    //----------------------------------------
+
+    ConversationStateService.setState(
+      callId,
+      "INTERRUPTED"
+    );
+
     log.debug(
       {
+        callId,
+
         twilioPlaybackCleared:
-          cleared,
+          playbackCleared,
       },
       "Twilio playback interruption processed"
     );
@@ -251,11 +367,25 @@ export class VoiceWorker {
           Date.now(),
       }
     );
+
+    //----------------------------------------
+    // Return to listening if call exists
+    //----------------------------------------
+
+    if (
+      AudioSessionService.getByCallId(
+        callId
+      )
+    ) {
+      ConversationStateService.setState(
+        callId,
+        "LISTENING"
+      );
+    }
   }
 
-
   //------------------------------------------------
-  // Stop worker
+  // Stop worker and clean resources
   //------------------------------------------------
 
   static stop(
@@ -267,11 +397,14 @@ export class VoiceWorker {
       );
 
     log.info(
+      {
+        callId,
+      },
       "Stopping voice worker"
     );
 
     //----------------------------------------
-    // End conversation first
+    // End conversation
     //----------------------------------------
 
     ConversationStateService.setState(
@@ -288,7 +421,7 @@ export class VoiceWorker {
     );
 
     //----------------------------------------
-    // Clear Twilio buffered playback
+    // Clear Twilio playback
     //----------------------------------------
 
     clearCallPlayback(
@@ -296,7 +429,7 @@ export class VoiceWorker {
     );
 
     //----------------------------------------
-    // Clear queued and buffered content
+    // Clear queues and buffers
     //----------------------------------------
 
     voiceQueue.clear(
@@ -308,7 +441,7 @@ export class VoiceWorker {
     );
 
     //----------------------------------------
-    // Abort active conversation operation
+    // Abort conversation operation
     //----------------------------------------
 
     ConversationAbort.abort(
@@ -324,13 +457,15 @@ export class VoiceWorker {
     );
 
     log.info(
+      {
+        callId,
+      },
       "Voice worker stopped"
     );
   }
 
-
   //------------------------------------------------
-  // Playback worker
+  // Start playback worker
   //------------------------------------------------
 
   static async start(
@@ -351,6 +486,9 @@ export class VoiceWorker {
       )
     ) {
       log.debug(
+        {
+          callId,
+        },
         "Voice worker already running"
       );
 
@@ -362,13 +500,16 @@ export class VoiceWorker {
     );
 
     log.info(
+      {
+        callId,
+      },
       "Voice worker started"
     );
 
     try {
       while (true) {
         //----------------------------------------
-        // Read current conversation state
+        // Read current state
         //----------------------------------------
 
         const state =
@@ -396,7 +537,50 @@ export class VoiceWorker {
           );
 
           log.info(
+            {
+              callId,
+            },
             "Conversation ended; stopping voice worker"
+          );
+
+          return;
+        }
+
+        //----------------------------------------
+        // Call session disappeared
+        //----------------------------------------
+
+        if (
+          !AudioSessionService.getByCallId(
+            callId
+          )
+        ) {
+          log.warn(
+            {
+              callId,
+            },
+            "Call session no longer exists; stopping voice worker"
+          );
+
+          ConversationStateService.setState(
+            callId,
+            "ENDED"
+          );
+
+          PlaybackState.stop(
+            callId
+          );
+
+          voiceQueue.clear(
+            callId
+          );
+
+          sentenceBuffer.clear(
+            callId
+          );
+
+          ConversationAbort.abort(
+            callId
           );
 
           return;
@@ -407,7 +591,8 @@ export class VoiceWorker {
         //----------------------------------------
 
         if (
-          state === "INTERRUPTING"
+          state === "INTERRUPTING" ||
+          state === "INTERRUPTED"
         ) {
           PlaybackState.stop(
             callId
@@ -417,17 +602,30 @@ export class VoiceWorker {
             callId
           );
 
+          sentenceBuffer.clear(
+            callId
+          );
+
           clearCallPlayback(
             callId
           );
 
-          ConversationStateService.setState(
-            callId,
-            "LISTENING"
-          );
+          if (
+            AudioSessionService.getByCallId(
+              callId
+            )
+          ) {
+            ConversationStateService.setState(
+              callId,
+              "LISTENING"
+            );
+          }
 
           log.warn(
-            "Playback interrupted, returning to LISTENING"
+            {
+              callId,
+            },
+            "Playback interrupted; returning to LISTENING"
           );
 
           await sleep(
@@ -454,7 +652,7 @@ export class VoiceWorker {
         }
 
         //----------------------------------------
-        // Get next queued audio item
+        // Dequeue next audio
         //----------------------------------------
 
         const audio =
@@ -464,6 +662,8 @@ export class VoiceWorker {
 
         log.debug(
           {
+            callId,
+
             queueSize:
               voiceQueue.size(
                 callId
@@ -481,7 +681,7 @@ export class VoiceWorker {
         }
 
         //----------------------------------------
-        // Do not speak after call ended
+        // Do not speak after end/interruption
         //----------------------------------------
 
         const currentState =
@@ -491,7 +691,8 @@ export class VoiceWorker {
 
         if (
           currentState === "ENDED" ||
-          currentState === "INTERRUPTING"
+          currentState === "INTERRUPTING" ||
+          currentState === "INTERRUPTED"
         ) {
           continue;
         }
@@ -507,7 +708,7 @@ export class VoiceWorker {
         ) {
           log.error(
             {
-              audio,
+              callId,
             },
             "Queued audio is not a Buffer"
           );
@@ -519,6 +720,9 @@ export class VoiceWorker {
           audio.audio.length === 0
         ) {
           log.warn(
+            {
+              callId,
+            },
             "Skipping empty queued audio"
           );
 
@@ -540,6 +744,8 @@ export class VoiceWorker {
 
         log.info(
           {
+            callId,
+
             queueRemaining:
               voiceQueue.size(
                 callId
@@ -553,7 +759,24 @@ export class VoiceWorker {
 
         try {
           //----------------------------------------
-          // Observation/routing hook
+          // Confirm session before routing
+          //----------------------------------------
+
+          if (
+            !AudioSessionService.getByCallId(
+              callId
+            )
+          ) {
+            ConversationStateService.setState(
+              callId,
+              "ENDED"
+            );
+
+            return;
+          }
+
+          //----------------------------------------
+          // Route outgoing audio
           //----------------------------------------
 
           await AudioRouter.routeOutgoing({
@@ -567,7 +790,24 @@ export class VoiceWorker {
           });
 
           //----------------------------------------
-          // Stream queued audio to Twilio
+          // Confirm session after routing
+          //----------------------------------------
+
+          if (
+            !AudioSessionService.getByCallId(
+              callId
+            )
+          ) {
+            ConversationStateService.setState(
+              callId,
+              "ENDED"
+            );
+
+            return;
+          }
+
+          //----------------------------------------
+          // Stream audio to Twilio
           //----------------------------------------
 
           await streamToCall(
@@ -577,6 +817,8 @@ export class VoiceWorker {
 
           log.debug(
             {
+              callId,
+
               bytes:
                 audio.audio.length,
             },
@@ -586,6 +828,7 @@ export class VoiceWorker {
           log.error(
             {
               error,
+              callId,
             },
             "Audio playback failed"
           );
@@ -597,7 +840,11 @@ export class VoiceWorker {
 
           if (
             failureState !== "ENDED" &&
-            failureState !== "INTERRUPTING"
+            failureState !== "INTERRUPTING" &&
+            failureState !== "INTERRUPTED" &&
+            AudioSessionService.getByCallId(
+              callId
+            )
           ) {
             ConversationStateService.setState(
               callId,
@@ -611,23 +858,54 @@ export class VoiceWorker {
         }
 
         //----------------------------------------
-        // Return to listening after playback
+        // Return to LISTENING only when all
+        // queued audio has finished
         //----------------------------------------
 
-        if (
+        const stateAfterPlayback =
           ConversationStateService.getState(
             callId
-          ) === "SPEAKING"
+          );
+
+        const hasMoreAudio =
+          voiceQueue.hasItems(
+            callId
+          );
+
+        if (
+          stateAfterPlayback === "SPEAKING" &&
+          !hasMoreAudio &&
+          AudioSessionService.getByCallId(
+            callId
+          )
         ) {
           ConversationStateService.setState(
             callId,
             "LISTENING"
           );
-        }
 
-        //----------------------------------------
-        // Yield to event loop
-        //----------------------------------------
+          log.info(
+            {
+              callId,
+            },
+            "All queued audio finished; returning to LISTENING"
+          );
+        } else if (
+          stateAfterPlayback === "SPEAKING" &&
+          hasMoreAudio
+        ) {
+          log.debug(
+            {
+              callId,
+
+              queueRemaining:
+                voiceQueue.size(
+                  callId
+                ),
+            },
+            "More audio remains queued; keeping SPEAKING state"
+          );
+        }
 
         await sleep(
           5
@@ -637,6 +915,7 @@ export class VoiceWorker {
       log.error(
         {
           error,
+          callId,
         },
         "Voice worker crashed"
       );
@@ -651,7 +930,10 @@ export class VoiceWorker {
         );
 
       if (
-        state !== "ENDED"
+        state !== "ENDED" &&
+        AudioSessionService.getByCallId(
+          callId
+        )
       ) {
         ConversationStateService.setState(
           callId,
@@ -668,11 +950,13 @@ export class VoiceWorker {
       );
 
       log.info(
+        {
+          callId,
+        },
         "Voice worker execution finished"
       );
     }
   }
-
 
   //------------------------------------------------
   // Worker status

@@ -1,6 +1,7 @@
 import {
   CampaignRunStatus,
   CampaignStatus,
+  ContactStatus,
 } from "@prisma/client";
 
 import {
@@ -31,18 +32,15 @@ import {
   CampaignQueueService,
 } from "@/services/campaigns/campaign-queue.service";
 
-
 //--------------------------------------------------
 // Context Type
 //--------------------------------------------------
 
 interface RouteContext {
-  params:
-    Promise<{
-      id: string;
-    }>;
+  params: Promise<{
+    id: string;
+  }>;
 }
-
 
 //--------------------------------------------------
 // Start Campaign
@@ -51,12 +49,9 @@ interface RouteContext {
 export const POST =
   asyncHandler<RouteContext>(
     async (
-      _request:
-        NextRequest,
-      context:
-        RouteContext
+      _request: NextRequest,
+      context: RouteContext
     ) => {
-
       //----------------------------------------
       // Authorization
       //----------------------------------------
@@ -66,16 +61,13 @@ export const POST =
         "SUPER_ADMIN",
       ]);
 
-
       //----------------------------------------
       // Read Campaign ID
       //----------------------------------------
 
       const {
-        id:
-          campaignId,
+        id: campaignId,
       } = await context.params;
-
 
       //----------------------------------------
       // Load Campaign
@@ -84,32 +76,23 @@ export const POST =
       const campaign =
         await prisma.campaign.findUnique({
           where: {
-            id:
-              campaignId,
+            id: campaignId,
           },
 
           select: {
-            id:
-              true,
+            id: true,
 
-            status:
-              true,
+            status: true,
 
             contacts: {
               select: {
-                contactId:
-                  true,
+                contactId: true,
 
                 contact: {
                   select: {
-                    id:
-                      true,
-
-                    phone:
-                      true,
-
-                    status:
-                      true,
+                    id: true,
+                    phone: true,
+                    status: true,
                   },
                 },
               },
@@ -117,17 +100,11 @@ export const POST =
           },
         });
 
-
-      if (
-        !campaign
-      ) {
-
+      if (!campaign) {
         throw new CampaignNotFoundError(
           campaignId
         );
-
       }
-
 
       //----------------------------------------
       // Validate Current Status
@@ -139,14 +116,11 @@ export const POST =
         campaign.status ===
           CampaignStatus.RUNNING
       ) {
-
         throw new CampaignConflictError(
           "Campaign is already queued or running",
           campaign.status
         );
-
       }
-
 
       //----------------------------------------
       // Resolve Callable Contacts
@@ -154,32 +128,38 @@ export const POST =
 
       const callableContacts =
         campaign.contacts.filter(
-          item =>
-            Boolean(
-              item.contact.phone
-                ?.trim()
-            )
-        );
+          ({ contact }) => {
+            /*
+             * Blocked contacts must never be
+             * included in an outbound campaign.
+             */
+            if (
+              contact.status ===
+              ContactStatus.BLOCKED
+            ) {
+              return false;
+            }
 
+            return isCallablePhoneNumber(
+              contact.phone
+            );
+          }
+        );
 
       if (
         callableContacts.length ===
         0
       ) {
-
         throw new NoCallableContactsError(
           campaignId
         );
-
       }
-
 
       //----------------------------------------
       // Validate Provider Configuration
       //----------------------------------------
 
       validateProviderConfiguration();
-
 
       //----------------------------------------
       // Atomically Claim Campaign
@@ -188,14 +168,17 @@ export const POST =
       const result =
         await prisma.$transaction(
           async transaction => {
-
+            /*
+             * updateMany provides an atomic status
+             * condition. This prevents two simultaneous
+             * requests from starting duplicate runs.
+             */
             const claimed =
               await transaction
                 .campaign
                 .updateMany({
                   where: {
-                    id:
-                      campaignId,
+                    id: campaignId,
 
                     status: {
                       in: [
@@ -212,51 +195,46 @@ export const POST =
                     status:
                       CampaignStatus.QUEUED,
 
+                    startedAt:
+                      null,
+
                     completedAt:
                       null,
                   },
                 });
 
-
             if (
               claimed.count ===
               0
             ) {
-
               const currentCampaign =
                 await transaction
                   .campaign
                   .findUnique({
                     where: {
-                      id:
-                        campaignId,
+                      id: campaignId,
                     },
 
                     select: {
-                      status:
-                        true,
+                      status: true,
                     },
                   });
 
-
-              if (
-                !currentCampaign
-              ) {
-
+              if (!currentCampaign) {
                 throw new CampaignNotFoundError(
                   campaignId
                 );
-
               }
-
 
               throw new CampaignConflictError(
                 "Campaign could not be started in its current state",
                 currentCampaign.status
               );
-
             }
 
+            //----------------------------------
+            // Create New Campaign Run
+            //----------------------------------
 
             const campaignRun =
               await transaction
@@ -279,36 +257,36 @@ export const POST =
 
                     failed:
                       0,
+
+                    startedAt:
+                      null,
+
+                    completedAt:
+                      null,
                   },
                 });
-
 
             return {
               campaignRun,
             };
-
           }
         );
-
 
       //----------------------------------------
       // Enqueue Background Job
       //----------------------------------------
 
       try {
-
         await CampaignQueueService.enqueue({
           campaignId,
 
           campaignRunId:
             result.campaignRun.id,
         });
-
       } catch (error) {
-
         /*
-         * Compensate for queue failure so the
-         * campaign does not remain permanently queued.
+         * Compensate for queue failure so neither
+         * the campaign nor run remains stuck in QUEUED.
          */
         await prisma.$transaction([
           prisma.campaignRun.update({
@@ -321,6 +299,9 @@ export const POST =
               status:
                 CampaignRunStatus.FAILED,
 
+              failed:
+                callableContacts.length,
+
               completedAt:
                 new Date(),
             },
@@ -328,8 +309,7 @@ export const POST =
 
           prisma.campaign.update({
             where: {
-              id:
-                campaignId,
+              id: campaignId,
             },
 
             data: {
@@ -342,16 +322,13 @@ export const POST =
           }),
         ]);
 
-
         throw new ProviderUnavailableError(
           "Campaign queue is currently unavailable",
           normalizeError(
             error
           )
         );
-
       }
-
 
       //----------------------------------------
       // Return Accepted Response
@@ -359,8 +336,7 @@ export const POST =
 
       return NextResponse.json(
         {
-          success:
-            true,
+          success: true,
 
           message:
             "Campaign queued successfully",
@@ -376,17 +352,55 @@ export const POST =
 
             total:
               callableContacts.length,
+
+            excluded:
+              campaign.contacts.length -
+              callableContacts.length,
           },
         },
         {
-          status:
-            202,
+          status: 202,
         }
       );
-
     }
   );
 
+//--------------------------------------------------
+// Validate Callable Phone Number
+//--------------------------------------------------
+
+function isCallablePhoneNumber(
+  phone:
+    | string
+    | null
+    | undefined
+): boolean {
+  if (!phone) {
+    return false;
+  }
+
+  const normalized =
+    phone
+      .trim()
+      .replace(
+        /[\s()-]/g,
+        ""
+      );
+
+  /*
+   * Basic E.164-compatible validation:
+   *
+   * +919876543210
+   * 919876543210
+   * 9876543210
+   *
+   * Allows 10 to 15 digits and an optional
+   * leading plus sign.
+   */
+  return /^\+?[1-9]\d{9,14}$/.test(
+    normalized
+  );
+}
 
 //--------------------------------------------------
 // Validate Provider Configuration
@@ -394,7 +408,6 @@ export const POST =
 
 function validateProviderConfiguration():
   void {
-
   const provider =
     process.env
       .TELEPHONY_PROVIDER
@@ -402,12 +415,10 @@ function validateProviderConfiguration():
       .toLowerCase() ??
     "twilio";
 
-
   if (
     provider ===
     "twilio"
   ) {
-
     const missingVariables =
       [
         "TWILIO_ACCOUNT_SID",
@@ -420,25 +431,27 @@ function validateProviderConfiguration():
             ?.trim()
       );
 
-
     if (
       missingVariables.length >
       0
     ) {
-
       throw new ProviderUnavailableError(
         "Twilio provider is not configured",
         {
           missingVariables,
         }
       );
-
     }
 
+    return;
   }
 
+  /*
+   * Add provider-specific environment validation
+   * here when Plivo, Telnyx, Exotel, or another
+   * provider is enabled.
+   */
 }
-
 
 //--------------------------------------------------
 // Normalize Unknown Error
@@ -446,13 +459,14 @@ function validateProviderConfiguration():
 
 function normalizeError(
   error: unknown
-) {
-
+): {
+  name?: string;
+  message: string;
+} {
   if (
     error instanceof
     Error
   ) {
-
     return {
       name:
         error.name,
@@ -460,9 +474,7 @@ function normalizeError(
       message:
         error.message,
     };
-
   }
-
 
   return {
     message:
@@ -470,5 +482,4 @@ function normalizeError(
         error
       ),
   };
-
 }

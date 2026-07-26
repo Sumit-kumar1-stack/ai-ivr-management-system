@@ -15,7 +15,9 @@ export async function* askGeminiStream(
 
   const stream =
     await ai.models.generateContentStream({
-      model: "gemini-2.5-flash",
+      model:
+  process.env.GEMINI_TEXT_MODEL?.trim() ||
+  "gemini-3.5-flash",
       contents: prompt,
     });
 

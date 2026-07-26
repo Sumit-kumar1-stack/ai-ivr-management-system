@@ -20,6 +20,11 @@ export async function streamAudioToTwilio(
   audio: Buffer
 ): Promise<void> {
 
+  if (!AudioSessionService.getByCallId(callId)) {
+    console.warn(`Cancel stream audio to Twilio for call ${callId} because call session does not exist`);
+    return;
+  }
+
   if (
     !callId.trim()
   ) {

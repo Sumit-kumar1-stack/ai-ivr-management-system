@@ -5,9 +5,6 @@ import QueryProvider from "@/providers/query-provider";
 import { SocketProvider } from "@/contexts/socket-context";
 import { Toaster } from "sonner";
 
-import { bootstrap } from "@/core/bootstrap";
-bootstrap();
-
 export const metadata: Metadata = {
   title: "AI IVR Management System",
   description: "Enterprise AI IVR Management Dashboard",

@@ -71,6 +71,21 @@ export async function retrieveKnowledge(
   // Gemini Re-ranking
   //--------------------------------------------------
 
+  if (scored.length === 0) {
+    console.log("No candidates found, skipping Gemini reranking.");
+    return [];
+  }
+
+  if (scored.length === 1) {
+    console.log("Only one candidate found, skipping Gemini reranking.");
+    return [{
+      content: scored[0].content,
+      score: scored[0].score,
+      documentId: scored[0].documentId,
+      chunkIndex: scored[0].chunkIndex,
+    }];
+  }
+
   const reranked =
     await rerankKnowledge(
       question,

@@ -81,11 +81,14 @@ export async function validateTwilioWebhook(
 
 
   const publicOrigin =
-    normalizePublicOrigin(
-      process.env
-        .TWILIO_PUBLIC_BASE_URL ??
-      process.env.APP_URL
-    );
+  normalizePublicOrigin(
+    process.env
+      .TWILIO_PUBLIC_BASE_URL
+      ?.trim() ||
+    process.env
+      .APP_URL
+      ?.trim()
+  );
 
 
   if (

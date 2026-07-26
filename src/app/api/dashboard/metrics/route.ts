@@ -1,24 +1,24 @@
-import { success } from "@/lib/api-response";
-import { asyncHandler } from "@/lib/async-handler";
+import {
+  DashboardService,
+} from "@/features/dashboard";
 
-export const GET = asyncHandler(
+import {
+  success,
+} from "@/lib/api-response";
 
-  async ()=>{
+import {
+  asyncHandler,
+} from "@/lib/async-handler";
 
-    return success({
+export const GET =
+  asyncHandler(
+    async () => {
+      const result =
+        await DashboardService.getLiveDashboard();
 
-      averageLatency:0,
-
-      averageThinkingTime:0,
-
-      averageSpeakingTime:0,
-
-      averageCallDuration:0,
-
-      bargeIns:0
-
-    });
-
-  }
-
-);
+      return success(
+        result,
+        "Dashboard metrics loaded"
+      );
+    }
+  );

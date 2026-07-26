@@ -1,27 +1,32 @@
-import { NextRequest } from "next/server";
-
-import { success } from "@/lib/api-response";
-
 import {
+  NextResponse,
+} from "next/server";
 
-    WebhookService,
+//--------------------------------------------------
+// Disabled Generic Telephony Webhook
+//--------------------------------------------------
 
-} from "@/providers/telephony/webhook.service";
+export async function POST():
+  Promise<NextResponse> {
+  console.warn(
+    "Rejected request to disabled generic telephony webhook",
+    {
+      route:
+        "/api/telephony/webhook",
+    }
+  );
 
-export async function POST(
+  return NextResponse.json(
+    {
+      success:
+        false,
 
-    request: NextRequest
-
-) {
-
-    const body = await request.json();
-
-    await WebhookService.process(body);
-
-    return success({
-
-        received: true,
-
-    });
-
+      message:
+        "This webhook endpoint is disabled",
+    },
+    {
+      status:
+        410,
+    }
+  );
 }

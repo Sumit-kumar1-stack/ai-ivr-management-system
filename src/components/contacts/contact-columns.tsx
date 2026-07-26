@@ -1,131 +1,84 @@
 "use client";
 
-import { ColumnDef } from "@tanstack/react-table";
+import type {
+  ColumnDef,
+} from "@tanstack/react-table";
+
+import type {
+  ContactDTO,
+} from "@/features/contacts/contact.types";
 
 import StatusBadge from "./status-badge";
 import LanguageBadge from "./language-badge";
 import ContactActions from "./contact-actions";
 
-export interface Contact {
+export const columns: ColumnDef<ContactDTO>[] = [
+  {
+    accessorKey: "fullName",
+    header: "Name",
+  },
 
-    id: string;
+  {
+    accessorKey: "phone",
+    header: "Phone",
+  },
 
-    fullName: string;
+  {
+    accessorKey: "email",
+    header: "Email",
 
-    phone: string;
+    cell: ({ row }) =>
+      row.original.email ??
+      "Not provided",
+  },
 
-    email: string;
+  {
+    accessorKey: "language",
+    header: "Language",
 
-    language: string;
+    cell: ({ row }) => (
+      <LanguageBadge
+        language={row.original.language}
+      />
+    ),
+  },
 
-    status: string;
+  {
+    accessorKey: "status",
+    header: "Status",
 
-    createdAt: string;
+    cell: ({ row }) => (
+      <StatusBadge
+        status={row.original.status}
+      />
+    ),
+  },
 
-}
+  {
+    accessorKey: "createdAt",
+    header: "Created",
 
-export const columns: ColumnDef<Contact>[] = [
+    cell: ({ row }) =>
+      new Date(
+        row.original.createdAt
+      ).toLocaleDateString(
+        "en-IN",
+        {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        }
+      ),
+  },
 
-    {
+  {
+    id: "actions",
+    header: "Actions",
 
-        accessorKey: "fullName",
-
-        header: "Name",
-
-    },
-
-    {
-
-        accessorKey: "phone",
-
-        header: "Phone",
-
-    },
-
-    {
-
-        accessorKey: "email",
-
-        header: "Email",
-
-    },
-
-    {
-
-        accessorKey: "language",
-
-        header: "Language",
-
-        cell: ({ row }) => (
-
-            <LanguageBadge
-
-                language={
-
-                    row.original.language
-
-                }
-
-            />
-
-        ),
-
-    },
-
-    {
-
-        accessorKey: "status",
-
-        header: "Status",
-
-        cell: ({ row }) => (
-
-            <StatusBadge
-
-                status={
-
-                    row.original.status
-
-                }
-
-            />
-
-        ),
-
-    },
-
-    {
-
-        accessorKey: "createdAt",
-
-        header: "Created",
-
-        cell: ({ row }) => (
-
-            new Date(
-
-                row.original.createdAt
-
-            ).toLocaleDateString()
-
-        ),
-
-    },
-
-    {
-
-        id: "actions",
-
-        header: "Actions",
-
-        cell: ({ row }) => (
-
-<ContactActions
-    contact={row.original}
-/>
-
-        ),
-
-    },
-
+    cell: ({ row }) => (
+      <ContactActions
+        contact={row.original}
+      />
+    ),
+  },
 ];

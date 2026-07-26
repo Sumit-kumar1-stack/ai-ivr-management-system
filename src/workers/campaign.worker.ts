@@ -17,6 +17,12 @@ import {
 } from "@/lib/redis";
 
 import {
+  createWorkerLogger,
+  getDurationMs,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
   CAMPAIGN_JOB_NAME,
   CAMPAIGN_QUEUE_NAME,
   CampaignJobData,
@@ -27,19 +33,40 @@ import {
   RunCampaignResult,
 } from "@/services/campaigns/campaign-runner.service";
 
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createWorkerLogger(
+    "campaign-worker",
+    {
+      queue:
+        CAMPAIGN_QUEUE_NAME,
+    }
+  );
+
+//--------------------------------------------------
+// Job Timing
+//--------------------------------------------------
+
+const jobStartedTimes =
+  new Map<
+    string,
+    bigint
+  >();
 
 //--------------------------------------------------
 // Worker State
 //--------------------------------------------------
 
 let campaignWorker:
-  Worker<
-    CampaignJobData,
-    RunCampaignResult
-  > |
-  null =
+  | Worker<
+      CampaignJobData,
+      RunCampaignResult
+    >
+  | null =
     null;
-
 
 //--------------------------------------------------
 // Initialize Worker
@@ -50,19 +77,25 @@ export function initializeCampaignWorker():
     CampaignJobData,
     RunCampaignResult
   > {
-
   if (
     campaignWorker
   ) {
+    log.debug(
+      {
+        event:
+          "campaign.worker.initialize.skipped",
+
+        reason:
+          "already_initialized",
+      },
+      "Campaign worker is already initialized"
+    );
 
     return campaignWorker;
-
   }
-
 
   const concurrency =
     getWorkerConcurrency();
-
 
   campaignWorker =
     new Worker<
@@ -78,68 +111,131 @@ export function initializeCampaignWorker():
             RunCampaignResult
           >
       ): Promise<RunCampaignResult> => {
-
         const {
           campaignId,
           campaignRunId,
         } =
           job.data;
 
+        const startedAt =
+          process.hrtime.bigint();
 
-        console.log(
-          "Campaign worker processing job",
+        if (
+          job.id
+        ) {
+          jobStartedTimes.set(
+            String(
+              job.id
+            ),
+            startedAt
+          );
+        }
+
+        const jobLog =
+          createWorkerLogger(
+            "campaign-worker",
+            {
+              queue:
+                CAMPAIGN_QUEUE_NAME,
+
+              jobId:
+                job.id,
+
+              jobName:
+                job.name,
+
+              campaignId,
+
+              campaignRunId,
+
+              bullAttempt:
+                job.attemptsMade +
+                1,
+            }
+          );
+
+        jobLog.info(
           {
-            jobId:
-              job.id,
-
-            jobName:
-              job.name,
-
-            campaignId,
-
-            campaignRunId,
-
-            attempt:
-              job.attemptsMade +
-              1,
-          }
+            event:
+              "campaign.job.processing.started",
+          },
+          "Campaign worker started processing job"
         );
-
 
         if (
           job.name !==
           CAMPAIGN_JOB_NAME
         ) {
-
           throw new Error(
             `Unsupported campaign job: ${job.name}`
           );
-
         }
 
+        try {
+          const result =
+            await runCampaign(
+              campaignId,
+              campaignRunId
+            );
 
-        /*
-         * The campaign runner now persists progress
-         * after every contact internally.
-         *
-         * It accepts only campaignId and
-         * campaignRunId.
-         */
-        const result =
-          await runCampaign(
-            campaignId,
-            campaignRunId
+          await job.updateProgress(
+            100
           );
 
+          jobLog.info(
+            {
+              event:
+                "campaign.job.processing.completed",
 
-        await job.updateProgress(
-          100
-        );
+              durationMs:
+                getDurationMs(
+                  startedAt
+                ),
 
+              total:
+                result.total,
 
-        return result;
+              processed:
+                result.processed,
 
+              successful:
+                result.successful,
+
+              failed:
+                result.failed,
+
+              status:
+                result.status,
+            },
+            "Campaign job processing completed"
+          );
+
+          return result;
+        } catch (
+          error
+        ) {
+          jobLog.error(
+            {
+              event:
+                "campaign.job.processing.failed",
+
+              durationMs:
+                getDurationMs(
+                  startedAt
+                ),
+
+              error:
+                normalizeError(
+                  error
+                ),
+            },
+            "Campaign job processing failed"
+          );
+
+          throw error;
+        }
       },
+
       {
         connection:
           redisConnection,
@@ -148,7 +244,6 @@ export function initializeCampaignWorker():
       }
     );
 
-
   //------------------------------------------------
   // Worker Ready
   //------------------------------------------------
@@ -156,20 +251,17 @@ export function initializeCampaignWorker():
   campaignWorker.on(
     "ready",
     () => {
-
-      console.log(
-        "Campaign worker ready",
+      log.info(
         {
-          queue:
-            CAMPAIGN_QUEUE_NAME,
+          event:
+            "campaign.worker.ready",
 
           concurrency,
-        }
+        },
+        "Campaign worker is ready"
       );
-
     }
   );
-
 
   //------------------------------------------------
   // Job Active
@@ -178,10 +270,29 @@ export function initializeCampaignWorker():
   campaignWorker.on(
     "active",
     job => {
+      const jobId =
+        String(
+          job.id ??
+          ""
+        );
 
-      console.log(
-        "Campaign job started",
+      if (
+        jobId &&
+        !jobStartedTimes.has(
+          jobId
+        )
+      ) {
+        jobStartedTimes.set(
+          jobId,
+          process.hrtime.bigint()
+        );
+      }
+
+      log.info(
         {
+          event:
+            "campaign.job.active",
+
           jobId:
             job.id,
 
@@ -191,15 +302,14 @@ export function initializeCampaignWorker():
           campaignRunId:
             job.data.campaignRunId,
 
-          attempt:
+          bullAttempt:
             job.attemptsMade +
             1,
-        }
+        },
+        "Campaign job became active"
       );
-
     }
   );
-
 
   //------------------------------------------------
   // Job Progress
@@ -211,23 +321,26 @@ export function initializeCampaignWorker():
       job,
       progress
     ) => {
-
-      console.log(
-        "Campaign job progress updated",
+      log.debug(
         {
+          event:
+            "campaign.job.progress",
+
           jobId:
             job.id,
+
+          campaignId:
+            job.data.campaignId,
 
           campaignRunId:
             job.data.campaignRunId,
 
           progress,
-        }
+        },
+        "Campaign job progress updated"
       );
-
     }
   );
-
 
   //------------------------------------------------
   // Job Completed
@@ -239,10 +352,32 @@ export function initializeCampaignWorker():
       job,
       result
     ) => {
+      const jobId =
+        String(
+          job.id ??
+          ""
+        );
 
-      console.log(
-        "Campaign job completed",
+      const startedAt =
+        jobId
+          ? jobStartedTimes.get(
+              jobId
+            )
+          : undefined;
+
+      if (
+        jobId
+      ) {
+        jobStartedTimes.delete(
+          jobId
+        );
+      }
+
+      log.info(
         {
+          event:
+            "campaign.job.completed",
+
           jobId:
             job.id,
 
@@ -266,12 +401,18 @@ export function initializeCampaignWorker():
 
           status:
             result.status,
-        }
-      );
 
+          durationMs:
+            startedAt
+              ? getDurationMs(
+                  startedAt
+                )
+              : undefined,
+        },
+        "Campaign job completed"
+      );
     }
   );
-
 
   //------------------------------------------------
   // Job Failed
@@ -283,10 +424,32 @@ export function initializeCampaignWorker():
       job,
       error
     ) => {
+      const jobId =
+        String(
+          job?.id ??
+          ""
+        );
 
-      console.error(
-        "Campaign job failed",
+      const startedAt =
+        jobId
+          ? jobStartedTimes.get(
+              jobId
+            )
+          : undefined;
+
+      if (
+        jobId
+      ) {
+        jobStartedTimes.delete(
+          jobId
+        );
+      }
+
+      log.error(
         {
+          event:
+            "campaign.job.failed",
+
           jobId:
             job?.id,
 
@@ -299,107 +462,159 @@ export function initializeCampaignWorker():
           attemptsMade:
             job?.attemptsMade,
 
-          error: {
-            name:
-              error.name,
+          attemptsAllowed:
+            job?.opts.attempts ??
+            1,
 
-            message:
-              error.message,
+          durationMs:
+            startedAt
+              ? getDurationMs(
+                  startedAt
+                )
+              : undefined,
 
-            stack:
-              error.stack,
-          },
-        }
+          error:
+            normalizeError(
+              error
+            ),
+        },
+        "Campaign job failed"
       );
-
 
       if (
         !job
       ) {
-
         return;
-
       }
-
 
       const attemptsAllowed =
         job.opts.attempts ??
         1;
 
-
       /*
-       * Do not mark the campaign permanently failed
-       * while BullMQ still has retries remaining.
+       * BullMQ may retry the job. Do not mark the
+       * campaign permanently failed until all worker
+       * attempts have been exhausted.
        */
       if (
         job.attemptsMade <
         attemptsAllowed
       ) {
+        log.warn(
+          {
+            event:
+              "campaign.job.retry_pending",
+
+            jobId:
+              job.id,
+
+            campaignId:
+              job.data.campaignId,
+
+            campaignRunId:
+              job.data.campaignRunId,
+
+            attemptsMade:
+              job.attemptsMade,
+
+            attemptsAllowed,
+          },
+          "Campaign worker retry is still available"
+        );
 
         return;
-
       }
-
 
       const completedAt =
         new Date();
 
-
       try {
+        const [
+          campaignRunResult,
+          campaignResult,
+        ] =
+          await prisma.$transaction([
+            prisma.campaignRun.updateMany({
+              where: {
+                id:
+                  job.data
+                    .campaignRunId,
 
-        await prisma.$transaction([
-          prisma.campaignRun.updateMany({
-            where: {
-              id:
-                job.data
-                  .campaignRunId,
-
-              status: {
-                in: [
-                  CampaignRunStatus.QUEUED,
-                  CampaignRunStatus.RUNNING,
-                ],
+                status: {
+                  in: [
+                    CampaignRunStatus.QUEUED,
+                    CampaignRunStatus.RUNNING,
+                  ],
+                },
               },
-            },
 
-            data: {
-              status:
-                CampaignRunStatus.FAILED,
+              data: {
+                status:
+                  CampaignRunStatus.FAILED,
 
-              completedAt,
-            },
-          }),
-
-          prisma.campaign.updateMany({
-            where: {
-              id:
-                job.data
-                  .campaignId,
-
-              status: {
-                in: [
-                  CampaignStatus.QUEUED,
-                  CampaignStatus.RUNNING,
-                ],
+                completedAt,
               },
-            },
+            }),
 
-            data: {
-              status:
-                CampaignStatus.FAILED,
+            prisma.campaign.updateMany({
+              where: {
+                id:
+                  job.data
+                    .campaignId,
 
-              completedAt,
-            },
-          }),
-        ]);
+                status: {
+                  in: [
+                    CampaignStatus.QUEUED,
+                    CampaignStatus.RUNNING,
+                  ],
+                },
+              },
 
+              data: {
+                status:
+                  CampaignStatus.FAILED,
+
+                completedAt,
+              },
+            }),
+          ]);
+
+        log.warn(
+          {
+            event:
+              "campaign.job.terminal_failure_persisted",
+
+            jobId:
+              job.id,
+
+            campaignId:
+              job.data.campaignId,
+
+            campaignRunId:
+              job.data.campaignRunId,
+
+            campaignRunUpdated:
+              campaignRunResult.count,
+
+            campaignUpdated:
+              campaignResult.count,
+
+            completedAt:
+              completedAt.toISOString(),
+          },
+          "Terminal campaign worker failure persisted"
+        );
       } catch (
         persistenceError
       ) {
-
-        console.error(
-          "Failed to persist terminal campaign worker failure",
+        log.error(
           {
+            event:
+              "campaign.job.terminal_failure_persistence_failed",
+
+            jobId:
+              job.id,
+
             campaignId:
               job.data.campaignId,
 
@@ -410,14 +625,12 @@ export function initializeCampaignWorker():
               normalizeError(
                 persistenceError
               ),
-          }
+          },
+          "Failed to persist terminal campaign worker failure"
         );
-
       }
-
     }
   );
-
 
   //------------------------------------------------
   // Worker Error
@@ -426,49 +639,46 @@ export function initializeCampaignWorker():
   campaignWorker.on(
     "error",
     error => {
+      log.error(
+        {
+          event:
+            "campaign.worker.error",
 
-      console.error(
-        "Campaign worker error",
-        normalizeError(
-          error
-        )
+          error:
+            normalizeError(
+              error
+            ),
+        },
+        "Campaign worker error"
       );
-
     }
   );
 
-
-  console.log(
-    "Campaign worker initialized",
+  log.info(
     {
-      queue:
-        CAMPAIGN_QUEUE_NAME,
+      event:
+        "campaign.worker.initialized",
 
       concurrency,
-    }
+    },
+    "Campaign worker initialized"
   );
 
-
   return campaignWorker;
-
 }
-
 
 //--------------------------------------------------
 // Get Existing Worker
 //--------------------------------------------------
 
 export function getCampaignWorker():
-  Worker<
-    CampaignJobData,
-    RunCampaignResult
-  > |
-  null {
-
+  | Worker<
+      CampaignJobData,
+      RunCampaignResult
+    >
+  | null {
   return campaignWorker;
-
 }
-
 
 //--------------------------------------------------
 // Close Worker
@@ -476,29 +686,54 @@ export function getCampaignWorker():
 
 export async function closeCampaignWorker():
   Promise<void> {
-
   if (
     !campaignWorker
   ) {
+    log.debug(
+      {
+        event:
+          "campaign.worker.close.skipped",
+
+        reason:
+          "not_initialized",
+      },
+      "Campaign worker is not initialized"
+    );
 
     return;
-
   }
 
+  const startedAt =
+    process.hrtime.bigint();
+
+  log.info(
+    {
+      event:
+        "campaign.worker.close.started",
+    },
+    "Campaign worker shutdown started"
+  );
 
   await campaignWorker.close();
-
 
   campaignWorker =
     null;
 
+  jobStartedTimes.clear();
 
-  console.log(
+  log.info(
+    {
+      event:
+        "campaign.worker.close.completed",
+
+      durationMs:
+        getDurationMs(
+          startedAt
+        ),
+    },
     "Campaign worker closed"
   );
-
 }
-
 
 //--------------------------------------------------
 // Worker Concurrency
@@ -506,12 +741,10 @@ export async function closeCampaignWorker():
 
 function getWorkerConcurrency():
   number {
-
   const rawValue =
     process.env
       .CAMPAIGN_CALL_CONCURRENCY
       ?.trim();
-
 
   const parsedValue =
     rawValue
@@ -520,7 +753,6 @@ function getWorkerConcurrency():
         )
       : 3;
 
-
   if (
     !Number.isInteger(
       parsedValue
@@ -528,72 +760,25 @@ function getWorkerConcurrency():
     parsedValue <
       1
   ) {
-
-    console.warn(
-      "Invalid CAMPAIGN_CALL_CONCURRENCY; using 3",
+    log.warn(
       {
+        event:
+          "campaign.worker.invalid_concurrency",
+
         configuredValue:
           rawValue,
-      }
+
+        fallbackValue:
+          3,
+      },
+      "Invalid CAMPAIGN_CALL_CONCURRENCY; using default"
     );
 
-
     return 3;
-
   }
-
 
   return Math.min(
     parsedValue,
     20
   );
-
-}
-
-
-//--------------------------------------------------
-// Normalize Error
-//--------------------------------------------------
-
-function normalizeError(
-  error: unknown
-) {
-
-  if (
-    error instanceof
-    Error
-  ) {
-
-    const errorWithCode =
-      error as Error & {
-        code?:
-          string |
-          number;
-      };
-
-
-    return {
-      name:
-        error.name,
-
-      message:
-        error.message,
-
-      code:
-        errorWithCode.code,
-
-      stack:
-        error.stack,
-    };
-
-  }
-
-
-  return {
-    message:
-      String(
-        error
-      ),
-  };
-
 }

@@ -5,54 +5,86 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 
-import { api } from "@/lib/axios";
-import { toast } from "sonner";
+import {
+  api,
+} from "@/lib/axios";
+
+import {
+  toast,
+} from "sonner";
+
+interface RemoveContactInput {
+  campaignId: string;
+  contactId: string;
+}
 
 export function useRemoveContact() {
-  const queryClient = useQueryClient();
+  const queryClient =
+    useQueryClient();
 
   return useMutation({
     mutationFn: async ({
       campaignId,
       contactId,
-    }: {
-      campaignId: string;
-      contactId: string;
-    }) => {
-      const { data } = await api.delete(
-        `/campaigns/${campaignId}/contacts/${contactId}`
-      );
+    }: RemoveContactInput) => {
+      const {
+        data,
+      } =
+        await api.delete(
+          `/campaigns/${campaignId}/contacts/${contactId}`
+        );
 
       return data;
     },
 
-    onSuccess: (_, variables) => {
-      toast.success("Contact removed");
+    onSuccess: async (
+      _result,
+      variables
+    ) => {
+      toast.success(
+        "Contact removed"
+      );
 
-      queryClient.invalidateQueries({
-        queryKey: [
-          "campaign-contacts",
-          variables.campaignId,
-        ],
-      });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: [
+            "campaigns",
+          ],
+        }),
 
-      queryClient.invalidateQueries({
-        queryKey: [
-          "campaign-stats",
-          variables.campaignId,
-        ],
-      });
+        queryClient.invalidateQueries({
+          queryKey: [
+            "campaign",
+            variables.campaignId,
+          ],
+        }),
 
-      queryClient.invalidateQueries({
-        queryKey: [
-          "campaigns",
-        ],
-      });
+        queryClient.invalidateQueries({
+          queryKey: [
+            "campaign-contacts",
+            variables.campaignId,
+          ],
+        }),
+
+        queryClient.invalidateQueries({
+          queryKey: [
+            "campaign-stats",
+            variables.campaignId,
+          ],
+        }),
+      ]);
     },
 
-    onError: (error: any) => {
+    onError: (
+      error: unknown
+    ) => {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to remove contact";
+
       toast.error(
-        error?.message || "Failed to remove contact"
+        message
       );
     },
   });

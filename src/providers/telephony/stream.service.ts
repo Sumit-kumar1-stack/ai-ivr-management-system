@@ -28,6 +28,11 @@ export async function streamToCall(
   chunk: TTSAudioChunk
 ): Promise<void> {
 
+  if (!AudioSessionService.getByCallId(callId)) {
+    console.warn(`Cancel stream to call ${callId} because call session does not exist`);
+    return;
+  }
+
   //--------------------------------------------
   // Validate Call ID
   //--------------------------------------------
