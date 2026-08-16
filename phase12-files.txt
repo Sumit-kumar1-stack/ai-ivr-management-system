@@ -1,0 +1,2619 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ======================================================
+// USER
+// ======================================================
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  AGENT
+}
+
+model User {
+  id        String    @id @default(cuid())
+  fullName  String
+  email     String    @unique
+  password  String
+  role      UserRole  @default(ADMIN)
+  phone     String?
+  avatar    String?
+  isActive  Boolean   @default(true)
+  lastLogin DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ======================================================
+// CONTACT
+// ======================================================
+
+enum ContactStatus {
+  PENDING
+  CALLED
+  ANSWERED
+  FAILED
+  BLOCKED
+}
+
+model Contact {
+  id       String        @id @default(cuid())
+  fullName String
+  phone    String        @unique
+  email    String?
+  company  String?
+  language String        @default("English")
+  status   ContactStatus @default(PENDING)
+  notes    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaigns CampaignContact[]
+  calls     Call[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ======================================================
+// CAMPAIGN
+// ======================================================
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  QUEUED
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum CampaignRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model Campaign {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+
+  systemKey String? @unique
+
+  language String  @default("English")
+  voice    String  @default("Female")
+  prompt   String?
+
+  status CampaignStatus @default(DRAFT)
+
+  scheduledAt DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  contacts CampaignContact[]
+  calls    Call[]
+  runs     CampaignRun[]
+
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([createdAt])
+}
+
+model CampaignContact {
+  id String @id @default(cuid())
+
+  campaignId String
+  contactId  String
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([campaignId, contactId])
+  @@index([campaignId])
+  @@index([contactId])
+}
+
+model CampaignRun {
+  id         String            @id @default(cuid())
+  campaignId String
+  status     CampaignRunStatus @default(QUEUED)
+
+  total      Int @default(0)
+  processed  Int @default(0)
+  successful Int @default(0)
+  failed     Int @default(0)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  calls Call[]
+
+  @@index([campaignId])
+  @@index([campaignId, status])
+  @@index([status])
+}
+
+// ======================================================
+// IVR FLOW
+// ======================================================
+
+model IVRFlow {
+  id String @id @default(cuid())
+
+  name        String
+  description String?
+  campaignId  String?
+
+  nodes Json
+  edges Json
+
+  isPublished Boolean @default(false)
+  version     Int     @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([campaignId])
+  @@index([isPublished])
+}
+
+// ======================================================
+// KNOWLEDGE BASE
+// ======================================================
+
+model KnowledgeDocument {
+  id String @id @default(cuid())
+
+  fileName     String
+  originalName String
+  mimeType     String
+  size         Int
+  path         String
+
+  uploadedAt DateTime @default(now())
+
+  chunks KnowledgeChunk[]
+
+  @@index([uploadedAt])
+}
+
+model KnowledgeChunk {
+  id String @id @default(cuid())
+
+  documentId String
+  document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  chunkIndex Int
+  content    String
+
+  createdAt DateTime @default(now())
+
+  @@unique([documentId, chunkIndex])
+  @@index([documentId])
+}
+
+// ======================================================
+// CALL
+// ======================================================
+
+enum CallDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum CallStatus {
+  QUEUED
+  RINGING
+  ANSWERED
+  COMPLETED
+  FAILED
+  BUSY
+  NO_ANSWER
+  CANCELED
+}
+
+model Call {
+  id             String  @id @default(cuid())
+  providerCallId String? @unique
+
+  direction CallDirection @default(OUTBOUND)
+
+  callerNumber String?
+  calledNumber String?
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  campaignRunId String?
+  campaignRun   CampaignRun? @relation(fields: [campaignRunId], references: [id], onDelete: SetNull)
+
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  // ====================================================
+  // RETRY TRACKING
+  // ====================================================
+
+  retryOfCallId String?
+  retryOfCall   Call?   @relation("CallRetries", fields: [retryOfCallId], references: [id], onDelete: SetNull)
+  retryAttempts Call[]  @relation("CallRetries")
+
+  attemptNumber Int @default(1)
+  maxAttempts   Int @default(3)
+
+  nextRetryAt DateTime?
+  retryReason String?
+
+  // ====================================================
+  // DESTINATION TRACKING
+  // ====================================================
+
+  contactPhoneSnapshot      String?
+  providerDestination       String?
+  usedDevelopmentOverride   Boolean @default(false)
+  destinationOverrideSource String?
+
+  language String
+
+  status CallStatus @default(QUEUED)
+
+  duration     Int?
+  recordingUrl String?
+  transcript   String?
+  summary      String?
+
+  events CallEvent[]
+
+  // ====================================================
+  // CALL LIFECYCLE TIMESTAMPS
+  // ====================================================
+
+  requestedAt DateTime  @default(now())
+  queuedAt    DateTime?
+  ringingAt   DateTime?
+  answeredAt  DateTime?
+  completedAt DateTime?
+  failedAt    DateTime?
+
+  startedAt DateTime?
+  endedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  conversation Conversation?
+
+  @@unique([campaignRunId, contactId, attemptNumber])
+  @@index([campaignId])
+  @@index([campaignRunId])
+  @@index([campaignRunId, contactId])
+  @@index([contactId])
+  @@index([retryOfCallId])
+  @@index([nextRetryAt])
+  @@index([providerDestination])
+  @@index([direction])
+  @@index([callerNumber])
+  @@index([calledNumber])
+  @@index([status])
+  @@index([requestedAt])
+  @@index([answeredAt])
+  @@index([completedAt])
+}
+
+// ======================================================
+// CONVERSATION
+// ======================================================
+
+enum ConversationRole {
+  SYSTEM
+  USER
+  ASSISTANT
+}
+
+model Conversation {
+  id String @id @default(cuid())
+
+  callId String @unique
+  call   Call   @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  summary   String?
+  intent    String?
+  sentiment String?
+  priority  String?
+
+  followUp Boolean @default(false)
+
+  actionItems Json?
+
+  tokenUsage Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages ConversationMessage[]
+
+  @@index([createdAt])
+}
+
+model ConversationMessage {
+  id String @id @default(cuid())
+
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  role    ConversationRole
+  content String
+
+  createdAt DateTime @default(now())
+
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
+  @@index([role])
+}
+
+// ======================================================
+// CALL EVENTS
+// ======================================================
+
+enum CallEventType {
+  STARTED
+  RINGING
+  ANSWERED
+  THINKING
+  SPEAKING
+  LISTENING
+  INTERRUPTED
+  COMPLETED
+  FAILED
+}
+
+model CallEvent {
+  id String @id @default(cuid())
+
+  callId String
+  type   CallEventType
+
+  message  String?
+  payload  Json?
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId])
+  @@index([type])
+  @@index([createdAt])
+  @@index([callId, createdAt])
+}
+import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@prisma/client";
+
+export class IVRFlowService {
+  static async create(data: {
+    name: string;
+    description?: string;
+    campaignId?: string;
+    nodes: Prisma.InputJsonValue[];
+    edges: Prisma.InputJsonValue[];
+  }) {
+    return prisma.iVRFlow.create({
+      data,
+    });
+  }
+
+  static async findAll() {
+    return prisma.iVRFlow.findMany({
+      orderBy: {
+        updatedAt: "desc",
+      },
+    });
+  }
+
+  static async findById(id: string) {
+    return prisma.iVRFlow.findUnique({
+      where: {
+        id,
+      },
+    });
+  }
+
+  static async update(
+    id: string,
+    data: {
+      nodes: Prisma.InputJsonValue[];
+      edges: Prisma.InputJsonValue[];
+    }
+  ) {
+    return prisma.iVRFlow.update({
+      where: {
+        id,
+      },
+      data,
+    });
+  }
+
+  static async delete(id: string) {
+    return prisma.iVRFlow.delete({
+      where: {
+        id,
+      },
+    });
+  }
+}import {
+  NextRequest,
+} from "next/server";
+
+import {
+  twiml,
+} from "twilio";
+
+import {
+  createCallLogger,
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  prisma,
+} from "@/lib/prisma";
+
+import {
+  createTwilioAuthErrorResponse,
+  validateTwilioWebhook,
+} from "@/lib/twilio-webhook-auth";
+
+import {
+  processUserMessage,
+} from "@/services/conversations/conversation-engine.service";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const serviceLog =
+  createServerLogger(
+    "twilio-gather-route"
+  );
+
+//--------------------------------------------------
+// Twilio Gather Webhook
+//--------------------------------------------------
+
+export async function POST(
+  request: NextRequest
+): Promise<Response> {
+  let internalCallId =
+    "";
+
+  let twilioCallSid =
+    "";
+
+  try {
+    //----------------------------------------------
+    // Validate Twilio Signature
+    //----------------------------------------------
+
+    const {
+      params,
+    } =
+      await validateTwilioWebhook(
+        request
+      );
+
+    internalCallId =
+      request.nextUrl
+        .searchParams
+        .get(
+          "callId"
+        )
+        ?.trim() ??
+      "";
+
+    twilioCallSid =
+      String(
+        params.CallSid ??
+          ""
+      ).trim();
+
+    const speech =
+      String(
+        params.SpeechResult ??
+          ""
+      ).trim();
+
+    //----------------------------------------------
+    // Validate Required Identifiers
+    //----------------------------------------------
+
+    if (
+      !internalCallId ||
+      !twilioCallSid
+    ) {
+      serviceLog.warn(
+        {
+          event:
+            "twilio.gather.rejected",
+
+          reason:
+            "missing_call_identifiers",
+
+          internalCallIdPresent:
+            Boolean(
+              internalCallId
+            ),
+
+          providerCallIdPresent:
+            Boolean(
+              twilioCallSid
+            ),
+
+          speechPresent:
+            Boolean(
+              speech
+            ),
+
+          speechCharacterCount:
+            speech.length,
+        },
+        "Twilio gather request rejected"
+      );
+
+      return createVoiceErrorResponse(
+        "The call session could not be verified."
+      );
+    }
+
+    const log =
+      createCallLogger(
+        internalCallId
+      );
+
+    //----------------------------------------------
+    // Validate Call Association
+    //----------------------------------------------
+
+    const call =
+      await prisma.call
+        .findFirst({
+          where: {
+            id:
+              internalCallId,
+
+            providerCallId:
+              twilioCallSid,
+          },
+
+          select: {
+            id:
+              true,
+          },
+        });
+
+    if (
+      !call
+    ) {
+      log.warn(
+        {
+          event:
+            "twilio.gather.rejected",
+
+          reason:
+            "call_association_failed",
+
+          providerCallIdPresent:
+            true,
+
+          speechPresent:
+            Boolean(
+              speech
+            ),
+        },
+        "Twilio gather call association rejected"
+      );
+
+      return new Response(
+        "Forbidden",
+        {
+          status:
+            403,
+
+          headers: {
+            "Cache-Control":
+              "no-store",
+          },
+        }
+      );
+    }
+
+    //----------------------------------------------
+    // Process Speech
+    //----------------------------------------------
+
+    let reply =
+      "Sorry, I did not understand.";
+
+    if (
+      speech
+    ) {
+      log.info(
+        {
+          event:
+            "twilio.gather.speech_received",
+
+          speechCharacterCount:
+            speech.length,
+        },
+        "Twilio speech input received"
+      );
+
+      reply =
+        await processUserMessage(
+          internalCallId,
+          speech
+        );
+    } else {
+      log.debug(
+        {
+          event:
+            "twilio.gather.empty_speech",
+
+          speechPresent:
+            false,
+        },
+        "Twilio gather contained no speech"
+      );
+    }
+
+    //----------------------------------------------
+    // Build TwiML
+    //----------------------------------------------
+
+    const response =
+      new twiml.VoiceResponse();
+
+    response.say(
+      {
+        voice:
+          "alice",
+      },
+      reply
+    );
+
+    const gather =
+      response.gather({
+        input: [
+          "speech",
+        ],
+
+        speechTimeout:
+          "auto",
+
+        action:
+          `/api/twilio/gather?callId=${encodeURIComponent(
+            internalCallId
+          )}`,
+
+        method:
+          "POST",
+      });
+
+    gather.pause({
+      length:
+        1,
+    });
+
+    log.info(
+      {
+        event:
+          "twilio.gather.completed",
+
+        speechPresent:
+          Boolean(
+            speech
+          ),
+
+        speechCharacterCount:
+          speech.length,
+
+        replyCharacterCount:
+          reply.length,
+      },
+      "Twilio gather request completed"
+    );
+
+    return createXmlResponse(
+      response.toString()
+    );
+  } catch (
+    error
+  ) {
+    const authResponse =
+      createTwilioAuthErrorResponse(
+        error
+      );
+
+    if (
+      authResponse
+    ) {
+      return authResponse;
+    }
+
+    const log =
+      internalCallId
+        ? createCallLogger(
+            internalCallId
+          )
+        : serviceLog;
+
+    log.error(
+      {
+        event:
+          "twilio.gather.failed",
+
+        internalCallIdPresent:
+          Boolean(
+            internalCallId
+          ),
+
+        providerCallIdPresent:
+          Boolean(
+            twilioCallSid
+          ),
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Twilio gather webhook failed"
+    );
+
+    return createVoiceErrorResponse(
+      "An error occurred while processing your request."
+    );
+  }
+}
+
+//--------------------------------------------------
+// Voice Error Response
+//--------------------------------------------------
+
+function createVoiceErrorResponse(
+  message: string
+): Response {
+  const response =
+    new twiml.VoiceResponse();
+
+  response.say(
+    {
+      voice:
+        "alice",
+    },
+    message
+  );
+
+  response.hangup();
+
+  return createXmlResponse(
+    response.toString()
+  );
+}
+
+//--------------------------------------------------
+// XML Response
+//--------------------------------------------------
+
+function createXmlResponse(
+  xml: string
+): Response {
+  return new Response(
+    xml,
+    {
+      status:
+        200,
+
+      headers: {
+        "Content-Type":
+          "text/xml; charset=utf-8",
+
+        "Cache-Control":
+          "no-store",
+      },
+    }
+  );
+}import {
+  NextRequest,
+} from "next/server";
+
+import {
+  twiml,
+} from "twilio";
+
+import {
+  createCallLogger,
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  prisma,
+} from "@/lib/prisma";
+
+import {
+  createTwilioAuthErrorResponse,
+  validateTwilioWebhook,
+} from "@/lib/twilio-webhook-auth";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const serviceLog =
+  createServerLogger(
+    "twilio-voice-route"
+  );
+
+//--------------------------------------------------
+// Twilio Voice Webhook
+//--------------------------------------------------
+
+export async function POST(
+  request: NextRequest
+): Promise<Response> {
+  let internalCallId =
+    "";
+
+  let twilioCallSid =
+    "";
+
+  try {
+    const {
+      params,
+    } =
+      await validateTwilioWebhook(
+        request
+      );
+
+    twilioCallSid =
+      String(
+        params.CallSid ??
+          ""
+      ).trim();
+
+    internalCallId =
+      request.nextUrl
+        .searchParams
+        .get(
+          "callId"
+        )
+        ?.trim() ??
+      "";
+
+    //----------------------------------------------
+    // Validate Required Identifiers
+    //----------------------------------------------
+
+    if (
+      !twilioCallSid ||
+      !internalCallId
+    ) {
+      serviceLog.warn(
+        {
+          event:
+            "twilio.voice.rejected",
+
+          reason:
+            "missing_call_identifiers",
+
+          internalCallIdPresent:
+            Boolean(
+              internalCallId
+            ),
+
+          providerCallIdPresent:
+            Boolean(
+              twilioCallSid
+            ),
+        },
+        "Twilio voice request rejected"
+      );
+
+      return createErrorTwiML(
+        "The call session could not be verified."
+      );
+    }
+
+    const log =
+      createCallLogger(
+        internalCallId
+      );
+
+    //----------------------------------------------
+    // Validate Internal Call Association
+    //----------------------------------------------
+
+    const call =
+      await prisma.call
+        .findFirst({
+          where: {
+            id:
+              internalCallId,
+
+            OR: [
+              {
+                providerCallId:
+                  twilioCallSid,
+              },
+              {
+                providerCallId:
+                  null,
+              },
+            ],
+          },
+
+          select: {
+            id:
+              true,
+
+            providerCallId:
+              true,
+          },
+        });
+
+    if (
+      !call
+    ) {
+      log.warn(
+        {
+          event:
+            "twilio.voice.rejected",
+
+          reason:
+            "call_association_failed",
+
+          providerCallIdPresent:
+            true,
+        },
+        "Twilio voice call association rejected"
+      );
+
+      return new Response(
+        "Forbidden",
+        {
+          status:
+            403,
+
+          headers: {
+            "Cache-Control":
+              "no-store",
+          },
+        }
+      );
+    }
+
+    //----------------------------------------------
+    // Associate Provider Call ID
+    //----------------------------------------------
+
+    if (
+      !call.providerCallId
+    ) {
+      const associationResult =
+        await prisma.call
+          .updateMany({
+            where: {
+              id:
+                internalCallId,
+
+              providerCallId:
+                null,
+            },
+
+            data: {
+              providerCallId:
+                twilioCallSid,
+            },
+          });
+
+      log.info(
+        {
+          event:
+            "twilio.voice.provider_id_associated",
+
+          providerCallIdPresent:
+            true,
+
+          updatedRecordCount:
+            associationResult.count,
+        },
+        "Twilio provider call ID associated"
+      );
+    }
+
+    //----------------------------------------------
+    // Build Initial Gather Response
+    //----------------------------------------------
+
+    const response =
+      new twiml.VoiceResponse();
+
+    const gather =
+      response.gather({
+        input: [
+          "speech",
+        ],
+
+        speechTimeout:
+          "auto",
+
+        action:
+          `/api/twilio/gather?callId=${encodeURIComponent(
+            internalCallId
+          )}`,
+
+        method:
+          "POST",
+      });
+
+    const greeting =
+      "Hello. Welcome to ABC Company. How may I help you today?";
+
+    gather.say(
+      {
+        voice:
+          "alice",
+      },
+      greeting
+    );
+
+    log.info(
+      {
+        event:
+          "twilio.voice.twiml_created",
+
+        providerCallIdPresent:
+          true,
+
+        greetingCharacterCount:
+          greeting.length,
+
+        speechGatherEnabled:
+          true,
+      },
+      "Twilio voice TwiML created"
+    );
+
+    return createXmlResponse(
+      response.toString()
+    );
+  } catch (
+    error
+  ) {
+    const authResponse =
+      createTwilioAuthErrorResponse(
+        error
+      );
+
+    if (
+      authResponse
+    ) {
+      return authResponse;
+    }
+
+    const log =
+      internalCallId
+        ? createCallLogger(
+            internalCallId
+          )
+        : serviceLog;
+
+    log.error(
+      {
+        event:
+          "twilio.voice.failed",
+
+        internalCallIdPresent:
+          Boolean(
+            internalCallId
+          ),
+
+        providerCallIdPresent:
+          Boolean(
+            twilioCallSid
+          ),
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Twilio voice webhook failed"
+    );
+
+    return createErrorTwiML(
+      "An error occurred while starting the call."
+    );
+  }
+}
+
+//--------------------------------------------------
+// Error TwiML
+//--------------------------------------------------
+
+function createErrorTwiML(
+  message: string
+): Response {
+  const response =
+    new twiml.VoiceResponse();
+
+  response.say(
+    {
+      voice:
+        "alice",
+    },
+    message
+  );
+
+  response.hangup();
+
+  return createXmlResponse(
+    response.toString()
+  );
+}
+
+//--------------------------------------------------
+// XML Response
+//--------------------------------------------------
+
+function createXmlResponse(
+  xml: string
+): Response {
+  return new Response(
+    xml,
+    {
+      status:
+        200,
+
+      headers: {
+        "Content-Type":
+          "text/xml; charset=utf-8",
+
+        "Cache-Control":
+          "no-store",
+      },
+    }
+  );
+}import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
+
+import {
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  createTwilioAuthErrorResponse,
+  validateTwilioWebhook,
+} from "@/lib/twilio-webhook-auth";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "twilio-voice-input-route"
+  );
+
+//--------------------------------------------------
+// Twilio DTMF Input
+//--------------------------------------------------
+
+export async function POST(
+  request: NextRequest
+): Promise<NextResponse> {
+  try {
+    const {
+      params,
+    } =
+      await validateTwilioWebhook(
+        request
+      );
+
+    const digits =
+      String(
+        params.Digits ??
+          ""
+      ).trim();
+
+    let message:
+      string;
+
+    let selectedOption:
+      "SALES" |
+      "SUPPORT" |
+      "HUMAN_AGENT" |
+      "INVALID";
+
+    switch (
+      digits
+    ) {
+      case "1":
+        selectedOption =
+          "SALES";
+
+        message =
+          "You selected Sales. Connecting you to the sales team.";
+
+        break;
+
+      case "2":
+        selectedOption =
+          "SUPPORT";
+
+        message =
+          "You selected Support. Our support team will assist you.";
+
+        break;
+
+      case "3":
+        selectedOption =
+          "HUMAN_AGENT";
+
+        message =
+          "Connecting you to a human agent.";
+
+        break;
+
+      default:
+        selectedOption =
+          "INVALID";
+
+        message =
+          "Invalid option. Please try again.";
+    }
+
+    log.info(
+      {
+        event:
+          "twilio.dtmf.processed",
+
+        digitPresent:
+          Boolean(
+            digits
+          ),
+
+        digitCount:
+          digits.length,
+
+        selectedOption,
+      },
+      "Twilio DTMF input processed"
+    );
+
+    return createTwimlResponse(
+      `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">
+    ${escapeXml(
+      message
+    )}
+  </Say>
+</Response>`
+    );
+  } catch (
+    error
+  ) {
+    const authResponse =
+      createTwilioAuthErrorResponse(
+        error
+      );
+
+    if (
+      authResponse
+    ) {
+      return authResponse;
+    }
+
+    log.error(
+      {
+        event:
+          "twilio.dtmf.failed",
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Twilio DTMF input failed"
+    );
+
+    return createTwimlResponse(
+      `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">
+    An error occurred while processing your selection.
+  </Say>
+  <Hangup />
+</Response>`
+    );
+  }
+}
+
+//--------------------------------------------------
+// TwiML Response
+//--------------------------------------------------
+
+function createTwimlResponse(
+  xml: string
+): NextResponse {
+  return new NextResponse(
+    xml,
+    {
+      status:
+        200,
+
+      headers: {
+        "Content-Type":
+          "text/xml; charset=utf-8",
+
+        "Cache-Control":
+          "no-store",
+      },
+    }
+  );
+}
+
+//--------------------------------------------------
+// Escape XML
+//--------------------------------------------------
+
+function escapeXml(
+  value: string
+): string {
+  return value
+    .replace(
+      /&/g,
+      "&amp;"
+    )
+    .replace(
+      /</g,
+      "&lt;"
+    )
+    .replace(
+      />/g,
+      "&gt;"
+    )
+    .replace(
+      /"/g,
+      "&quot;"
+    )
+    .replace(
+      /'/g,
+      "&apos;"
+    );
+}import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
+
+import {
+  createCallLogger,
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  prisma,
+} from "@/lib/prisma";
+
+import {
+  createTwilioAuthErrorResponse,
+  validateTwilioWebhook,
+} from "@/lib/twilio-webhook-auth";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const serviceLog =
+  createServerLogger(
+    "twilio-voice-stream-route"
+  );
+
+//--------------------------------------------------
+// Twilio Voice Stream Webhook
+//--------------------------------------------------
+
+export async function POST(
+  request: NextRequest
+): Promise<NextResponse> {
+  let internalCallId =
+    "";
+
+  let twilioCallSid =
+    "";
+
+  try {
+    //----------------------------------------------
+    // Validate Twilio HTTP Signature
+    //----------------------------------------------
+
+    const {
+      params,
+    } =
+      await validateTwilioWebhook(
+        request
+      );
+
+    internalCallId =
+      request.nextUrl
+        .searchParams
+        .get(
+          "callId"
+        )
+        ?.trim() ??
+      "";
+
+    twilioCallSid =
+      String(
+        params.CallSid ??
+          ""
+      ).trim();
+
+    //----------------------------------------------
+    // Validate Required Identifiers
+    //----------------------------------------------
+
+    if (
+      !internalCallId
+    ) {
+      serviceLog.warn(
+        {
+          event:
+            "twilio.voice_stream.rejected",
+
+          reason:
+            "missing_internal_call_id",
+
+          twilioCallSidPresent:
+            Boolean(
+              twilioCallSid
+            ),
+        },
+        "Twilio voice stream request rejected"
+      );
+
+      return createTwimlResponse(`
+<Response>
+  <Say voice="alice">
+    We could not initialize this call.
+  </Say>
+  <Hangup />
+</Response>
+`);
+    }
+
+    const log =
+      createCallLogger(
+        internalCallId
+      );
+
+    if (
+      !twilioCallSid
+    ) {
+      log.warn(
+        {
+          event:
+            "twilio.voice_stream.rejected",
+
+          reason:
+            "missing_provider_call_id",
+        },
+        "Twilio voice stream request rejected"
+      );
+
+      return createTwimlResponse(`
+<Response>
+  <Say voice="alice">
+    We could not verify this call.
+  </Say>
+  <Hangup />
+</Response>
+`);
+    }
+
+    //----------------------------------------------
+    // Validate Internal Call Association
+    //----------------------------------------------
+
+    const call =
+      await prisma.call.findUnique({
+        where: {
+          id:
+            internalCallId,
+        },
+
+        select: {
+          id:
+            true,
+
+          providerCallId:
+            true,
+
+          status:
+            true,
+        },
+      });
+
+    if (
+      !call
+    ) {
+      log.warn(
+        {
+          event:
+            "twilio.voice_stream.rejected",
+
+          reason:
+            "internal_call_not_found",
+
+          twilioCallSidPresent:
+            true,
+        },
+        "Internal call record not found"
+      );
+
+      return createTwimlResponse(`
+<Response>
+  <Say voice="alice">
+    The call session could not be found.
+  </Say>
+  <Hangup />
+</Response>
+`);
+    }
+
+    /*
+     * If a provider SID is already stored,
+     * it must match the signed Twilio CallSid.
+     */
+    if (
+      call.providerCallId &&
+      call.providerCallId !==
+        twilioCallSid
+    ) {
+      log.warn(
+        {
+          event:
+            "twilio.voice_stream.rejected",
+
+          reason:
+            "provider_call_id_mismatch",
+
+          storedProviderCallIdPresent:
+            true,
+
+          receivedProviderCallIdPresent:
+            true,
+        },
+        "Twilio call association mismatch"
+      );
+
+      return new NextResponse(
+        "Forbidden",
+        {
+          status:
+            403,
+        }
+      );
+    }
+
+    /*
+     * Associate the Twilio CallSid if it was not
+     * already saved during outbound call creation.
+     */
+    if (
+      !call.providerCallId
+    ) {
+      const associationResult =
+        await prisma.call
+          .updateMany({
+            where: {
+              id:
+                internalCallId,
+
+              providerCallId:
+                null,
+            },
+
+            data: {
+              providerCallId:
+                twilioCallSid,
+            },
+          });
+
+      log.info(
+        {
+          event:
+            "twilio.voice_stream.provider_id_associated",
+
+          updatedRecordCount:
+            associationResult.count,
+
+          providerCallIdPresent:
+            true,
+        },
+        "Twilio provider call ID associated with internal call"
+      );
+    }
+
+    //----------------------------------------------
+    // Resolve Main Application URL
+    //----------------------------------------------
+
+    const appUrl =
+      normalizeAppUrl(
+        process.env
+          .TWILIO_PUBLIC_BASE_URL ??
+        process.env
+          .APP_URL
+      );
+
+    if (
+      !appUrl
+    ) {
+      throw new Error(
+        "TWILIO_PUBLIC_BASE_URL or APP_URL is not configured"
+      );
+    }
+
+    //----------------------------------------------
+    // Resolve Dedicated Media Server URL
+    //----------------------------------------------
+
+    const mediaPublicUrl =
+      normalizeAppUrl(
+        process.env
+          .TWILIO_MEDIA_PUBLIC_URL
+      );
+
+    if (
+      !mediaPublicUrl
+    ) {
+      throw new Error(
+        "TWILIO_MEDIA_PUBLIC_URL is not configured"
+      );
+    }
+
+    const streamUrl =
+      toWebSocketUrl(
+        mediaPublicUrl,
+        "/api/twilio/stream"
+      );
+
+    const streamStatusUrl =
+      new URL(
+        "/api/twilio/stream-status",
+        `${appUrl}/`
+      ).toString();
+
+    //----------------------------------------------
+    // Build TwiML
+    //----------------------------------------------
+
+    const twiml =
+      `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream
+      url="${escapeXml(
+        streamUrl
+      )}"
+      statusCallback="${escapeXml(
+        streamStatusUrl
+      )}"
+      statusCallbackMethod="POST"
+    >
+      <Parameter
+        name="callId"
+        value="${escapeXml(
+          internalCallId
+        )}"
+      />
+      <Parameter
+        name="twilioCallSid"
+        value="${escapeXml(
+          twilioCallSid
+        )}"
+      />
+    </Stream>
+  </Connect>
+</Response>`;
+
+    log.info(
+      {
+        event:
+          "twilio.voice_stream.twiml_created",
+
+        providerCallIdPresent:
+          true,
+
+        streamUrlConfigured:
+          Boolean(
+            streamUrl
+          ),
+
+        streamStatusCallbackConfigured:
+          Boolean(
+            streamStatusUrl
+          ),
+
+        mediaPublicUrlConfigured:
+          Boolean(
+            mediaPublicUrl
+          ),
+
+        callStatus:
+          call.status,
+      },
+      "Authenticated Twilio Media Stream TwiML created"
+    );
+
+    return createTwimlResponse(
+      twiml
+    );
+  } catch (
+    error
+  ) {
+    //----------------------------------------------
+    // Twilio Authentication Error
+    //----------------------------------------------
+
+    const authResponse =
+      createTwilioAuthErrorResponse(
+        error
+      );
+
+    if (
+      authResponse
+    ) {
+      return authResponse;
+    }
+
+    //----------------------------------------------
+    // Generic Initialization Error
+    //----------------------------------------------
+
+    const log =
+      internalCallId
+        ? createCallLogger(
+            internalCallId
+          )
+        : serviceLog;
+
+    log.error(
+      {
+        event:
+          "twilio.voice_stream.initialization_failed",
+
+        internalCallIdPresent:
+          Boolean(
+            internalCallId
+          ),
+
+        twilioCallSidPresent:
+          Boolean(
+            twilioCallSid
+          ),
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Failed to initialize Twilio voice stream"
+    );
+
+    return createTwimlResponse(`
+<Response>
+  <Say voice="alice">
+    A call initialization error occurred.
+  </Say>
+  <Hangup />
+</Response>
+`);
+  }
+}
+
+//--------------------------------------------------
+// Reject GET Requests
+//--------------------------------------------------
+
+export async function GET():
+  Promise<NextResponse> {
+  return NextResponse.json(
+    {
+      success:
+        false,
+
+      message:
+        "Method not allowed",
+    },
+    {
+      status:
+        405,
+
+      headers: {
+        Allow:
+          "POST",
+      },
+    }
+  );
+}
+
+//--------------------------------------------------
+// XML Response
+//--------------------------------------------------
+
+function createTwimlResponse(
+  twiml: string
+): NextResponse {
+  return new NextResponse(
+    twiml.trim(),
+    {
+      status:
+        200,
+
+      headers: {
+        "Content-Type":
+          "text/xml; charset=utf-8",
+
+        "Cache-Control":
+          "no-store",
+      },
+    }
+  );
+}
+
+//--------------------------------------------------
+// Normalize Public URL
+//--------------------------------------------------
+
+function normalizeAppUrl(
+  value:
+    | string
+    | undefined
+): string | null {
+  const normalized =
+    value
+      ?.trim()
+      .replace(
+        /\/+$/,
+        ""
+      );
+
+  return normalized ||
+    null;
+}
+
+//--------------------------------------------------
+// Convert HTTP URL To WebSocket URL
+//--------------------------------------------------
+
+function toWebSocketUrl(
+  baseUrl: string,
+  pathname: string
+): string {
+  const url =
+    new URL(
+      pathname,
+      `${baseUrl}/`
+    );
+
+  if (
+    url.protocol ===
+    "https:"
+  ) {
+    url.protocol =
+      "wss:";
+  } else if (
+    url.protocol ===
+    "http:"
+  ) {
+    url.protocol =
+      "ws:";
+  } else if (
+    url.protocol !==
+      "wss:" &&
+    url.protocol !==
+      "ws:"
+  ) {
+    throw new Error(
+      `Unsupported URL protocol: ${url.protocol}`
+    );
+  }
+
+  return url.toString();
+}
+
+//--------------------------------------------------
+// Escape XML Values
+//--------------------------------------------------
+
+function escapeXml(
+  value: string
+): string {
+  return value
+    .replace(
+      /&/g,
+      "&amp;"
+    )
+    .replace(
+      /</g,
+      "&lt;"
+    )
+    .replace(
+      />/g,
+      "&gt;"
+    )
+    .replace(
+      /"/g,
+      "&quot;"
+    )
+    .replace(
+      /'/g,
+      "&apos;"
+    );
+}import { twiml } from "twilio";
+
+export class TwiMLService {
+  static voiceResponse() {
+    const response = new twiml.VoiceResponse();
+
+    response.say(
+      {
+        voice: "Polly.Joanna",
+        language: "en-US",
+      },
+      "Hello. Welcome to ABC Company. How may I help you today?"
+    );
+
+   response.gather({
+
+input:["speech"],
+
+speechTimeout:"auto",
+
+speechModel:"phone_call",
+
+enhanced:true,
+
+action:"/api/twilio/gather",
+
+method:"POST"
+
+});
+
+    response.redirect(
+      {
+        method: "POST",
+      },
+      "/api/twilio/voice"
+    );
+
+    return response.toString();
+  }
+
+  static speak(text: string) {
+    const response = new twiml.VoiceResponse();
+
+    response.say(
+      {
+        voice: "Polly.Joanna",
+        language: "en-US",
+      },
+      text
+    );
+
+   response.gather({
+
+input:["speech"],
+
+speechTimeout:"auto",
+
+speechModel:"phone_call",
+
+enhanced:true,
+
+action:"/api/twilio/gather",
+
+method:"POST"
+
+});
+
+    return response.toString();
+  }
+
+  static continueConversation() {
+    const response = new twiml.VoiceResponse();
+
+    response.gather({
+
+input:["speech"],
+
+speechTimeout:"auto",
+
+speechModel:"phone_call",
+
+enhanced:true,
+
+action:"/api/twilio/gather",
+
+method:"POST"
+
+});
+
+    response.redirect("/api/twilio/voice");
+
+    return response.toString();
+  }
+
+  static hangup(message?: string) {
+    const response = new twiml.VoiceResponse();
+
+    if (message) {
+      response.say(message);
+    }
+
+    response.hangup();
+
+    return response.toString();
+  }
+}import {
+  twilioClient,
+} from "@/providers/twilio/twilio.client";
+
+import {
+  getTwilioConfig,
+} from "@/providers/twilio/twilio.config";
+
+import {
+  BaseTelephonyProvider,
+} from "./base.provider";
+
+import {
+  createCallLogger,
+} from "@/lib/logger";
+
+import {
+  ProviderCallRequest,
+  CallResponse,
+} from "@/services/telephony/types";
+
+export class TwilioProvider
+  extends BaseTelephonyProvider {
+
+  //--------------------------------------------------
+  // Normalize Phone Number
+  //--------------------------------------------------
+
+  private formatPhoneNumber(
+    phone: string
+  ): string {
+    const cleaned =
+      phone
+        .trim()
+        .replace(
+          /\s+/g,
+          ""
+        )
+        .replace(
+          /-/g,
+          ""
+        )
+        .replace(
+          /\(/g,
+          ""
+        )
+        .replace(
+          /\)/g,
+          ""
+        );
+
+    //------------------------------------------------
+    // Already E.164 format
+    //------------------------------------------------
+
+    if (
+      cleaned.startsWith(
+        "+"
+      )
+    ) {
+      return cleaned;
+    }
+
+    //------------------------------------------------
+    // Indian 10-digit number
+    //------------------------------------------------
+
+    if (
+      /^\d{10}$/.test(
+        cleaned
+      )
+    ) {
+      return `+91${cleaned}`;
+    }
+
+    //------------------------------------------------
+    // Indian number beginning with 91
+    //------------------------------------------------
+
+    if (
+      /^91\d{10}$/.test(
+        cleaned
+      )
+    ) {
+      return `+${cleaned}`;
+    }
+
+    throw new Error(
+      `Invalid phone number format: ${phone}`
+    );
+  }
+
+  //--------------------------------------------------
+  // Build Provider Callback URL
+  //--------------------------------------------------
+
+  private buildCallbackUrl(
+    publicBaseUrl: string,
+    pathname: string,
+    internalCallId: string
+  ): string {
+    const url =
+      new URL(
+        pathname,
+        `${publicBaseUrl}/`
+      );
+
+    url.searchParams.set(
+      "callId",
+      internalCallId
+    );
+
+    return url.toString();
+  }
+
+  //--------------------------------------------------
+  // Make Outbound Call
+  //--------------------------------------------------
+
+  async makeCall(
+    request: ProviderCallRequest
+  ): Promise<CallResponse> {
+    const log =
+      createCallLogger(
+        request.callId
+      );
+
+    try {
+      //------------------------------------------------
+      // Validate request
+      //------------------------------------------------
+
+      if (
+        !request.callId
+      ) {
+        throw new Error(
+          "callId is required to create a Twilio call"
+        );
+      }
+
+      if (
+        !request.to
+      ) {
+        throw new Error(
+          "Destination phone number is required"
+        );
+      }
+
+      //------------------------------------------------
+      // Load validated Twilio configuration
+      //------------------------------------------------
+
+      const twilioConfig =
+        getTwilioConfig();
+
+      //------------------------------------------------
+      // Format destination number
+      //------------------------------------------------
+
+      const formattedNumber =
+        this.formatPhoneNumber(
+          request.to
+        );
+
+      //------------------------------------------------
+      // Build Twilio webhook URLs
+      //------------------------------------------------
+
+      const voiceUrl =
+        this.buildCallbackUrl(
+          twilioConfig.publicBaseUrl,
+          "/api/twilio/voice-stream",
+          request.callId
+        );
+
+      const statusCallbackUrl =
+        this.buildCallbackUrl(
+          twilioConfig.publicBaseUrl,
+          "/api/twilio/status",
+          request.callId
+        );
+
+      const recordingCallbackUrl =
+        this.buildCallbackUrl(
+          twilioConfig.publicBaseUrl,
+          "/api/twilio/recording",
+          request.callId
+        );
+
+      log.info(
+        {
+          callId:
+            request.callId,
+
+          originalNumber:
+            request.to,
+
+          formattedNumber,
+
+          voiceUrl,
+
+          statusCallbackUrl,
+
+          recordingCallbackUrl,
+        },
+
+        "Creating Twilio outbound call"
+      );
+
+      //------------------------------------------------
+      // Create Twilio call
+      //------------------------------------------------
+
+      const call =
+        await twilioClient.calls.create({
+          to:
+            formattedNumber,
+
+          from:
+            twilioConfig.phoneNumber,
+
+          url:
+            voiceUrl,
+
+          method:
+            "POST",
+
+          //------------------------------------------
+          // Call lifecycle callback
+          //------------------------------------------
+
+          statusCallback:
+            statusCallbackUrl,
+
+          statusCallbackMethod:
+            "POST",
+
+          statusCallbackEvent: [
+            "initiated",
+            "ringing",
+            "answered",
+            "completed",
+          ],
+
+          //------------------------------------------
+          // Call recording
+          //------------------------------------------
+
+          record:
+            true,
+
+          recordingChannels:
+            "dual",
+
+          trim:
+            "do-not-trim",
+
+          recordingStatusCallback:
+            recordingCallbackUrl,
+
+          recordingStatusCallbackMethod:
+            "POST",
+
+          recordingStatusCallbackEvent: [
+            "completed",
+            "absent",
+          ],
+        });
+
+      log.info(
+        {
+          callId:
+            request.callId,
+
+          providerCallId:
+            call.sid,
+
+          status:
+            call.status,
+
+          to:
+            formattedNumber,
+
+          recordingEnabled:
+            true,
+
+          recordingChannels:
+            "dual",
+        },
+
+        "Twilio call created successfully"
+      );
+
+      //------------------------------------------------
+      // Return provider response
+      //------------------------------------------------
+
+      return {
+        callId:
+          call.sid,
+
+        status:
+          call.status,
+      };
+    } catch (
+      error
+    ) {
+      log.error(
+        {
+          callId:
+            request.callId,
+
+          destination:
+            request.to,
+
+          error:
+            error instanceof Error
+              ? error.message
+              : String(
+                  error
+                ),
+        },
+
+        "Failed to create Twilio outbound call"
+      );
+
+      throw error;
+    }
+  }
+
+  //--------------------------------------------------
+  // End Call
+  //--------------------------------------------------
+
+  async endCall(
+    callId: string
+  ): Promise<void> {
+    const log =
+      createCallLogger(
+        callId
+      );
+
+    try {
+      if (
+        !callId
+      ) {
+        throw new Error(
+          "Twilio provider call ID is required"
+        );
+      }
+
+      log.info(
+        {
+          providerCallId:
+            callId,
+        },
+
+        "Ending Twilio call"
+      );
+
+      await twilioClient
+        .calls(
+          callId
+        )
+        .update({
+          status:
+            "completed",
+        });
+
+      log.info(
+        {
+          providerCallId:
+            callId,
+        },
+
+        "Twilio call ended successfully"
+      );
+    } catch (
+      error
+    ) {
+      log.error(
+        {
+          providerCallId:
+            callId,
+
+          error:
+            error instanceof Error
+              ? error.message
+              : String(
+                  error
+                ),
+        },
+
+        "Failed to end Twilio call"
+      );
+
+      throw error;
+    }
+  }
+
+  //--------------------------------------------------
+  // Handle Webhook
+  //--------------------------------------------------
+
+  async handleWebhook(
+    body: unknown
+  ): Promise<void> {
+    console.log(
+      "Twilio webhook received"
+    );
+
+    console.dir(
+      body,
+      {
+        depth:
+          null,
+      }
+    );
+  }
+}import {
+  CallRequest,
+  CallResponse,
+} from "./types";
+
+export interface TelephonyProvider {
+
+  makeCall(
+    request: CallRequest
+  ): Promise<CallResponse>;
+
+  endCall(
+    callId: string
+  ): Promise<void>;
+
+}export interface CallRequest {
+  campaignId: string;
+
+  campaignRunId?: string;
+
+  contactId: string;
+
+  /*
+   * Phone number stored against the contact.
+   */
+  contactPhone: string;
+
+  /*
+   * Actual destination sent to the provider.
+   */
+  to: string;
+
+  from: string;
+
+  language: string;
+
+  script: string;
+
+  usedDevelopmentOverride?: boolean;
+
+  destinationOverrideSource?: string;
+
+  /*
+   * Retry metadata.
+   *
+   * Initial calls use attemptNumber 1.
+   * Retried calls use attemptNumber 2 or 3.
+   */
+  attemptNumber?: number;
+
+  maxAttempts?: number;
+
+  /*
+   * ID of the call that caused this retry attempt.
+   */
+  retryOfCallId?: string;
+
+  /*
+   * Human-readable reason for retrying.
+   *
+   * Examples:
+   * - Contact line was busy
+   * - Contact did not answer
+   * - Temporary provider failure
+   */
+  retryReason?: string;
+}
+
+export interface ProviderCallRequest
+  extends CallRequest {
+  /*
+   * Internal database Call ID.
+   *
+   * Providers use this ID in webhook URLs so
+   * callbacks can locate the correct Call record.
+   */
+  callId: string;
+}
+
+export interface CallResponse {
+  /*
+   * Internal database Call ID.
+   */
+  callId: string;
+
+  /*
+   * Provider-side call identifier, such as
+   * a Twilio Call SID.
+   */
+  providerCallId?: string;
+
+  status: string;
+
+  /*
+   * True when the same campaign-run/contact/attempt
+   * already existed and no second provider request
+   * was made.
+   */
+  duplicate?: boolean;
+
+  attemptNumber?: number;
+}

@@ -1,0 +1,205 @@
+ 
+===== "src\core\events\event-publisher.ts" ===== 
+import { eventBus } from "./event-bus";
+import { AppEvent } from "./event-types";
+
+import { Prisma, CallEventType } from "@prisma/client";
+
+import { EventMonitor } from "./event-monitor.service";
+
+import { CallEventService } from "@/features/call-events";
+
+export class EventPublisher {
+
+  static async publish<T>(
+
+    event: AppEvent,
+
+    payload: T
+
+  ) {
+
+    //----------------------------------------
+    // Memory
+    //----------------------------------------
+
+    EventMonitor.add(
+      event,
+      payload
+    );
+
+    //----------------------------------------
+    // Persist Call Event
+    //----------------------------------------
+
+    const data = payload as {
+      callId?: string;
+      metadata?: Prisma.InputJsonValue;
+    };
+
+    if (data.callId) {
+
+      await CallEventService.create(
+
+        data.callId,
+
+        this.toCallEventType(event),
+
+        event,
+
+        payload as Prisma.InputJsonValue,
+
+        data.metadata
+
+      );
+
+    }
+
+    //----------------------------------------
+    // Publish
+    //----------------------------------------
+
+    await eventBus.emitAsync(
+      event,
+      payload
+    );
+
+  }
+
+  private static toCallEventType(
+    event: AppEvent
+  ): CallEventType {
+
+    switch (event) {
+
+      case AppEvent.CALL_STARTED:
+        return CallEventType.STARTED;
+
+      case AppEvent.CALL_RINGING:
+        return CallEventType.RINGING;
+
+      case AppEvent.CALL_ANSWERED:
+        return CallEventType.ANSWERED;
+
+      case AppEvent.CALL_COMPLETED:
+        return CallEventType.COMPLETED;
+
+      case AppEvent.CALL_FAILED:
+        return CallEventType.FAILED;
+
+      case AppEvent.VOICE_LISTENING:
+        return CallEventType.LISTENING;
+
+      case AppEvent.VOICE_THINKING:
+        return CallEventType.THINKING;
+
+      case AppEvent.VOICE_SPEAKING:
+        return CallEventType.SPEAKING;
+
+      case AppEvent.VOICE_INTERRUPTED:
+        return CallEventType.INTERRUPTED;
+
+      default:
+        return CallEventType.STARTED;
+
+    }
+
+  }
+
+} 
+===== "src\core\events\event-subscriber.ts" ===== 
+import { eventBus } from "./event-bus";
+import { AppEvent } from "./event-types";
+
+export class EventSubscriber {
+
+  static on<T>(
+    event: AppEvent,
+    listener: (payload: T) => void
+  ) {
+    eventBus.on(event, listener);
+  }
+
+  static once<T>(
+    event: AppEvent,
+    listener: (payload: T) => void
+  ) {
+    eventBus.once(event, listener);
+  }
+
+  static off<T>(
+    event: AppEvent,
+    listener: (payload: T) => void
+  ) {
+    eventBus.off(event, listener);
+  }
+
+  static events(): AppEvent[] {
+    return Object.values(AppEvent);
+  }
+
+} 
+===== "src\core\events\app-event.ts" ===== 
+ 
+===== "src\core\events\index.ts" ===== 
+export * from "./event-bus";
+
+export * from "./event-types";
+
+export * from "./event-publisher";
+
+export * from "./event-subscriber";
+
+export * from "./event-registry";
+
+export * from "./event-monitor.service"; 
+===== "src\core\events\subscribers\realtime.subscriber.ts" ===== 
+import {
+  AppEvent,
+  EventSubscriber,
+} from "@/core/events";
+
+import {
+  publishRealtimeEvent,
+} from "@/services/realtime/redis-realtime-bridge.service";
+
+export class RealtimeSubscriber {
+  private static registered =
+    false;
+
+  static register():
+    void {
+    if (
+      this.registered
+    ) {
+      return;
+    }
+
+    this.registered =
+      true;
+
+    for (
+      const event of
+      EventSubscriber.events()
+    ) {
+      EventSubscriber.on(
+        event,
+        payload => {
+          void publishRealtimeEvent(
+            event,
+            payload
+          ).catch(
+            () => {
+              /*
+               * Publishing failure is already logged by
+               * the Redis bridge. Business processing
+               * must not fail only because the dashboard
+               * realtime channel is unavailable.
+               */
+            }
+          );
+        }
+      );
+    }
+  }
+}

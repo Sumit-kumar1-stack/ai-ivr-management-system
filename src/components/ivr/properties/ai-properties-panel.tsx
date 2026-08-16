@@ -1,5 +1,6 @@
 "use client";
 
+import type { IVRNode, IVRNodeData } from "../types";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
@@ -9,10 +10,10 @@ import LLMParameters from "./llm-parameters";
 import AIKnowledge from "./ai-knowledge";
 
 interface Props {
-  node: any;
-  onChange: (
-    field: string,
-    value: any
+  node: IVRNode;
+  onChange: <K extends keyof IVRNodeData>(
+    field: K,
+    value: IVRNodeData[K]
   ) => void;
 }
 

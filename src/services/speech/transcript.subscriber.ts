@@ -1,6 +1,6 @@
 import {
-  TranscriptEvents,
   TranscriptEvent,
+  TranscriptEvents,
 } from "./transcript.events";
 
 import {
@@ -8,7 +8,13 @@ import {
 } from "@/services/conversations/conversation-engine.service";
 
 import {
+  TurnCoordinator,
+} from "@/services/voice-runtime/turn-coordinator.service";
+
+import {
   createCallLogger,
+  createServerLogger,
+  normalizeError,
 } from "@/lib/logger";
 
 import {
@@ -16,9 +22,17 @@ import {
 } from "@/providers/telephony/audio-session.service";
 
 import {
-  EventSubscriber,
+  shouldPreserveCallAfterMediaStop,
+} from "@/services/telephony/human-transfer-lifecycle.service";
+
+import {
   AppEvent,
+  EventSubscriber,
 } from "@/core/events";
+
+import {
+  routeLiveTurn,
+} from "@/services/conversations/live-turn-router.service";
 
 import {
   CallPayload,
@@ -41,15 +55,39 @@ import {
 } from "@/services/voice/voice-worker.service";
 
 //--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const serviceLog =
+  createServerLogger(
+    "transcript-subscriber"
+  );
+
+//--------------------------------------------------
 // Pending Transcript
 //--------------------------------------------------
 
 interface PendingTranscript {
+  /*
+   * Transcript text is required internally for
+   * conversation processing, but must not be logged.
+   */
   text: string;
 
   normalizedText: string;
 
+  /*
+   * Time when the first fragment of this utterance
+   * was accepted.
+   */
   timestamp: number;
+
+  /*
+   * Time when the latest fragment was merged.
+   */
+  lastUpdatedAt: number;
+
+  fragmentCount: number;
 }
 
 //--------------------------------------------------
@@ -59,8 +97,36 @@ interface PendingTranscript {
 const DUPLICATE_WINDOW_MS =
   3_000;
 
+/*
+ * Wait after the most recent FINAL result before
+ * processing. This allows fragmented FINAL results
+ * from one spoken sentence to be merged.
+ */
+const DEFAULT_UTTERANCE_MERGE_WINDOW_MS =
+  500;
+
+const configuredUtteranceMergeWindowMs =
+  Number(
+    process.env
+      .UTTERANCE_MERGE_WINDOW_MS
+  );
+
+const UTTERANCE_MERGE_WINDOW_MS =
+  Number.isInteger(
+    configuredUtteranceMergeWindowMs
+  ) &&
+  configuredUtteranceMergeWindowMs >=
+    200 &&
+  configuredUtteranceMergeWindowMs <=
+    2_000
+    ? configuredUtteranceMergeWindowMs
+    : DEFAULT_UTTERANCE_MERGE_WINDOW_MS;
+
 const MAX_PENDING_TRANSCRIPTS_PER_CALL =
-  5;
+  1;
+
+const MAX_UTTERANCE_CHARACTER_COUNT =
+  1_500;
 
 //--------------------------------------------------
 // Normalize Transcript
@@ -83,6 +149,21 @@ function normalizeText(
 }
 
 //--------------------------------------------------
+// Clean Display Text
+//--------------------------------------------------
+
+function cleanDisplayText(
+  text: string
+): string {
+  return text
+    .replace(
+      /\s+/g,
+      " "
+    )
+    .trim();
+}
+
+//--------------------------------------------------
 // Transcript Subscriber
 //--------------------------------------------------
 
@@ -91,35 +172,43 @@ export class TranscriptSubscriber {
     false;
 
   /*
-   * Tracks recently accepted transcripts so
-   * duplicate Deepgram FINAL events are ignored.
+   * Tracks recently processed or accepted text so
+   * repeated Deepgram FINAL events are ignored.
    */
   private static lastTranscripts =
     new Map<
       string,
       {
         text: string;
-
         timestamp: number;
       }
     >();
 
   /*
-   * Guarantees that only one processUserMessage()
-   * execution runs for a call at a time.
+   * Ensures only one processUserMessage() execution
+   * runs for a call at a time.
    */
   private static activeTurns =
     new Set<string>();
 
   /*
-   * Final transcripts received while the AI is
-   * thinking or speaking are stored here rather
-   * than discarded.
+   * Stores finalized utterances waiting for
+   * conversation processing.
    */
   private static pendingTranscripts =
     new Map<
       string,
       PendingTranscript[]
+    >();
+
+  /*
+   * Debounces FINAL transcript processing so nearby
+   * fragments can be combined into one utterance.
+   */
+  private static drainTimers =
+    new Map<
+      string,
+      NodeJS.Timeout
     >();
 
   //--------------------------------------------------
@@ -129,6 +218,49 @@ export class TranscriptSubscriber {
   static cleanDedupeState(
     callId: string
   ): void {
+    const log =
+      createCallLogger(
+        callId
+      );
+
+    const pendingCount =
+      this.pendingTranscripts
+        .get(
+          callId
+        )
+        ?.length ??
+      0;
+
+    const previousState =
+      ConversationStateService.getState(
+        callId
+      );
+
+    //--------------------------------------------
+    // Cancel Scheduled Processing
+    //--------------------------------------------
+
+    const drainTimer =
+      this.drainTimers.get(
+        callId
+      );
+
+    if (
+      drainTimer
+    ) {
+      clearTimeout(
+        drainTimer
+      );
+
+      this.drainTimers.delete(
+        callId
+      );
+    }
+
+    //--------------------------------------------
+    // Remove Transcript Processing State
+    //--------------------------------------------
+
     this.lastTranscripts.delete(
       callId
     );
@@ -141,6 +273,10 @@ export class TranscriptSubscriber {
       callId
     );
 
+    //--------------------------------------------
+    // Remove Voice Queues And Buffers
+    //--------------------------------------------
+
     sentenceBuffer.clear(
       callId
     );
@@ -149,23 +285,33 @@ export class TranscriptSubscriber {
       callId
     );
 
-    const state =
-      ConversationStateService.getState(
-        callId
-      );
+    //--------------------------------------------
+    // Clean Coordinated Conversation Turn
+    //--------------------------------------------
 
-    if (
-      state !==
-      "ENDED"
-    ) {
-      ConversationStateService.setState(
-        callId,
-        "ENDED"
-      );
-    }
+    TurnCoordinator.cleanup(
+      callId
+    );
 
-    console.log(
-      `🧹 Transcript state and buffers cleaned for callId: ${callId}`
+    //--------------------------------------------
+    // Remove Conversation State From Memory
+    //--------------------------------------------
+
+    ConversationStateService.clearState(
+      callId
+    );
+
+    log.debug(
+      {
+        event:
+          "transcript.state.cleaned",
+
+        previousState,
+
+        removedPendingCount:
+          pendingCount,
+      },
+      "Transcript state and conversation memory cleaned"
     );
   }
 
@@ -178,8 +324,15 @@ export class TranscriptSubscriber {
     if (
       this.registered
     ) {
-      console.log(
-        "⚠️ TranscriptSubscriber already registered"
+      serviceLog.debug(
+        {
+          event:
+            "transcript.subscriber.registration_skipped",
+
+          reason:
+            "already_registered",
+        },
+        "Transcript subscriber is already registered"
       );
 
       return;
@@ -188,27 +341,120 @@ export class TranscriptSubscriber {
     this.registered =
       true;
 
-    console.log(
-      "✅ TranscriptSubscriber Registered"
+    serviceLog.info(
+      {
+        event:
+          "transcript.subscriber.registered",
+
+        duplicateWindowMs:
+          DUPLICATE_WINDOW_MS,
+
+        utteranceMergeWindowMs:
+          UTTERANCE_MERGE_WINDOW_MS,
+
+        maximumPendingPerCall:
+          MAX_PENDING_TRANSCRIPTS_PER_CALL,
+
+        maximumUtteranceCharacterCount:
+          MAX_UTTERANCE_CHARACTER_COUNT,
+      },
+      "Transcript subscriber registered"
     );
 
     //------------------------------------------------
     // Audio Session Cleanup
     //------------------------------------------------
 
-    AudioSessionService.onClose(
-      (
-        callId
-      ) => {
+AudioSessionService.onClose(
+  callId => {
+    void (
+      async () => {
+        //------------------------------------------------
+        // Always Clear Transcript Runtime
+        //------------------------------------------------
+
         this.cleanDedupeState(
           callId
         );
+
+        //------------------------------------------------
+        // Media Stop During Human Transfer
+        //------------------------------------------------
+
+        const preserveCall =
+          await shouldPreserveCallAfterMediaStop(
+            callId
+          );
+
+        if (
+          preserveCall
+        ) {
+          const log =
+            createCallLogger(
+              callId
+            );
+
+          log.info(
+            {
+              event:
+                "transcript.audio_close_transfer_preserved",
+            },
+            "Audio session closed during human transfer; parent call state preserved"
+          );
+
+          /*
+           * IMPORTANT:
+           *
+           * Do NOT call VoiceWorker.stop().
+           *
+           * VoiceWorker.stop() sets the conversational
+           * state to ENDED, but a Twilio Media Stream
+           * ending during transfer does not mean the
+           * underlying parent phone call ended.
+           */
+          return;
+        }
+
+        //------------------------------------------------
+        // Normal Media/Call Shutdown
+        //------------------------------------------------
 
         VoiceWorker.stop(
           callId
         );
       }
+    )().catch(
+      error => {
+        const log =
+          createCallLogger(
+            callId
+          );
+
+        log.error(
+          {
+            event:
+              "transcript.audio_close_cleanup_failed",
+
+            error:
+              normalizeError(
+                error
+              ),
+          },
+          "Audio-session close cleanup failed"
+        );
+
+        /*
+         * Fail safe:
+         *
+         * If transfer-state lookup itself fails, do not
+         * force the call into ENDED from this listener.
+         * The real provider call-status callback owns
+         * terminal parent-call state.
+         */
+      }
     );
+  }
+);
 
     //------------------------------------------------
     // Backup Event Cleanup
@@ -216,9 +462,11 @@ export class TranscriptSubscriber {
 
     EventSubscriber.on<CallPayload>(
       AppEvent.CALL_COMPLETED,
-      async (
-        payload
-      ) => {
+      async payload => {
+        VoiceWorker.stop(
+          payload.callId
+        );
+
         this.cleanDedupeState(
           payload.callId
         );
@@ -227,9 +475,11 @@ export class TranscriptSubscriber {
 
     EventSubscriber.on<CallPayload>(
       AppEvent.CALL_FAILED,
-      async (
-        payload
-      ) => {
+      async payload => {
+        VoiceWorker.stop(
+          payload.callId
+        );
+
         this.cleanDedupeState(
           payload.callId
         );
@@ -242,9 +492,7 @@ export class TranscriptSubscriber {
 
     TranscriptEvents.on(
       TranscriptEvent.FINAL,
-      async (
-        payload
-      ) => {
+      async payload => {
         const callId =
           payload.callId;
 
@@ -253,12 +501,17 @@ export class TranscriptSubscriber {
             callId
           );
 
-        console.log(
-          "🔥 FINAL EVENT RECEIVED"
-        );
+        log.debug(
+          {
+            event:
+              "transcript.final.received",
 
-        console.log(
-          payload
+            characterCount:
+              payload.text
+                ?.length ??
+              0,
+          },
+          "Final transcript event received"
         );
 
         //------------------------------------------
@@ -271,11 +524,14 @@ export class TranscriptSubscriber {
               callId
             )
         ) {
-          console.log(
-            `Transcript ignored because call session does not exist for callId: ${callId}`
-          );
-
           log.warn(
+            {
+              event:
+                "transcript.final.ignored",
+
+              reason:
+                "call_session_not_found",
+            },
             "Transcript ignored because call session does not exist"
           );
 
@@ -287,13 +543,22 @@ export class TranscriptSubscriber {
         //------------------------------------------
 
         const text =
-          payload.text
-            ?.trim();
+          cleanDisplayText(
+            payload.text ??
+              ""
+          );
 
         if (
           !text
         ) {
           log.warn(
+            {
+              event:
+                "transcript.final.ignored",
+
+              reason:
+                "empty_transcript",
+            },
             "Empty final transcript ignored"
           );
 
@@ -309,6 +574,16 @@ export class TranscriptSubscriber {
           !normalizedText
         ) {
           log.warn(
+            {
+              event:
+                "transcript.final.ignored",
+
+              reason:
+                "no_usable_text",
+
+              characterCount:
+                text.length,
+            },
             "Final transcript contained no usable text"
           );
 
@@ -335,14 +610,20 @@ export class TranscriptSubscriber {
             last.timestamp <
             DUPLICATE_WINDOW_MS
         ) {
-          console.log(
-            "Duplicate transcript ignored"
-          );
-
           log.info(
             {
-              transcript:
-                text,
+              event:
+                "transcript.final.duplicate_ignored",
+
+              characterCount:
+                text.length,
+
+              duplicateWindowMs:
+                DUPLICATE_WINDOW_MS,
+
+              millisecondsSincePrevious:
+                now -
+                last.timestamp,
             },
             "Duplicate transcript ignored"
           );
@@ -350,10 +631,55 @@ export class TranscriptSubscriber {
           return;
         }
 
+        //------------------------------------------
+        // Add Or Merge Transcript
+        //------------------------------------------
+
+        const queued =
+          this.enqueueTranscript(
+            callId,
+            {
+              text,
+
+              normalizedText,
+
+              timestamp:
+                now,
+
+              lastUpdatedAt:
+                now,
+
+              fragmentCount:
+                1,
+            }
+          );
+
+        if (
+          !queued
+        ) {
+          log.debug(
+            {
+              event:
+                "transcript.queue.not_changed",
+
+              incomingCharacterCount:
+                text.length,
+
+              currentPendingCount:
+                this.getPendingTranscriptCount(
+                  callId
+                ),
+            },
+            "Transcript queue was not changed"
+          );
+
+          return;
+        }
+
         /*
-         * Record the transcript as soon as it is
-         * accepted into the queue. This prevents
-         * repeated FINAL events from being queued.
+         * Remember the incoming fragment after it is
+         * accepted. This suppresses exact repeated
+         * FINAL events.
          */
         this.lastTranscripts.set(
           callId,
@@ -367,44 +693,10 @@ export class TranscriptSubscriber {
         );
 
         //------------------------------------------
-        // Add Transcript To Pending Queue
+        // Schedule Queue Processing
         //------------------------------------------
 
-        const queued =
-          this.enqueueTranscript(
-            callId,
-            {
-              text,
-
-              normalizedText,
-
-              timestamp:
-                now,
-            }
-          );
-
-        if (
-          !queued
-        ) {
-          log.warn(
-            {
-              transcript:
-                text,
-
-              maximumQueueSize:
-                MAX_PENDING_TRANSCRIPTS_PER_CALL,
-            },
-            "Transcript queue was full"
-          );
-
-          return;
-        }
-
-        //------------------------------------------
-        // Start Or Continue Queue Processing
-        //------------------------------------------
-
-        await this.drainPendingTranscripts(
+        this.scheduleDrain(
           callId
         );
       }
@@ -412,7 +704,47 @@ export class TranscriptSubscriber {
   }
 
   //--------------------------------------------------
-  // Enqueue Transcript
+  // Schedule Transcript Processing
+  //--------------------------------------------------
+
+  private static scheduleDrain(
+    callId: string
+  ): void {
+    const existingTimer =
+      this.drainTimers.get(
+        callId
+      );
+
+    if (
+      existingTimer
+    ) {
+      clearTimeout(
+        existingTimer
+      );
+    }
+
+    const timer =
+      setTimeout(
+        () => {
+          this.drainTimers.delete(
+            callId
+          );
+
+          void this.drainPendingTranscripts(
+            callId
+          );
+        },
+        UTTERANCE_MERGE_WINDOW_MS
+      );
+
+    this.drainTimers.set(
+      callId,
+      timer
+    );
+  }
+
+  //--------------------------------------------------
+  // Enqueue Or Merge Transcript
   //--------------------------------------------------
 
   private static enqueueTranscript(
@@ -420,16 +752,217 @@ export class TranscriptSubscriber {
     transcript:
       PendingTranscript
   ): boolean {
+    const log =
+      createCallLogger(
+        callId
+      );
+
     const queue =
       this.pendingTranscripts.get(
         callId
       ) ??
       [];
 
-    /*
-     * Protect against duplicate text already waiting
-     * in the pending queue.
-     */
+    const lastQueued =
+      queue.length >
+        0
+        ? queue[
+            queue.length -
+              1
+          ]
+        : undefined;
+
+    //------------------------------------------
+    // Merge Nearby Final Fragments
+    //------------------------------------------
+
+    if (
+      lastQueued &&
+      transcript.timestamp -
+        lastQueued.lastUpdatedAt <=
+        UTTERANCE_MERGE_WINDOW_MS
+    ) {
+      const previousNormalized =
+        lastQueued.normalizedText;
+
+      const incomingNormalized =
+        transcript.normalizedText;
+
+      /*
+       * Exact repeated fragment.
+       */
+      if (
+        incomingNormalized ===
+        previousNormalized
+      ) {
+        log.debug(
+          {
+            event:
+              "transcript.queue.fragment_duplicate_ignored",
+
+            incomingCharacterCount:
+              transcript.text.length,
+
+            pendingCount:
+              queue.length,
+          },
+          "Repeated final transcript fragment ignored"
+        );
+
+        return false;
+      }
+
+      /*
+       * Deepgram can send cumulative results:
+       *
+       * "I need information"
+       * "I need information about pricing"
+       *
+       * Replace the previous fragment rather than
+       * appending duplicate words.
+       */
+      if (
+        incomingNormalized.startsWith(
+          previousNormalized
+        )
+      ) {
+        lastQueued.text =
+          transcript.text.slice(
+            0,
+            MAX_UTTERANCE_CHARACTER_COUNT
+          );
+
+        lastQueued.normalizedText =
+          incomingNormalized.slice(
+            0,
+            MAX_UTTERANCE_CHARACTER_COUNT
+          );
+
+        lastQueued.lastUpdatedAt =
+          transcript.timestamp;
+
+        lastQueued.fragmentCount +=
+          1;
+
+        this.pendingTranscripts.set(
+          callId,
+          queue
+        );
+
+        log.debug(
+          {
+            event:
+              "transcript.queue.cumulative_fragment_replaced",
+
+            mergedCharacterCount:
+              lastQueued.text.length,
+
+            fragmentCount:
+              lastQueued.fragmentCount,
+
+            pendingCount:
+              queue.length,
+          },
+          "Cumulative final transcript replaced previous fragment"
+        );
+
+        return true;
+      }
+
+      /*
+       * The incoming result may be a shorter version
+       * already contained in the previous result.
+       */
+      if (
+        previousNormalized.startsWith(
+          incomingNormalized
+        ) ||
+        previousNormalized.endsWith(
+          incomingNormalized
+        )
+      ) {
+        lastQueued.lastUpdatedAt =
+          transcript.timestamp;
+
+        log.debug(
+          {
+            event:
+              "transcript.queue.contained_fragment_ignored",
+
+            incomingCharacterCount:
+              transcript.text.length,
+
+            pendingCount:
+              queue.length,
+          },
+          "Contained transcript fragment ignored"
+        );
+
+        return true;
+      }
+
+      /*
+       * Normal segmented results:
+       *
+       * "I need information"
+       * "about your service"
+       *
+       * Combine them into one utterance.
+       */
+      const combinedText =
+        cleanDisplayText(
+          `${lastQueued.text} ${transcript.text}`
+        ).slice(
+          0,
+          MAX_UTTERANCE_CHARACTER_COUNT
+        );
+
+      lastQueued.text =
+        combinedText;
+
+      lastQueued.normalizedText =
+        normalizeText(
+          combinedText
+        ).slice(
+          0,
+          MAX_UTTERANCE_CHARACTER_COUNT
+        );
+
+      lastQueued.lastUpdatedAt =
+        transcript.timestamp;
+
+      lastQueued.fragmentCount +=
+        1;
+
+      this.pendingTranscripts.set(
+        callId,
+        queue
+      );
+
+      log.info(
+        {
+          event:
+            "transcript.queue.fragments_merged",
+
+          mergedCharacterCount:
+            lastQueued.text.length,
+
+          fragmentCount:
+            lastQueued.fragmentCount,
+
+          pendingCount:
+            queue.length,
+        },
+        "Final transcript fragments merged into one utterance"
+      );
+
+      return true;
+    }
+
+    //------------------------------------------
+    // Prevent Duplicate Queue Entries
+    //------------------------------------------
+
     const alreadyQueued =
       queue.some(
         item =>
@@ -440,14 +973,18 @@ export class TranscriptSubscriber {
     if (
       alreadyQueued
     ) {
-      console.log(
-        "Duplicate queued transcript ignored",
+      log.debug(
         {
-          callId,
+          event:
+            "transcript.queue.duplicate_ignored",
 
-          transcript:
-            transcript.text,
-        }
+          characterCount:
+            transcript.text.length,
+
+          pendingCount:
+            queue.length,
+        },
+        "Duplicate queued transcript ignored"
       );
 
       return false;
@@ -461,27 +998,25 @@ export class TranscriptSubscriber {
       queue.length >=
       MAX_PENDING_TRANSCRIPTS_PER_CALL
     ) {
-      /*
-       * Remove the oldest pending transcript and
-       * preserve the caller's most recent request.
-       */
       const removed =
         queue.shift();
 
-      console.warn(
-        "Pending transcript queue limit reached; oldest transcript removed",
+      log.warn(
         {
-          callId,
+          event:
+            "transcript.queue.oldest_removed",
 
-          removedTranscript:
-            removed?.text,
+          removedCharacterCount:
+            removed?.text.length ??
+            0,
 
-          incomingTranscript:
-            transcript.text,
+          incomingCharacterCount:
+            transcript.text.length,
 
           maximumQueueSize:
             MAX_PENDING_TRANSCRIPTS_PER_CALL,
-        }
+        },
+        "Pending transcript queue limit reached; oldest transcript removed"
       );
     }
 
@@ -509,19 +1044,37 @@ export class TranscriptSubscriber {
       state !==
         "LISTENING"
     ) {
-      console.log(
-        "🕒 Transcript queued while conversation turn is active",
+      log.debug(
         {
-          callId,
-
-          transcript:
-            transcript.text,
+          event:
+            "transcript.queue.waiting",
 
           state,
 
+          activeTurn:
+            active,
+
           pendingCount:
             queue.length,
-        }
+
+          characterCount:
+            transcript.text.length,
+        },
+        "Transcript queued while conversation turn is active"
+      );
+    } else {
+      log.debug(
+        {
+          event:
+            "transcript.queue.added",
+
+          pendingCount:
+            queue.length,
+
+          characterCount:
+            transcript.text.length,
+        },
+        "Transcript added to pending queue"
       );
     }
 
@@ -536,9 +1089,29 @@ export class TranscriptSubscriber {
     callId: string
   ): Promise<void> {
     /*
+     * Cancel any remaining scheduled timer because
+     * processing is beginning now.
+     */
+    const scheduledTimer =
+      this.drainTimers.get(
+        callId
+      );
+
+    if (
+      scheduledTimer
+    ) {
+      clearTimeout(
+        scheduledTimer
+      );
+
+      this.drainTimers.delete(
+        callId
+      );
+    }
+
+    /*
      * Another drain loop is already processing this
-     * call. The newly queued transcript will be picked
-     * up by that loop.
+     * call. Newly queued text will be handled later.
      */
     if (
       this.activeTurns.has(
@@ -548,11 +1121,6 @@ export class TranscriptSubscriber {
       return;
     }
 
-    /*
-     * Mark the call as active for the entire drain
-     * operation so two asynchronous FINAL events
-     * cannot start parallel processing loops.
-     */
     this.activeTurns.add(
       callId
     );
@@ -576,11 +1144,28 @@ export class TranscriptSubscriber {
               callId
             )
         ) {
+          const removedPendingCount =
+            this.pendingTranscripts
+              .get(
+                callId
+              )
+              ?.length ??
+            0;
+
           this.pendingTranscripts.delete(
             callId
           );
 
           log.warn(
+            {
+              event:
+                "transcript.processing.stopped",
+
+              reason:
+                "call_session_ended",
+
+              removedPendingCount,
+            },
             "Pending transcript processing stopped because the call session ended"
           );
 
@@ -621,50 +1206,51 @@ export class TranscriptSubscriber {
           state ===
           "ENDED"
         ) {
+          const removedPendingCount =
+            queue.length;
+
           this.pendingTranscripts.delete(
             callId
           );
 
           log.warn(
-            "Pending transcripts removed because the conversation ended"
+            {
+              event:
+                "transcript.processing.stopped",
+
+              reason:
+                "conversation_ended",
+
+              removedPendingCount,
+            },
+            "Pending transcripts removed because conversation ended"
           );
 
           return;
         }
 
-        /*
-         * Normally processUserMessage() returns only
-         * after state returns to LISTENING.
-         *
-         * This guard protects against another service
-         * temporarily changing the state.
-         */
         if (
           state !==
           "LISTENING"
         ) {
-          console.log(
-            "Pending transcript waiting for LISTENING state",
+          log.debug(
             {
-              callId,
+              event:
+                "transcript.processing.waiting",
 
               state,
 
               pendingCount:
                 queue.length,
-            }
+            },
+            "Pending transcript waiting for LISTENING state"
           );
 
-          /*
-           * Stop this drain attempt. A later FINAL
-           * event or the current conversation turn
-           * completion will invoke the drain again.
-           */
           return;
         }
 
         //----------------------------------------
-        // Remove Next Transcript
+        // Remove Next Combined Utterance
         //----------------------------------------
 
         const nextTranscript =
@@ -694,15 +1280,36 @@ export class TranscriptSubscriber {
         // Process Conversation Turn
         //----------------------------------------
 
+        const processingStartedAt =
+          Date.now();
+
+        const {
+          turnId,
+          signal,
+        } =
+          TurnCoordinator.beginTurn(
+            callId
+          );
+
         log.info(
           {
-            transcript:
-              nextTranscript.text,
+            event:
+              "transcript.processing.started",
 
-            queuedAt:
-              new Date(
-                nextTranscript.timestamp
-              ).toISOString(),
+            turnId,
+
+            characterCount:
+              nextTranscript.text.length,
+
+            fragmentCount:
+              nextTranscript.fragmentCount,
+
+            queueDelayMs:
+              Math.max(
+                0,
+                processingStartedAt -
+                  nextTranscript.timestamp
+              ),
 
             remainingPending:
               queue.length,
@@ -710,16 +1317,118 @@ export class TranscriptSubscriber {
           "Final transcript processing started"
         );
 
-        try {
-          await processUserMessage(
+try {
+  //------------------------------------------------
+  // Route Business Workflow Before Normal AI
+  //------------------------------------------------
+
+  const liveRoute =
+    await routeLiveTurn(
+      callId,
+      nextTranscript.text,
+      signal,
+      turnId
+    );
+
+  //------------------------------------------------
+  // Normal Conversation Only If Not Handled
+  //------------------------------------------------
+
+  if (
+    !liveRoute.handled
+  ) {
+    await processUserMessage(
+      callId,
+      nextTranscript.text,
+      signal,
+      turnId
+    );
+  } else {
+    log.info(
+      {
+        event:
+          "transcript.processing.workflow_handled",
+
+        turnId,
+
+        responsePresent:
+          Boolean(
+            liveRoute.response
+          ),
+
+        audioQueued:
+          liveRoute.audioQueued,
+
+        routeReason:
+          liveRoute.reason,
+      },
+      "Final transcript handled by live business workflow"
+    );
+  }
+
+          //------------------------------------------------
+          // Stale Turn Protection
+          //------------------------------------------------
+
+          if (
+            !TurnCoordinator.isCurrent(
+              callId,
+              turnId
+            )
+          ) {
+            log.info(
+              {
+                event:
+                  "transcript.processing.stale_discarded",
+
+                turnId,
+
+                currentTurnId:
+                  TurnCoordinator
+                    .getCurrentTurnId(
+                      callId
+                    ),
+
+                characterCount:
+                  nextTranscript.text.length,
+
+                fragmentCount:
+                  nextTranscript.fragmentCount,
+
+                processingDurationMs:
+                  Date.now() -
+                  processingStartedAt,
+
+                remainingPending:
+                  queue.length,
+              },
+              "Completed conversation work discarded because a newer turn owns the call"
+            );
+
+            continue;
+          }
+
+          TurnCoordinator.completeTurn(
             callId,
-            nextTranscript.text
+            turnId
           );
 
           log.info(
             {
-              transcript:
-                nextTranscript.text,
+              event:
+                "transcript.processing.completed",
+
+              turnId,
+
+              characterCount:
+                nextTranscript.text.length,
+
+              fragmentCount:
+                nextTranscript.fragmentCount,
+
+              processingDurationMs:
+                Date.now() -
+                processingStartedAt,
 
               remainingPending:
                 queue.length,
@@ -729,23 +1438,86 @@ export class TranscriptSubscriber {
         } catch (
           error
         ) {
+          const aborted =
+            error instanceof
+              DOMException &&
+            error.name ===
+              "AbortError";
+
+          const stillCurrent =
+            TurnCoordinator.isCurrent(
+              callId,
+              turnId
+            );
+
+          if (
+            aborted ||
+            !stillCurrent
+          ) {
+            log.info(
+              {
+                event:
+                  "transcript.processing.cancelled",
+
+                turnId,
+
+                currentTurnId:
+                  TurnCoordinator
+                    .getCurrentTurnId(
+                      callId
+                    ),
+
+                characterCount:
+                  nextTranscript.text.length,
+
+                fragmentCount:
+                  nextTranscript.fragmentCount,
+
+                processingDurationMs:
+                  Date.now() -
+                  processingStartedAt,
+
+                remainingPending:
+                  queue.length,
+              },
+              "Conversation turn cancelled because it no longer owns the call"
+            );
+
+            continue;
+          }
+
+          TurnCoordinator.failTurn(
+            callId,
+            turnId
+          );
+
           log.error(
             {
+              event:
+                "transcript.processing.failed",
+
+              turnId,
+
               error:
                 normalizeError(
                   error
                 ),
 
-              transcript:
-                nextTranscript.text,
+              characterCount:
+                nextTranscript.text.length,
+
+              fragmentCount:
+                nextTranscript.fragmentCount,
+
+              processingDurationMs:
+                Date.now() -
+                processingStartedAt,
+
+              remainingPending:
+                queue.length,
             },
             "Conversation engine failed"
           );
-
-          /*
-           * Continue with the next pending transcript
-           * when the call is still active.
-           */
         }
       }
     } finally {
@@ -757,11 +1529,6 @@ export class TranscriptSubscriber {
       // Handle Race At Loop Completion
       //------------------------------------------
 
-      /*
-       * A transcript could be queued immediately
-       * before activeTurns was cleared. Start another
-       * drain pass when the call is ready.
-       */
       const remainingQueue =
         this.pendingTranscripts.get(
           callId
@@ -783,7 +1550,12 @@ export class TranscriptSubscriber {
             callId
           )
       ) {
-        void this.drainPendingTranscripts(
+        /*
+         * Use the debounce window again. This allows
+         * any final fragments arriving at the end of
+         * playback to merge before the next turn.
+         */
+        this.scheduleDrain(
           callId
         );
       }
@@ -806,35 +1578,4 @@ export class TranscriptSubscriber {
       0
     );
   }
-}
-
-//--------------------------------------------------
-// Normalize Error
-//--------------------------------------------------
-
-function normalizeError(
-  error: unknown
-) {
-  if (
-    error instanceof
-    Error
-  ) {
-    return {
-      name:
-        error.name,
-
-      message:
-        error.message,
-
-      stack:
-        error.stack,
-    };
-  }
-
-  return {
-    message:
-      String(
-        error
-      ),
-  };
 }

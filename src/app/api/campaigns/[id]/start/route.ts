@@ -32,14 +32,19 @@ import {
   CampaignQueueService,
 } from "@/services/campaigns/campaign-queue.service";
 
+import {
+  resolveOutboundSchedule,
+} from "@/services/campaigns/outbound-schedule.service";
+
 //--------------------------------------------------
 // Context Type
 //--------------------------------------------------
 
 interface RouteContext {
-  params: Promise<{
-    id: string;
-  }>;
+  params:
+    Promise<{
+      id: string;
+    }>;
 }
 
 //--------------------------------------------------
@@ -49,8 +54,11 @@ interface RouteContext {
 export const POST =
   asyncHandler<RouteContext>(
     async (
-      _request: NextRequest,
-      context: RouteContext
+      _request:
+        NextRequest,
+
+      context:
+        RouteContext
     ) => {
       //----------------------------------------
       // Authorization
@@ -66,58 +74,122 @@ export const POST =
       //----------------------------------------
 
       const {
-        id: campaignId,
-      } = await context.params;
+        id:
+          campaignId,
+      } =
+        await context.params;
 
       //----------------------------------------
-      // Load Campaign
+      // Normalize Campaign ID
       //----------------------------------------
 
-      const campaign =
-        await prisma.campaign.findUnique({
-          where: {
-            id: campaignId,
-          },
+      const normalizedCampaignId =
+        campaignId.trim();
 
-          select: {
-            id: true,
-
-            status: true,
-
-            contacts: {
-              select: {
-                contactId: true,
-
-                contact: {
-                  select: {
-                    id: true,
-                    phone: true,
-                    status: true,
-                  },
-                },
-              },
-            },
-          },
-        });
-
-      if (!campaign) {
+      if (
+        !normalizedCampaignId
+      ) {
         throw new CampaignNotFoundError(
           campaignId
         );
       }
 
       //----------------------------------------
-      // Validate Current Status
+      // Load Campaign
+      //----------------------------------------
+
+      const campaign =
+        await prisma
+          .campaign
+          .findUnique({
+            where: {
+              id:
+                normalizedCampaignId,
+            },
+
+            select: {
+              id:
+                true,
+
+              status:
+                true,
+
+              scheduledAt:
+                true,
+
+              contacts: {
+                select: {
+                  contactId:
+                    true,
+
+                  contact: {
+                    select: {
+                      id:
+                        true,
+
+                      phone:
+                        true,
+
+                      status:
+                        true,
+                    },
+                  },
+                },
+              },
+            },
+          });
+
+      //----------------------------------------
+      // Campaign Must Exist
       //----------------------------------------
 
       if (
+        !campaign
+      ) {
+        throw new CampaignNotFoundError(
+          normalizedCampaignId
+        );
+      }
+
+      //----------------------------------------
+      // Reject Active / Scheduled Campaign
+      //----------------------------------------
+
+      /*
+       * SCHEDULED is treated as an active campaign
+       * state here.
+       *
+       * Allowing another POST /start while already
+       * SCHEDULED could create a second CampaignRun
+       * and a second BullMQ delayed job.
+       */
+      if (
+        campaign.status ===
+          CampaignStatus.SCHEDULED ||
         campaign.status ===
           CampaignStatus.QUEUED ||
         campaign.status ===
           CampaignStatus.RUNNING
       ) {
         throw new CampaignConflictError(
-          "Campaign is already queued or running",
+          campaign.status ===
+            CampaignStatus.SCHEDULED
+            ? "Campaign is already scheduled"
+            : "Campaign is already queued or running",
+          campaign.status
+        );
+      }
+
+      //----------------------------------------
+      // Cancelled Campaign Guard
+      //----------------------------------------
+
+      if (
+        campaign.status ===
+        CampaignStatus.CANCELLED
+      ) {
+        throw new CampaignConflictError(
+          "Cancelled campaigns cannot be started",
           campaign.status
         );
       }
@@ -128,11 +200,13 @@ export const POST =
 
       const callableContacts =
         campaign.contacts.filter(
-          ({ contact }) => {
-            /*
-             * Blocked contacts must never be
-             * included in an outbound campaign.
-             */
+          ({
+            contact,
+          }) => {
+            //----------------------------------
+            // Blocked Contacts
+            //----------------------------------
+
             if (
               contact.status ===
               ContactStatus.BLOCKED
@@ -140,18 +214,26 @@ export const POST =
               return false;
             }
 
+            //----------------------------------
+            // Invalid / Missing Phone
+            //----------------------------------
+
             return isCallablePhoneNumber(
               contact.phone
             );
           }
         );
 
+      //----------------------------------------
+      // Require At Least One Callable Contact
+      //----------------------------------------
+
       if (
         callableContacts.length ===
         0
       ) {
         throw new NoCallableContactsError(
-          campaignId
+          campaign.id
         );
       }
 
@@ -162,6 +244,24 @@ export const POST =
       validateProviderConfiguration();
 
       //----------------------------------------
+      // Resolve Outbound Schedule
+      //----------------------------------------
+
+      const schedule =
+        resolveOutboundSchedule(
+          campaign.scheduledAt
+        );
+
+      //----------------------------------------
+      // Resolve Target Campaign Status
+      //----------------------------------------
+
+      const targetCampaignStatus =
+        schedule.scheduled
+          ? CampaignStatus.SCHEDULED
+          : CampaignStatus.QUEUED;
+
+      //----------------------------------------
       // Atomically Claim Campaign
       //----------------------------------------
 
@@ -169,21 +269,23 @@ export const POST =
         await prisma.$transaction(
           async transaction => {
             /*
-             * updateMany provides an atomic status
-             * condition. This prevents two simultaneous
-             * requests from starting duplicate runs.
+             * This compare-and-set prevents two
+             * concurrent /start requests from both
+             * creating campaign runs.
+             *
+             * SCHEDULED is intentionally NOT included.
              */
             const claimed =
               await transaction
                 .campaign
                 .updateMany({
                   where: {
-                    id: campaignId,
+                    id:
+                      campaign.id,
 
                     status: {
                       in: [
                         CampaignStatus.DRAFT,
-                        CampaignStatus.SCHEDULED,
                         CampaignStatus.PAUSED,
                         CampaignStatus.COMPLETED,
                         CampaignStatus.FAILED,
@@ -193,8 +295,13 @@ export const POST =
 
                   data: {
                     status:
-                      CampaignStatus.QUEUED,
+                      targetCampaignStatus,
 
+                    /*
+                     * The worker owns the real
+                     * SCHEDULED/QUEUED -> RUNNING
+                     * transition.
+                     */
                     startedAt:
                       null,
 
@@ -202,6 +309,10 @@ export const POST =
                       null,
                   },
                 });
+
+            //----------------------------------
+            // Campaign Claim Failed
+            //----------------------------------
 
             if (
               claimed.count ===
@@ -212,28 +323,34 @@ export const POST =
                   .campaign
                   .findUnique({
                     where: {
-                      id: campaignId,
+                      id:
+                        campaign.id,
                     },
 
                     select: {
-                      status: true,
+                      status:
+                        true,
                     },
                   });
 
-              if (!currentCampaign) {
+              if (
+                !currentCampaign
+              ) {
                 throw new CampaignNotFoundError(
-                  campaignId
+                  campaign.id
                 );
               }
 
               throw new CampaignConflictError(
-                "Campaign could not be started in its current state",
+                getCampaignConflictMessage(
+                  currentCampaign.status
+                ),
                 currentCampaign.status
               );
             }
 
             //----------------------------------
-            // Create New Campaign Run
+            // Create Campaign Run
             //----------------------------------
 
             const campaignRun =
@@ -241,8 +358,16 @@ export const POST =
                 .campaignRun
                 .create({
                   data: {
-                    campaignId,
+                    campaignId:
+                      campaign.id,
 
+                    /*
+                     * Even scheduled campaigns keep
+                     * their run QUEUED.
+                     *
+                     * BullMQ's delay represents the
+                     * scheduled waiting state.
+                     */
                     status:
                       CampaignRunStatus.QUEUED,
 
@@ -277,58 +402,107 @@ export const POST =
       //----------------------------------------
 
       try {
-        await CampaignQueueService.enqueue({
-          campaignId,
+        await CampaignQueueService.enqueue(
+          {
+            campaignId:
+              campaign.id,
 
-          campaignRunId:
-            result.campaignRun.id,
-        });
-      } catch (error) {
+            campaignRunId:
+              result
+                .campaignRun
+                .id,
+          },
+          {
+            delayMs:
+              schedule.delayMs,
+          }
+        );
+      } catch (
+        error
+      ) {
+        //--------------------------------------
+        // Queue Failure Compensation
+        //--------------------------------------
+
+        const failedAt =
+          new Date();
+
         /*
-         * Compensate for queue failure so neither
-         * the campaign nor run remains stuck in QUEUED.
+         * If BullMQ cannot accept the job,
+         * compensate the database transaction so
+         * nothing remains permanently QUEUED or
+         * SCHEDULED without an actual job.
          */
         await prisma.$transaction([
-          prisma.campaignRun.update({
-            where: {
-              id:
-                result.campaignRun.id,
-            },
+          prisma
+            .campaignRun
+            .updateMany({
+              where: {
+                id:
+                  result
+                    .campaignRun
+                    .id,
 
-            data: {
-              status:
-                CampaignRunStatus.FAILED,
+                campaignId:
+                  campaign.id,
 
-              failed:
-                callableContacts.length,
+                status:
+                  CampaignRunStatus.QUEUED,
+              },
 
-              completedAt:
-                new Date(),
-            },
-          }),
+              data: {
+                status:
+                  CampaignRunStatus.FAILED,
 
-          prisma.campaign.update({
-            where: {
-              id: campaignId,
-            },
+                failed:
+                  callableContacts.length,
 
-            data: {
-              status:
-                CampaignStatus.FAILED,
+                completedAt:
+                  failedAt,
+              },
+            }),
 
-              completedAt:
-                new Date(),
-            },
-          }),
+          prisma
+            .campaign
+            .updateMany({
+              where: {
+                id:
+                  campaign.id,
+
+                status: {
+                  in: [
+                    CampaignStatus.SCHEDULED,
+                    CampaignStatus.QUEUED,
+                  ],
+                },
+              },
+
+              data: {
+                status:
+                  CampaignStatus.FAILED,
+
+                completedAt:
+                  failedAt,
+              },
+            }),
         ]);
 
         throw new ProviderUnavailableError(
           "Campaign queue is currently unavailable",
-          normalizeError(
+          normalizeUnknownError(
             error
           )
         );
       }
+
+      //----------------------------------------
+      // Response Message
+      //----------------------------------------
+
+      const message =
+        schedule.scheduled
+          ? "Campaign scheduled successfully"
+          : "Campaign queued successfully";
 
       //----------------------------------------
       // Return Accepted Response
@@ -336,34 +510,89 @@ export const POST =
 
       return NextResponse.json(
         {
-          success: true,
+          success:
+            true,
 
-          message:
-            "Campaign queued successfully",
+          message,
 
           data: {
-            campaignId,
+            campaignId:
+              campaign.id,
 
             campaignRunId:
-              result.campaignRun.id,
+              result
+                .campaignRun
+                .id,
 
-            status:
+            campaignStatus:
+              targetCampaignStatus,
+
+            runStatus:
               CampaignRunStatus.QUEUED,
+
+            scheduled:
+              schedule.scheduled,
+
+            scheduledAt:
+              schedule
+                .scheduledAt
+                ?.toISOString() ??
+              null,
+
+            delayMs:
+              schedule.delayMs,
 
             total:
               callableContacts.length,
 
             excluded:
-              campaign.contacts.length -
-              callableContacts.length,
+              campaign
+                .contacts
+                .length -
+              callableContacts
+                .length,
           },
         },
         {
-          status: 202,
+          status:
+            202,
+
+          headers: {
+            "Cache-Control":
+              "no-store",
+          },
         }
       );
     }
   );
+
+//--------------------------------------------------
+// Campaign Conflict Message
+//--------------------------------------------------
+
+function getCampaignConflictMessage(
+  status:
+    CampaignStatus
+): string {
+  switch (
+    status
+  ) {
+    case CampaignStatus.SCHEDULED:
+      return "Campaign is already scheduled";
+
+    case CampaignStatus.QUEUED:
+      return "Campaign is already queued";
+
+    case CampaignStatus.RUNNING:
+      return "Campaign is already running";
+
+    case CampaignStatus.CANCELLED:
+      return "Cancelled campaigns cannot be started";
+
+    default:
+      return "Campaign could not be started in its current state";
+  }
+}
 
 //--------------------------------------------------
 // Validate Callable Phone Number
@@ -375,7 +604,9 @@ function isCallablePhoneNumber(
     | null
     | undefined
 ): boolean {
-  if (!phone) {
+  if (
+    !phone
+  ) {
     return false;
   }
 
@@ -388,14 +619,16 @@ function isCallablePhoneNumber(
       );
 
   /*
-   * Basic E.164-compatible validation:
+   * Basic E.164-compatible validation.
+   *
+   * Examples:
    *
    * +919876543210
    * 919876543210
    * 9876543210
    *
-   * Allows 10 to 15 digits and an optional
-   * leading plus sign.
+   * Optional leading + followed by
+   * 10 to 15 digits.
    */
   return /^\+?[1-9]\d{9,14}$/.test(
     normalized
@@ -415,19 +648,28 @@ function validateProviderConfiguration():
       .toLowerCase() ??
     "twilio";
 
+  //----------------------------------------
+  // Twilio
+  //----------------------------------------
+
   if (
     provider ===
     "twilio"
   ) {
-    const missingVariables =
+    const requiredVariables =
       [
         "TWILIO_ACCOUNT_SID",
         "TWILIO_AUTH_TOKEN",
         "TWILIO_PHONE_NUMBER",
         "TWILIO_PUBLIC_BASE_URL",
-      ].filter(
+        "TWILIO_MEDIA_PUBLIC_URL",
+      ] as const;
+
+    const missingVariables =
+      requiredVariables.filter(
         name =>
-          !process.env[name]
+          !process
+            .env[name]
             ?.trim()
       );
 
@@ -438,7 +680,10 @@ function validateProviderConfiguration():
       throw new ProviderUnavailableError(
         "Twilio provider is not configured",
         {
-          missingVariables,
+          missingVariables:
+            [
+              ...missingVariables,
+            ],
         }
       );
     }
@@ -446,33 +691,62 @@ function validateProviderConfiguration():
     return;
   }
 
+  //----------------------------------------
+  // Unsupported Provider Guard
+  //----------------------------------------
+
   /*
-   * Add provider-specific environment validation
-   * here when Plivo, Telnyx, Exotel, or another
-   * provider is enabled.
+   * Do not silently continue when a provider
+   * is selected but its production adapter has
+   * not yet been enabled.
    */
+  throw new ProviderUnavailableError(
+    `Telephony provider "${provider}" is not configured for campaign dispatch`,
+    {
+      provider,
+    }
+  );
 }
 
 //--------------------------------------------------
 // Normalize Unknown Error
 //--------------------------------------------------
 
-function normalizeError(
-  error: unknown
+function normalizeUnknownError(
+  error:
+    unknown
 ): {
-  name?: string;
-  message: string;
+  name?:
+    string;
+
+  message:
+    string;
+
+  code?:
+    string |
+    number;
 } {
   if (
     error instanceof
     Error
   ) {
+    const errorWithCode =
+      error as
+        Error & {
+          code?:
+            string |
+            number;
+        };
+
     return {
       name:
         error.name,
 
       message:
         error.message,
+
+      code:
+        errorWithCode.code,
     };
   }
 

@@ -12,6 +12,11 @@ import {
   normalizeError,
 } from "@/lib/logger";
 
+import {
+  authenticateSocket,
+  getAllowedSocketOrigins,
+} from "@/server/socket-auth";
+
 //--------------------------------------------------
 // Logger
 //--------------------------------------------------
@@ -54,6 +59,11 @@ export function initializeSocket(
     return io;
   }
 
+  const allowedOrigins =
+    Array.from(
+      getAllowedSocketOrigins()
+    );
+
   io =
     new Server(
       server,
@@ -62,19 +72,60 @@ export function initializeSocket(
           "/socket.io",
 
         cors: {
-          origin:
-            "*",
+          origin(
+            origin,
+            callback
+          ) {
+            /*
+             * Non-browser clients may not send Origin.
+             * Production browser connections are also
+             * checked again by socket middleware.
+             */
+            if (
+              !origin &&
+              process.env.NODE_ENV !==
+                "production"
+            ) {
+              callback(
+                null,
+                true
+              );
+
+              return;
+            }
+
+            if (
+              origin &&
+              allowedOrigins.includes(
+                normalizeOrigin(
+                  origin
+                )
+              )
+            ) {
+              callback(
+                null,
+                true
+              );
+
+              return;
+            }
+
+            callback(
+              new Error(
+                "Socket origin is not allowed"
+              )
+            );
+          },
 
           methods: [
             "GET",
             "POST",
           ],
+
+          credentials:
+            true,
         },
 
-        /*
-         * Use polling only so Socket.IO does not
-         * compete with the Twilio WebSocket server.
-         */
         transports: [
           "polling",
         ],
@@ -84,9 +135,81 @@ export function initializeSocket(
       }
     );
 
+  //----------------------------------------
+  // Authentication Middleware
+  //----------------------------------------
+
+  io.use(
+    async (
+      socket,
+      next
+    ) => {
+      try {
+        const {
+          user,
+        } =
+          await authenticateSocket(
+            socket
+          );
+
+        socket.data.user =
+          user;
+
+        next();
+      } catch (
+        error
+      ) {
+        log.warn(
+          {
+            event:
+              "socket.authentication.rejected",
+
+            socketId:
+              socket.id,
+
+            origin:
+              socket.handshake
+                .headers
+                .origin,
+
+            address:
+              socket.handshake
+                .address,
+
+            error:
+              normalizeError(
+                error
+              ),
+          },
+          "Dashboard socket authentication rejected"
+        );
+
+        next(
+          new Error(
+            "Authentication required"
+          )
+        );
+      }
+    }
+  );
+
+  //----------------------------------------
+  // Connection Handler
+  //----------------------------------------
+
   io.on(
     "connection",
     socket => {
+      const user =
+        socket.data.user as
+          | {
+              id: string;
+              fullName: string;
+              email: string;
+              role: string;
+            }
+          | undefined;
+
       log.info(
         {
           event:
@@ -94,6 +217,12 @@ export function initializeSocket(
 
           socketId:
             socket.id,
+
+          userId:
+            user?.id,
+
+          role:
+            user?.role,
 
           transport:
             socket.conn
@@ -105,7 +234,7 @@ export function initializeSocket(
               .clientsCount ??
             0,
         },
-        "Dashboard socket connected"
+        "Authenticated dashboard socket connected"
       );
 
       socket.on(
@@ -118,6 +247,9 @@ export function initializeSocket(
 
               socketId:
                 socket.id,
+
+              userId:
+                user?.id,
 
               reason,
 
@@ -141,6 +273,9 @@ export function initializeSocket(
 
               socketId:
                 socket.id,
+
+              userId:
+                user?.id,
 
               error:
                 normalizeError(
@@ -168,8 +303,13 @@ export function initializeSocket(
 
       upgradesAllowed:
         false,
+
+      authenticationRequired:
+        true,
+
+      allowedOrigins,
     },
-    "Socket.IO initialized"
+    "Authenticated Socket.IO initialized"
   );
 
   return io;
@@ -231,10 +371,6 @@ export async function closeSocketServer():
   const socketServer =
     io;
 
-  /*
-   * Clear the module reference first so no new code
-   * treats the server as available during shutdown.
-   */
   io =
     null;
 
@@ -250,28 +386,60 @@ export async function closeSocketServer():
     "Socket.IO shutdown started"
   );
 
+  /*
+   * Disconnect application sockets first.
+   *
+   * With HTTP long polling, active clients may keep
+   * pending requests open and prevent close() from
+   * completing promptly.
+   */
   try {
-    await new Promise<void>(
-      (
-        resolve,
-        reject
-      ) => {
-        socketServer.close(
-          error => {
-            if (
-              error
-            ) {
-              reject(
-                error
-              );
+    socketServer.disconnectSockets(
+      true
+    );
+  } catch (
+    error
+  ) {
+    log.warn(
+      {
+        event:
+          "socket.clients.disconnect_failed",
 
-              return;
-            }
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Socket.IO clients could not be disconnected cleanly"
+    );
+  }
 
-            resolve();
-          }
-        );
-      }
+  /*
+   * Force-close any remaining Engine.IO transports.
+   */
+  try {
+    socketServer.engine.close();
+  } catch (
+    error
+  ) {
+    log.warn(
+      {
+        event:
+          "socket.engine.close_failed",
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Socket.IO Engine.IO shutdown failed"
+    );
+  }
+
+  try {
+    await closeSocketServerWithTimeout(
+      socketServer,
+      5_000
     );
 
     log.info(
@@ -289,10 +457,16 @@ export async function closeSocketServer():
   } catch (
     error
   ) {
-    log.error(
+    /*
+     * Socket.IO has already been detached from the
+     * public module state and all known clients were
+     * disconnected. Do not block the whole process
+     * shutdown if its close callback is delayed.
+     */
+    log.warn(
       {
         event:
-          "socket.close.failed",
+          "socket.close.forced",
 
         durationMs:
           getDurationMs(
@@ -304,9 +478,118 @@ export async function closeSocketServer():
             error
           ),
       },
-      "Socket.IO shutdown failed"
+      "Socket.IO close timed out; shutdown continued"
     );
+  }
+}
 
-    throw error;
+//--------------------------------------------------
+// Close Socket.IO With Timeout
+//--------------------------------------------------
+
+function closeSocketServerWithTimeout(
+  socketServer:
+    Server,
+
+  timeoutMs:
+    number
+): Promise<void> {
+  return new Promise<void>(
+    (
+      resolve,
+      reject
+    ) => {
+      let settled =
+        false;
+
+      const finish =
+        (
+          error?:
+            Error
+        ) => {
+          if (
+            settled
+          ) {
+            return;
+          }
+
+          settled =
+            true;
+
+          clearTimeout(
+            timeout
+          );
+
+          if (
+            error
+          ) {
+            reject(
+              error
+            );
+
+            return;
+          }
+
+          resolve();
+        };
+
+      const timeout =
+        setTimeout(
+          () => {
+            finish(
+              new Error(
+                `Socket.IO shutdown exceeded ${timeoutMs}ms`
+              )
+            );
+          },
+          timeoutMs
+        );
+
+      /*
+       * This timer must not keep the Node.js process
+       * alive by itself.
+       */
+      timeout.unref();
+
+      try {
+        socketServer.close(
+          error => {
+            finish(
+              error ??
+                undefined
+            );
+          }
+        );
+      } catch (
+        error
+      ) {
+        finish(
+          error instanceof
+            Error
+            ? error
+            : new Error(
+                String(
+                  error
+                )
+              )
+        );
+      }
+    }
+  );
+}
+
+//--------------------------------------------------
+// Normalize Origin
+//--------------------------------------------------
+
+function normalizeOrigin(
+  value: string
+): string {
+  try {
+    return new URL(
+      value
+    ).origin;
+  } catch {
+    return "";
   }
 }

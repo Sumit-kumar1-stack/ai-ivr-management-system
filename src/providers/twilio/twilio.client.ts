@@ -1,17 +1,14 @@
 import twilio from "twilio";
 
 import {
-  twilioConfig,
-  validateTwilioConfig,
+  getTwilioConfig,
 } from "./twilio.config";
 
-validateTwilioConfig();
+const config =
+  getTwilioConfig();
 
 export const twilioClient =
   twilio(
-
-    twilioConfig.accountSid,
-
-    twilioConfig.authToken
-
+    config.accountSid,
+    config.authToken
   );

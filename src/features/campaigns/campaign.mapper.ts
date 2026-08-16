@@ -1,44 +1,70 @@
-import type { Campaign, CampaignContact } from "@prisma/client";
-import type { CampaignDTO } from "./campaign.types";
+import type {
+  Campaign,
+  CampaignContact,
+} from "@prisma/client";
 
-type CampaignWithContacts = Campaign & { contacts: CampaignContact[] };
+import type {
+  CampaignDTO,
+} from "./campaign.types";
 
-export function toCampaignDTO(campaign: CampaignWithContacts): CampaignDTO {
+//--------------------------------------------------
+// Campaign With Contacts
+//--------------------------------------------------
 
-return{
+type CampaignWithContacts =
+  Campaign & {
+    contacts:
+      CampaignContact[];
+  };
 
-id:
+//--------------------------------------------------
+// Mapper
+//--------------------------------------------------
 
-campaign.id,
+export function toCampaignDTO(
+  campaign:
+    CampaignWithContacts
+): CampaignDTO {
+  return {
+    id:
+      campaign.id,
 
-name:
+    name:
+      campaign.name,
 
-campaign.name,
+    description:
+      campaign.description ??
+      undefined,
 
-description:
+    language:
+      campaign.language,
 
-campaign.description ?? undefined,
+    voice:
+      campaign.voice,
 
-language:
+    prompt:
+      campaign.prompt ??
+      undefined,
 
-campaign.language,
+    purpose:
+      campaign.purpose,
 
-voice:
+    status:
+      campaign.status,
 
-campaign.voice,
+    scheduledAt:
+      campaign
+        .scheduledAt
+        ?.toISOString(),
 
-status:
+    createdAt:
+      campaign
+        .createdAt
+        .toISOString(),
 
-campaign.status,
-
-createdAt:
-
-campaign.createdAt.toISOString(),
-
-contactCount:
-
-campaign.contacts.length,
-
-};
-
+    contactCount:
+      campaign
+        .contacts
+        .length,
+  };
 }

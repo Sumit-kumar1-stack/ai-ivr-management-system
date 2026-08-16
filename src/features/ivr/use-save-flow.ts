@@ -1,32 +1,91 @@
 "use client";
 
-import { useMutation } from "@tanstack/react-query";
-import { api } from "@/lib/axios";
-import { toast } from "sonner";
+import {
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query";
+
+import {
+  toast,
+} from "sonner";
+
+import type {
+  IVREdge,
+  IVRNode,
+} from "@/components/ivr/types";
+
+import {
+  api,
+} from "@/lib/axios";
+
+//--------------------------------------------------
+// Save
+//--------------------------------------------------
 
 export function useSaveFlow() {
+  const queryClient =
+    useQueryClient();
+
   return useMutation({
-    mutationFn: async (payload: {
-      name: string;
-      description?: string;
-      campaignId?: string;
-      nodes: any[];
-      edges: any[];
-    }) => {
-      const { data } = await api.post(
-        "/ivr-flows",
-        payload
+    mutationFn:
+      async (
+        payload: {
+          name:
+            string;
+
+          description?:
+            string;
+
+          campaignId?:
+            string;
+
+          nodes:
+            IVRNode[];
+
+          edges:
+            IVREdge[];
+        }
+      ) => {
+        const {
+          data,
+        } =
+          await api.post(
+            "/ivr-flows",
+            payload
+          );
+
+        return data.data;
+      },
+
+    onSuccess(
+      flow
+    ) {
+      toast.success(
+        "Flow saved successfully"
       );
 
-      return data.data;
-    },
+      queryClient.invalidateQueries({
+        queryKey: [
+          "ivr-flows",
+        ],
+      });
 
-    onSuccess() {
-      toast.success("Flow saved successfully");
+      if (
+        flow?.id
+      ) {
+        queryClient.invalidateQueries({
+          queryKey: [
+            "ivr-flow",
+            flow.id,
+          ],
+        });
+      }
     },
 
     onError() {
-      toast.error("Failed to save flow");
+      toast.error(
+        "Failed to save flow"
+      );
     },
   });
 }

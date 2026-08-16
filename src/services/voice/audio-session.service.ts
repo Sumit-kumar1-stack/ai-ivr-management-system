@@ -1,161 +1,248 @@
-import { WebSocket } from "ws";
+import {
+  WebSocket,
+} from "ws";
 
-import { AudioRouter } from "./audio-router.service";
+import {
+  createCallLogger,
+} from "@/lib/logger";
 
-import { AudioChunk } from "./audio-stream.types";
+import {
+  AudioRouter,
+} from "./audio-router.service";
+
+import {
+  AudioChunk,
+} from "./audio-stream.types";
+
+//--------------------------------------------------
+// Types
+//--------------------------------------------------
 
 interface Session {
+  callId:
+    string;
 
-    callId: string;
+  streamSid:
+    string;
 
-    streamSid: string;
-
-    socket: WebSocket;
-
+  socket:
+    WebSocket;
 }
 
+//--------------------------------------------------
+// Session Storage
+//--------------------------------------------------
+
 const sessions =
-    new Map<string, Session>();
+  new Map<
+    string,
+    Session
+  >();
 
 const streamIndex =
-    new Map<string, string>();
+  new Map<
+    string,
+    string
+  >();
+
+//--------------------------------------------------
+// Audio Session Service
+//--------------------------------------------------
 
 export class AudioSessionService {
+  //----------------------------------------
+  // Create Session
+  //----------------------------------------
 
-    //----------------------------------------
-    // Create Session
-    //----------------------------------------
+  static create(
+    session: Session
+  ): void {
+    sessions.set(
+      session.callId,
+      session
+    );
 
-    static create(session: Session) {
+    streamIndex.set(
+      session.streamSid,
+      session.callId
+    );
 
-        sessions.set(
-            session.callId,
-            session
-        );
+    const log =
+      createCallLogger(
+        session.callId
+      );
 
-        streamIndex.set(
-            session.streamSid,
-            session.callId
-        );
+    log.info(
+      {
+        event:
+          "voice.audio_session.created",
 
-        console.log(
-            `🎧 Audio session created (${session.callId})`
-        );
+        streamSidPresent:
+          Boolean(
+            session.streamSid
+          ),
 
-    }
+        socketOpen:
+          session.socket.readyState ===
+          WebSocket.OPEN,
+      },
+      "Audio session created"
+    );
+  }
 
-    //----------------------------------------
-    // Close Session
-    //----------------------------------------
+  //----------------------------------------
+  // Close Session
+  //----------------------------------------
 
-    static close(streamSid: string) {
+  static close(
+    streamSid: string
+  ): void {
+    const callId =
+      streamIndex.get(
+        streamSid
+      );
 
-        const callId =
-            streamIndex.get(streamSid);
-
-        if (!callId) {
-
-            return;
-
-        }
-
-        sessions.delete(callId);
-
-        streamIndex.delete(streamSid);
-
-        console.log(
-            `🔌 Audio session closed (${callId})`
-        );
-
-    }
-
-    //----------------------------------------
-    // Incoming Audio
-    //----------------------------------------
-
-    static async handleIncomingAudio(
-
-        streamSid: string,
-
-        payload: string
-
+    if (
+      !callId
     ) {
+      return;
+    }
 
-        const callId =
-            streamIndex.get(streamSid);
+    sessions.delete(
+      callId
+    );
 
-        if (!callId) {
+    streamIndex.delete(
+      streamSid
+    );
 
-            return;
+    const log =
+      createCallLogger(
+        callId
+      );
 
-        }
+    log.info(
+      {
+        event:
+          "voice.audio_session.closed",
 
-        await AudioRouter.routeIncoming({
+        streamSidPresent:
+          true,
+      },
+      "Audio session closed"
+    );
+  }
 
-            callId,
+  //----------------------------------------
+  // Incoming Audio
+  //----------------------------------------
 
-            data: Buffer.from(
-                payload,
-                "base64"
+  static async handleIncomingAudio(
+    streamSid: string,
+    payload: string
+  ): Promise<void> {
+    const callId =
+      streamIndex.get(
+        streamSid
+      );
+
+    if (
+      !callId
+    ) {
+      return;
+    }
+
+    const data =
+      Buffer.from(
+        payload,
+        "base64"
+      );
+
+    await AudioRouter.routeIncoming({
+      callId,
+
+      data,
+
+      timestamp:
+        Date.now(),
+    } satisfies AudioChunk);
+  }
+
+  //----------------------------------------
+  // Outgoing Audio
+  //----------------------------------------
+
+  static async sendAudio(
+    callId: string,
+    audio: Buffer
+  ): Promise<void> {
+    const session =
+      sessions.get(
+        callId
+      );
+
+    if (
+      !session
+    ) {
+      return;
+    }
+
+    if (
+      session.socket.readyState !==
+      WebSocket.OPEN
+    ) {
+      const log =
+        createCallLogger(
+          callId
+        );
+
+      log.warn(
+        {
+          event:
+            "voice.audio_send.skipped",
+
+          reason:
+            "socket_not_open",
+
+          socketReadyState:
+            session.socket.readyState,
+
+          audioByteCount:
+            audio.length,
+        },
+        "Audio send skipped"
+      );
+
+      return;
+    }
+
+    session.socket.send(
+      JSON.stringify({
+        event:
+          "media",
+
+        streamSid:
+          session.streamSid,
+
+        media: {
+          payload:
+            audio.toString(
+              "base64"
             ),
+        },
+      })
+    );
+  }
 
-            timestamp: Date.now(),
+  //----------------------------------------
+  // Connection State
+  //----------------------------------------
 
-        } satisfies AudioChunk);
-
-    }
-
-    //----------------------------------------
-    // Outgoing Audio
-    //----------------------------------------
-
-    static async sendAudio(
-
-        callId: string,
-
-        audio: Buffer
-
-    ) {
-
-        const session =
-            sessions.get(callId);
-
-        if (!session) {
-
-            return;
-
-        }
-
-        session.socket.send(
-
-            JSON.stringify({
-
-                event: "media",
-
-                streamSid:
-                    session.streamSid,
-
-                media: {
-
-                    payload:
-                        audio.toString("base64"),
-
-                },
-
-            })
-
-        );
-
-    }
-
-    //----------------------------------------
-
-    static isConnected(
-        callId: string
-    ) {
-
-        return sessions.has(callId);
-
-    }
-
+  static isConnected(
+    callId: string
+  ): boolean {
+    return sessions.has(
+      callId
+    );
+  }
 }

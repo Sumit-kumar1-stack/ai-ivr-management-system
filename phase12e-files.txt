@@ -1,0 +1,726 @@
+"use client";
+
+import {
+  createContext,
+  useContext,
+  useState,
+} from "react";
+
+import {
+  Edge,
+  Node,
+  Connection,
+  addEdge,
+} from "@xyflow/react";
+
+interface BuilderContextType {
+  nodes: Node[];
+  setNodes: React.Dispatch<
+    React.SetStateAction<Node[]>
+  >;
+
+  edges: Edge[];
+  setEdges: React.Dispatch<
+    React.SetStateAction<Edge[]>
+  >;
+
+  selectedFlow?: string;
+
+  setSelectedFlow: React.Dispatch<
+    React.SetStateAction<string | undefined>
+  >;
+
+  flowName: string;
+
+  setFlowName: React.Dispatch<
+    React.SetStateAction<string>
+  >;
+
+  onConnect: (
+    connection: Connection
+  ) => void;
+}
+
+const BuilderContext =
+  createContext<BuilderContextType | null>(
+    null
+  );
+
+export function IVRBuilderProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const [nodes, setNodes] =
+    useState<Node[]>([
+      {
+        id: "1",
+        type: "ivr",
+        position: {
+          x: 400,
+          y: 120,
+        },
+        data: {
+          label: "Start",
+          description: "Incoming Call",
+        },
+      },
+    ]);
+
+  const [edges, setEdges] =
+    useState<Edge[]>([]);
+
+  const [
+    selectedFlow,
+    setSelectedFlow,
+  ] = useState<string>();
+
+  const [
+    flowName,
+    setFlowName,
+  ] = useState("Untitled Flow");
+
+  function onConnect(
+    connection: Connection
+  ) {
+    setEdges((previous) =>
+      addEdge(connection, previous)
+    );
+  }
+
+  return (
+    <BuilderContext.Provider
+      value={{
+        nodes,
+        setNodes,
+
+        edges,
+        setEdges,
+
+        selectedFlow,
+        setSelectedFlow,
+
+        flowName,
+        setFlowName,
+
+        onConnect,
+      }}
+    >
+      {children}
+    </BuilderContext.Provider>
+  );
+}
+
+export function useIVRBuilder() {
+  const context =
+    useContext(BuilderContext);
+
+  if (!context) {
+    throw new Error(
+      "useIVRBuilder must be inside provider"
+    );
+  }
+
+  return context;
+}"use client";
+
+import "@xyflow/react/dist/style.css";
+
+import { useEffect, useState } from "react";
+
+import {
+  Background,
+  Controls,
+  MiniMap,
+  ReactFlow,
+} from "@xyflow/react";
+import type { IVRNode as IVRFlowNode, IVRNodeData } from "./types";
+
+import { useSaveFlow } from "@/features/ivr/use-save-flow";
+import { useUpdateFlow } from "@/features/ivr/use-update-flow";
+import { useFlow } from "@/features/ivr/use-flow";
+
+import IVRNode from "./ivr-node";
+import IVRToolbar from "./ivr-toolbar";
+import AIPropertiesPanel from "./properties/ai-properties-panel";
+
+import {
+  useIVRBuilder,
+} from "./ivr-builder-context";
+
+import {
+  defaultEdgeOptions,
+} from "./edge-options";
+
+const nodeTypes = {
+  ivr: IVRNode,
+};
+
+export default function IVRCanvas() {
+
+  const [selectedNode, setSelectedNode] =
+    useState<IVRFlowNode | null>(null);
+
+  const {
+    nodes,
+    setNodes,
+
+    edges,
+    setEdges,
+
+    selectedFlow,
+
+    flowName,
+    setFlowName,
+
+    onConnect,
+  } = useIVRBuilder();
+
+  const saveFlow = useSaveFlow();
+  const updateFlow = useUpdateFlow();
+
+  const {
+    data: flow,
+  } = useFlow(selectedFlow);
+
+  useEffect(() => {
+    if (!flow) return;
+
+    setNodes(flow.nodes ?? []);
+    setEdges(flow.edges ?? []);
+
+    setFlowName(
+      flow.name ?? "Untitled Flow"
+    );
+  }, [
+    flow,
+    setNodes,
+    setEdges,
+    setFlowName,
+  ]);
+
+  function handleSave() {
+    if (selectedFlow) {
+      updateFlow.mutate({
+        id: selectedFlow,
+        nodes,
+        edges,
+      });
+    } else {
+      saveFlow.mutate({
+        name: flowName,
+        nodes,
+        edges,
+      });
+    }
+  }
+
+  function updateNode<K extends keyof IVRNodeData>(
+    field: K,
+    value: IVRNodeData[K]
+  ) {
+    if (!selectedNode) return;
+
+    setNodes((previous) =>
+      previous.map((node) => {
+        if (node.id !== selectedNode.id) {
+          return node;
+        }
+
+        const updatedNode = {
+          ...node,
+
+          data: {
+            ...node.data,
+
+            [field]: value,
+          },
+        };
+
+        setSelectedNode(updatedNode);
+
+        return updatedNode;
+      })
+    );
+  }
+
+  function onDrop(
+    event: React.DragEvent
+  ) {
+    event.preventDefault();
+
+    const label =
+      event.dataTransfer.getData(
+        "application/reactflow"
+      );
+
+    if (!label) return;
+
+    const node = {
+      id: crypto.randomUUID(),
+
+      type: "ivr",
+
+      position: {
+        x: event.clientX - 320,
+        y: event.clientY - 90,
+      },
+data: {
+  label: "AI Assistant",
+
+  prompt: "",
+
+  provider: "OpenAI",
+
+  voice: "alloy",
+
+  language: "English",
+
+  speed: 1,
+
+  pitch: 0,
+
+  temperature: 0.7,
+
+  topP: 1,
+
+  maxTokens: 1024,
+
+  presencePenalty: 0,
+
+  frequencyPenalty: 0,
+
+  knowledge: [],
+},
+    };
+
+    setNodes((previous) => [
+      ...previous,
+      node,
+    ]);
+  }
+
+  return (
+    <div className="flex flex-1 flex-col">
+
+      <IVRToolbar
+        saving={
+          saveFlow.isPending ||
+          updateFlow.isPending
+        }
+        onSave={handleSave}
+      />
+
+      <div
+  className="flex flex-1"
+  onDrop={onDrop}
+  onDragOver={(e) => e.preventDefault()}
+>
+  {/* React Flow Canvas */}
+  <div className="flex-1">
+    <ReactFlow
+      nodes={nodes}
+      edges={edges}
+      nodeTypes={nodeTypes}
+      onConnect={onConnect}
+      onNodeClick={(_, node) => {
+        setSelectedNode(node);
+      }}
+      defaultEdgeOptions={defaultEdgeOptions}
+      nodesDraggable
+      nodesConnectable
+      elementsSelectable
+      edgesReconnectable
+      fitView
+    >
+      <Background />
+      <Controls />
+      <MiniMap />
+    </ReactFlow>
+  </div>
+
+  {selectedNode && (
+  <AIPropertiesPanel
+    node={selectedNode}
+    onChange={updateNode}
+  />
+  )}
+</div>
+
+</div>
+);
+}"use client";
+
+import { Handle, Position } from "@xyflow/react";
+import { PhoneCall } from "lucide-react";
+
+interface Props {
+  data: {
+    label: string;
+    description?: string;
+  };
+}
+
+export default function IVRNode({ data }: Props) {
+  return (
+    <div className="w-64 rounded-xl border border-slate-200 bg-white shadow-lg">
+
+      {/* Header */}
+      <div className="flex items-center gap-2 rounded-t-xl bg-blue-600 px-4 py-3 text-white">
+
+        <PhoneCall className="h-4 w-4" />
+
+        <span className="font-semibold">
+          {data.label}
+        </span>
+
+      </div>
+
+      {/* Body */}
+      <div className="space-y-2 p-4">
+
+        <p className="text-sm text-gray-600">
+          {data.description ?? "Configure this IVR node"}
+        </p>
+
+      </div>
+
+      {/* Connection Handles */}
+
+<Handle
+type="target"
+position={Position.Top}
+id="top"
+/>
+
+<Handle
+type="source"
+position={Position.Bottom}
+id="bottom"
+/>
+
+    </div>
+  );
+}"use client";
+
+import { Input } from "@/components/ui/input";
+import SaveFlowButton from "./save-flow-button";
+
+import {
+  useIVRBuilder,
+} from "./ivr-builder-context";
+
+interface Props {
+  onSave: () => void;
+  saving: boolean;
+}
+
+export default function IVRToolbar({
+  onSave,
+  saving,
+}: Props) {
+  const {
+    flowName,
+    setFlowName,
+  } = useIVRBuilder();
+
+  return (
+    <div className="flex items-center justify-between border-b bg-white p-4">
+
+      <div className="flex items-center gap-4">
+
+        <h2 className="text-xl font-semibold">
+          IVR Flow Builder
+        </h2>
+
+        <Input
+          className="w-80"
+          placeholder="Enter flow name..."
+          value={flowName}
+          onChange={(e) =>
+            setFlowName(e.target.value)
+          }
+        />
+
+      </div>
+
+      <SaveFlowButton
+        loading={saving}
+        onSave={onSave}
+      />
+
+    </div>
+  );
+}"use client";
+
+import { Button } from "@/components/ui/button";
+
+interface Props {
+  loading: boolean;
+  onSave: () => void;
+}
+
+export default function SaveFlowButton({
+  loading,
+  onSave,
+}: Props) {
+  return (
+    <Button
+      onClick={onSave}
+      disabled={loading}
+    >
+      {loading
+        ? "Saving..."
+        : "Save Flow"}
+    </Button>
+  );
+}"use client";
+
+import { Button } from "@/components/ui/button";
+import type { IVRFlow } from "./types";
+
+interface Props {
+  flows: IVRFlow[];
+  onSelect: (id: string) => void;
+}
+
+export default function FlowList({
+  flows,
+  onSelect,
+}: Props) {
+  return (
+    <div className="space-y-2">
+
+      {flows.map((flow) => (
+
+        <Button
+          key={flow.id}
+          variant="outline"
+          className="w-full justify-start"
+          onClick={() => onSelect(flow.id)}
+        >
+          {flow.name}
+        </Button>
+
+      ))}
+
+    </div>
+  );
+}"use client";
+
+import { useFlows } from "@/features/ivr/use-flows";
+import { useIVRBuilder } from "./ivr-builder-context";
+import type { IVRFlow } from "./types";
+
+const nodes = [
+  "Greeting",
+  "AI Prompt",
+  "Collect Input",
+  "Transfer",
+  "End Call",
+];
+
+export default function IVRSidebar() {
+  const {
+    data: flows = [],
+  } = useFlows();
+
+  const {
+    selectedFlow,
+    setSelectedFlow,
+  } = useIVRBuilder();
+
+  function dragStart(
+    e: React.DragEvent,
+    label: string
+  ) {
+    e.dataTransfer.setData(
+      "application/reactflow",
+      label
+    );
+
+    e.dataTransfer.effectAllowed =
+      "move";
+  }
+
+  return (
+    <div className="w-72 border-r bg-gray-50 p-4 overflow-y-auto">
+
+      <h3 className="mb-3 text-lg font-semibold">
+        Saved Flows
+      </h3>
+
+      <div className="mb-8 space-y-2">
+
+        {flows.length === 0 && (
+          <p className="text-sm text-gray-500">
+            No saved flows
+          </p>
+        )}
+
+        {flows.map((flow: IVRFlow) => (
+          <button
+            key={flow.id}
+            onClick={() =>
+              setSelectedFlow(flow.id)
+            }
+            className={`w-full rounded border p-2 text-left transition ${
+              selectedFlow === flow.id
+                ? "border-blue-600 bg-blue-50"
+                : "bg-white hover:bg-gray-100"
+            }`}
+          >
+            {flow.name}
+          </button>
+        ))}
+
+      </div>
+
+      <h3 className="mb-4 text-lg font-semibold">
+        Nodes
+      </h3>
+
+      <div className="space-y-3">
+
+        {nodes.map((node) => (
+          <div
+            key={node}
+            draggable
+            onDragStart={(e) =>
+              dragStart(e, node)
+            }
+            className="cursor-grab rounded-lg border bg-white p-3 shadow transition hover:bg-gray-100 active:cursor-grabbing"
+          >
+            {node}
+          </div>
+        ))}
+
+      </div>
+
+    </div>
+  );
+}"use client";
+
+import { useMutation } from "@tanstack/react-query";
+import { api } from "@/lib/axios";
+import { toast } from "sonner";
+import type { IVRNode, IVREdge } from "@/components/ivr/types";
+
+export function useSaveFlow() {
+  return useMutation({
+    mutationFn: async (payload: {
+      name: string;
+      description?: string;
+      campaignId?: string;
+      nodes: IVRNode[];
+      edges: IVREdge[];
+    }) => {
+      const { data } = await api.post(
+        "/ivr-flows",
+        payload
+      );
+
+      return data.data;
+    },
+
+    onSuccess() {
+      toast.success("Flow saved successfully");
+    },
+
+    onError() {
+      toast.error("Failed to save flow");
+    },
+  });
+}"use client";
+
+import {
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query";
+
+import { api } from "@/lib/axios";
+
+import { toast } from "sonner";
+
+import type { IVRNode, IVREdge } from "@/components/ivr/types";
+
+interface UpdateFlowPayload {
+  id: string;
+  nodes: IVRNode[];
+  edges: IVREdge[];
+}
+
+export function useUpdateFlow() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      id,
+      nodes,
+      edges,
+    }: UpdateFlowPayload) => {
+      const { data } = await api.put(
+        `/ivr-flows/${id}`,
+        {
+          nodes,
+          edges,
+        }
+      );
+
+      return data.data;
+    },
+
+    onSuccess(_, variables) {
+      toast.success("Flow updated");
+
+      queryClient.invalidateQueries({
+        queryKey: ["ivr-flows"],
+      });
+
+      queryClient.invalidateQueries({
+        queryKey: ["ivr-flow", variables.id],
+      });
+    },
+
+    onError() {
+      toast.error("Failed to update flow");
+    },
+  });
+}"use client";
+
+import { useQuery } from "@tanstack/react-query";
+import { api } from "@/lib/axios";
+
+export function useFlow(id?: string) {
+  return useQuery({
+    queryKey: ["ivr-flow", id],
+
+    queryFn: async () => {
+      const { data } = await api.get(
+        `/ivr-flows/${id}`
+      );
+
+      return data.data;
+    },
+
+    enabled: !!id,
+  });
+}"use client";
+
+import { useQuery } from "@tanstack/react-query";
+import { api } from "@/lib/axios";
+
+export function useFlows() {
+  return useQuery({
+    queryKey: ["ivr-flows"],
+
+    queryFn: async () => {
+      const { data } = await api.get(
+        "/ivr-flows"
+      );
+
+      return data.data;
+    },
+  });
+}C:\Users\sumit\ai-ivr-management-system\src\app\api\ivr
+C:\Users\sumit\ai-ivr-management-system\src\app\api\ivr-flows

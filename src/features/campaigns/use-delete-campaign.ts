@@ -3,6 +3,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@/lib/axios";
+import { isAxiosError } from "axios";
 
 export function useDeleteCampaign() {
   const queryClient = useQueryClient();
@@ -26,10 +27,11 @@ export function useDeleteCampaign() {
       });
     },
 
-    onError(error: any) {
+    onError(error: unknown) {
       toast.error(
-        error?.response?.data?.message ??
-          "Failed to delete campaign"
+        isAxiosError<{ message?: string }>(error)
+          ? error.response?.data?.message ?? "Failed to delete campaign"
+          : "Failed to delete campaign"
       );
     },
   });

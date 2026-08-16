@@ -1,23 +1,26 @@
 import {
-  TTSAudioChunk,
-} from "@/services/voice/types";
-
-import {
-  PlaybackState,
-} from "@/services/voice/playback-state.service";
+  createCallLogger,
+} from "@/lib/logger";
 
 import {
   ConversationStateService,
 } from "@/services/conversations/conversation-state.service";
 
 import {
-  streamAudioToTwilio,
-} from "./twilio-stream.service";
+  PlaybackState,
+} from "@/services/voice/playback-state.service";
+
+import {
+  TTSAudioChunk,
+} from "@/services/voice/types";
 
 import {
   AudioSessionService,
 } from "./audio-session.service";
 
+import {
+  streamAudioToTwilio,
+} from "./twilio-stream.service";
 
 //--------------------------------------------------
 // Stream Audio To Active Call
@@ -27,26 +30,48 @@ export async function streamToCall(
   callId: string,
   chunk: TTSAudioChunk
 ): Promise<void> {
-
-  if (!AudioSessionService.getByCallId(callId)) {
-    console.warn(`Cancel stream to call ${callId} because call session does not exist`);
-    return;
-  }
+  const normalizedCallId =
+    callId.trim();
 
   //--------------------------------------------
   // Validate Call ID
   //--------------------------------------------
 
   if (
-    !callId.trim()
+    !normalizedCallId
   ) {
-
     throw new Error(
       "Cannot stream audio without callId"
     );
-
   }
 
+  const log =
+    createCallLogger(
+      normalizedCallId
+    );
+
+  //--------------------------------------------
+  // Validate Active Session
+  //--------------------------------------------
+
+  if (
+    !AudioSessionService.getByCallId(
+      normalizedCallId
+    )
+  ) {
+    log.debug(
+      {
+        event:
+          "telephony.stream.skipped",
+
+        reason:
+          "call_session_not_found",
+      },
+      "Call audio stream skipped"
+    );
+
+    return;
+  }
 
   //--------------------------------------------
   // Conversation Stopped?
@@ -54,9 +79,8 @@ export async function streamToCall(
 
   const state =
     ConversationStateService.getState(
-      callId
+      normalizedCallId
     );
-
 
   if (
     state ===
@@ -64,20 +88,22 @@ export async function streamToCall(
     state ===
       "ENDED"
   ) {
-
-    console.log(
-      "Call stream cancelled",
+    log.debug(
       {
-        callId,
-        state,
-      }
+        event:
+          "telephony.stream.skipped",
+
+        reason:
+          "conversation_inactive",
+
+        conversationState:
+          state,
+      },
+      "Call audio stream cancelled"
     );
 
-
     return;
-
   }
-
 
   //--------------------------------------------
   // Playback Cancelled?
@@ -85,22 +111,22 @@ export async function streamToCall(
 
   if (
     !PlaybackState.isSpeaking(
-      callId
+      normalizedCallId
     )
   ) {
-
-    console.log(
-      "Call playback is no longer active",
+    log.debug(
       {
-        callId,
-      }
+        event:
+          "telephony.stream.skipped",
+
+        reason:
+          "playback_inactive",
+      },
+      "Call playback is no longer active"
     );
 
-
     return;
-
   }
-
 
   //--------------------------------------------
   // Validate Generated Audio
@@ -111,55 +137,40 @@ export async function streamToCall(
       chunk.audio
     )
   ) {
-
     throw new TypeError(
-      `TTS audio is not a Buffer for call ${callId}`
+      "TTS audio must be a Buffer"
     );
-
   }
-
 
   if (
     chunk.audio.length ===
     0
   ) {
-
     throw new Error(
-      `TTS returned empty audio for call ${callId}`
+      "TTS returned an empty audio buffer"
     );
-
   }
-
 
   //--------------------------------------------
   // Send Through Configured Transport
   //--------------------------------------------
 
-  console.log(
-    "Preparing call audio playback",
+  log.debug(
     {
-      callId,
+      event:
+        "telephony.stream.preparing",
 
-      bytes:
+      audioByteCount:
         chunk.audio.length,
-    }
+    },
+    "Preparing call audio playback"
   );
 
-
-  /*
-   * Currently Twilio is the active streaming
-   * transport.
-   *
-   * Future providers can be selected here through
-   * a media transport factory.
-   */
   await streamAudioToTwilio(
-    callId,
+    normalizedCallId,
     chunk.audio
   );
-
 }
-
 
 //--------------------------------------------------
 // Clear Provider Playback Buffer
@@ -168,26 +179,19 @@ export async function streamToCall(
 export function clearCallPlayback(
   callId: string
 ): boolean {
+  const normalizedCallId =
+    callId.trim();
 
   if (
-    !callId.trim()
+    !normalizedCallId
   ) {
-
     return false;
-
   }
 
-
-  /*
-   * Hide provider-specific session handling from
-   * VoiceWorker and conversation services.
-   */
   return AudioSessionService.clearPlayback(
-    callId
+    normalizedCallId
   );
-
 }
-
 
 //--------------------------------------------------
 // Check Stream Availability
@@ -196,22 +200,19 @@ export function clearCallPlayback(
 export function isCallStreamReady(
   callId: string
 ): boolean {
+  const normalizedCallId =
+    callId.trim();
 
   if (
-    !callId.trim()
+    !normalizedCallId
   ) {
-
     return false;
-
   }
 
-
   return AudioSessionService.isReady(
-    callId
+    normalizedCallId
   );
-
 }
-
 
 //--------------------------------------------------
 // Close Active Call Stream
@@ -220,18 +221,16 @@ export function isCallStreamReady(
 export function closeCallStream(
   callId: string
 ): void {
+  const normalizedCallId =
+    callId.trim();
 
   if (
-    !callId.trim()
+    !normalizedCallId
   ) {
-
     return;
-
   }
 
-
   AudioSessionService.closeByCallId(
-    callId
+    normalizedCallId
   );
-
 }

@@ -1,13 +1,14 @@
 "use client";
 
+import type { IVRNode, IVRNodeData } from "../types";
 import VoiceProviderSelect from "./voice-provider-select";
 import VoiceModelSelect from "./voice-model-select";
 import VoiceSlider from "./voice-slider";
 import VoicePreview from "./voice-preview";
 
 interface Props {
-  node: any;
-  onChange: (field: string, value: any) => void;
+  node: IVRNode;
+  onChange: <K extends keyof IVRNodeData>(field: K, value: IVRNodeData[K]) => void;
 }
 
 export default function VoiceSettings({

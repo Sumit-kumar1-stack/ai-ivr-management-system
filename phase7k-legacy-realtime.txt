@@ -1,0 +1,1673 @@
+===== Event registry =====
+import {
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  LoggingSubscriber,
+  RealtimeSubscriber,
+  TimelineSubscriber,
+} from "./subscribers";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "event-registry"
+  );
+
+//--------------------------------------------------
+// Event Registry
+//--------------------------------------------------
+
+export class EventRegistry {
+  private static initialized =
+    false;
+
+  static initialize():
+    void {
+    if (
+      this.initialized
+    ) {
+      log.debug(
+        {
+          event:
+            "events.registry.initialization_skipped",
+
+          reason:
+            "already_initialized",
+        },
+        "Event registry is already initialized"
+      );
+
+      return;
+    }
+
+    try {
+      TimelineSubscriber.register();
+
+      LoggingSubscriber.register();
+
+      RealtimeSubscriber.register();
+
+      this.initialized =
+        true;
+
+      log.info(
+        {
+          event:
+            "events.registry.initialized",
+
+          subscriberCount:
+            3,
+        },
+        "All event subscribers registered"
+      );
+    } catch (
+      error
+    ) {
+      log.error(
+        {
+          event:
+            "events.registry.initialization_failed",
+
+          error:
+            normalizeError(
+              error
+            ),
+        },
+        "Event registry initialization failed"
+      );
+
+      throw error;
+    }
+  }
+}
+===== Core subscribers index =====
+export { TimelineSubscriber } from "./timeline.subscriber";
+export { LoggingSubscriber } from "./logging.subscriber";
+export { RealtimeSubscriber } from "./realtime.subscriber";
+
+===== Core bootstrap =====
+import {
+  EventRegistry,
+} from "./events";
+
+import {
+  TranscriptSubscriber,
+} from "@/services/speech/transcript.subscriber";
+
+import {
+  RealtimeSubscriber,
+} from "@/services/realtime/realtime-subscriber";
+
+//--------------------------------------------------
+// Process-Global Bootstrap State
+//--------------------------------------------------
+
+type BootstrapGlobal =
+  typeof globalThis & {
+    __ivrApplicationBootstrapped?:
+      boolean;
+  };
+
+const bootstrapGlobal =
+  globalThis as BootstrapGlobal;
+
+//--------------------------------------------------
+// Initialize Application Subscribers
+//--------------------------------------------------
+
+export function bootstrap():
+  void {
+  if (
+    bootstrapGlobal
+      .__ivrApplicationBootstrapped
+  ) {
+    console.log(
+      "Application already bootstrapped"
+    );
+
+    return;
+  }
+
+  /*
+   * Claim initialization before registering
+   * subscribers. This prevents simultaneous imports
+   * from registering the same handlers twice.
+   */
+  bootstrapGlobal
+    .__ivrApplicationBootstrapped =
+    true;
+
+  try {
+    EventRegistry.initialize();
+
+    TranscriptSubscriber.register();
+
+    RealtimeSubscriber.register();
+
+    console.log(
+      "Application bootstrapped"
+    );
+  } catch (
+    error
+  ) {
+    /*
+     * Allow another attempt if initialization failed
+     * before completing.
+     */
+    bootstrapGlobal
+      .__ivrApplicationBootstrapped =
+      false;
+
+    console.error(
+      "Application bootstrap failed",
+      {
+        error:
+          normalizeError(
+            error
+          ),
+      }
+    );
+
+    throw error;
+  }
+}
+
+//--------------------------------------------------
+// Reset Bootstrap State
+//--------------------------------------------------
+
+export function resetBootstrapState():
+  void {
+  bootstrapGlobal
+    .__ivrApplicationBootstrapped =
+    false;
+}
+
+//--------------------------------------------------
+// Normalize Error
+//--------------------------------------------------
+
+function normalizeError(
+  error: unknown
+) {
+  if (
+    error instanceof
+    Error
+  ) {
+    return {
+      name:
+        error.name,
+
+      message:
+        error.message,
+
+      stack:
+        error.stack,
+    };
+  }
+
+  return {
+    message:
+      String(
+        error
+      ),
+  };
+}
+===== Transcript subscriber =====
+import {
+  TranscriptEvent,
+  TranscriptEvents,
+} from "./transcript.events";
+
+import {
+  processUserMessage,
+} from "@/services/conversations/conversation-engine.service";
+
+import {
+  ConversationAbort,
+} from "@/services/conversations/abort.service";
+
+import {
+  createCallLogger,
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  AudioSessionService,
+} from "@/providers/telephony/audio-session.service";
+
+import {
+  AppEvent,
+  EventSubscriber,
+} from "@/core/events";
+
+import {
+  CallPayload,
+} from "@/core/events/payloads/call.payload";
+
+import {
+  ConversationStateService,
+} from "@/services/conversations/conversation-state.service";
+
+import {
+  sentenceBuffer,
+} from "@/services/voice/sentence-buffer.service";
+
+import {
+  voiceQueue,
+} from "@/services/voice/voice-queue.service";
+
+import {
+  VoiceWorker,
+} from "@/services/voice/voice-worker.service";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const serviceLog =
+  createServerLogger(
+    "transcript-subscriber"
+  );
+
+//--------------------------------------------------
+// Pending Transcript
+//--------------------------------------------------
+
+interface PendingTranscript {
+  /*
+   * Transcript text is required internally for
+   * conversation processing, but must not be logged.
+   */
+  text: string;
+
+  normalizedText: string;
+
+  /*
+   * Time when the first fragment of this utterance
+   * was accepted.
+   */
+  timestamp: number;
+
+  /*
+   * Time when the latest fragment was merged.
+   */
+  lastUpdatedAt: number;
+
+  fragmentCount: number;
+}
+
+//--------------------------------------------------
+// Configuration
+//--------------------------------------------------
+
+const DUPLICATE_WINDOW_MS =
+  3_000;
+
+/*
+ * Wait after the most recent FINAL result before
+ * processing. This allows fragmented FINAL results
+ * from one spoken sentence to be merged.
+ */
+const UTTERANCE_MERGE_WINDOW_MS =
+  1_500;
+
+const MAX_PENDING_TRANSCRIPTS_PER_CALL =
+  5;
+
+const MAX_UTTERANCE_CHARACTER_COUNT =
+  1_500;
+
+//--------------------------------------------------
+// Normalize Transcript
+//--------------------------------------------------
+
+function normalizeText(
+  text: string
+): string {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(
+      /[.,\/#!$%\^&\*;:{}=\-_`~()?]/g,
+      ""
+    )
+    .replace(
+      /\s+/g,
+      " "
+    );
+}
+
+//--------------------------------------------------
+// Clean Display Text
+//--------------------------------------------------
+
+function cleanDisplayText(
+  text: string
+): string {
+  return text
+    .replace(
+      /\s+/g,
+      " "
+    )
+    .trim();
+}
+
+//--------------------------------------------------
+// Transcript Subscriber
+//--------------------------------------------------
+
+export class TranscriptSubscriber {
+  private static registered =
+    false;
+
+  /*
+   * Tracks recently processed or accepted text so
+   * repeated Deepgram FINAL events are ignored.
+   */
+  private static lastTranscripts =
+    new Map<
+      string,
+      {
+        text: string;
+        timestamp: number;
+      }
+    >();
+
+  /*
+   * Ensures only one processUserMessage() execution
+   * runs for a call at a time.
+   */
+  private static activeTurns =
+    new Set<string>();
+
+  /*
+   * Stores finalized utterances waiting for
+   * conversation processing.
+   */
+  private static pendingTranscripts =
+    new Map<
+      string,
+      PendingTranscript[]
+    >();
+
+  /*
+   * Debounces FINAL transcript processing so nearby
+   * fragments can be combined into one utterance.
+   */
+  private static drainTimers =
+    new Map<
+      string,
+      NodeJS.Timeout
+    >();
+
+  //--------------------------------------------------
+  // Clean Call State
+  //--------------------------------------------------
+
+  static cleanDedupeState(
+    callId: string
+  ): void {
+    const log =
+      createCallLogger(
+        callId
+      );
+
+    const pendingCount =
+      this.pendingTranscripts
+        .get(
+          callId
+        )
+        ?.length ??
+      0;
+
+    const previousState =
+      ConversationStateService.getState(
+        callId
+      );
+
+    //--------------------------------------------
+    // Cancel Scheduled Processing
+    //--------------------------------------------
+
+    const drainTimer =
+      this.drainTimers.get(
+        callId
+      );
+
+    if (
+      drainTimer
+    ) {
+      clearTimeout(
+        drainTimer
+      );
+
+      this.drainTimers.delete(
+        callId
+      );
+    }
+
+    //--------------------------------------------
+    // Remove Transcript Processing State
+    //--------------------------------------------
+
+    this.lastTranscripts.delete(
+      callId
+    );
+
+    this.activeTurns.delete(
+      callId
+    );
+
+    this.pendingTranscripts.delete(
+      callId
+    );
+
+    //--------------------------------------------
+    // Remove Voice Queues And Buffers
+    //--------------------------------------------
+
+    sentenceBuffer.clear(
+      callId
+    );
+
+    voiceQueue.clear(
+      callId
+    );
+
+    //--------------------------------------------
+    // Abort And Remove Active AI Controller
+    //--------------------------------------------
+
+    ConversationAbort.abort(
+      callId
+    );
+
+    ConversationAbort.clear(
+      callId
+    );
+
+    //--------------------------------------------
+    // Remove Conversation State From Memory
+    //--------------------------------------------
+
+    ConversationStateService.clearState(
+      callId
+    );
+
+    log.debug(
+      {
+        event:
+          "transcript.state.cleaned",
+
+        previousState,
+
+        removedPendingCount:
+          pendingCount,
+      },
+      "Transcript state and conversation memory cleaned"
+    );
+  }
+
+  //--------------------------------------------------
+  // Register Subscriber
+  //--------------------------------------------------
+
+  static register():
+    void {
+    if (
+      this.registered
+    ) {
+      serviceLog.debug(
+        {
+          event:
+            "transcript.subscriber.registration_skipped",
+
+          reason:
+            "already_registered",
+        },
+        "Transcript subscriber is already registered"
+      );
+
+      return;
+    }
+
+    this.registered =
+      true;
+
+    serviceLog.info(
+      {
+        event:
+          "transcript.subscriber.registered",
+
+        duplicateWindowMs:
+          DUPLICATE_WINDOW_MS,
+
+        utteranceMergeWindowMs:
+          UTTERANCE_MERGE_WINDOW_MS,
+
+        maximumPendingPerCall:
+          MAX_PENDING_TRANSCRIPTS_PER_CALL,
+
+        maximumUtteranceCharacterCount:
+          MAX_UTTERANCE_CHARACTER_COUNT,
+      },
+      "Transcript subscriber registered"
+    );
+
+    //------------------------------------------------
+    // Audio Session Cleanup
+    //------------------------------------------------
+
+    AudioSessionService.onClose(
+      callId => {
+        /*
+         * Stop the worker while the call state still
+         * exists, then remove all remaining state.
+         */
+        VoiceWorker.stop(
+          callId
+        );
+
+        this.cleanDedupeState(
+          callId
+        );
+      }
+    );
+
+    //------------------------------------------------
+    // Backup Event Cleanup
+    //------------------------------------------------
+
+    EventSubscriber.on<CallPayload>(
+      AppEvent.CALL_COMPLETED,
+      async payload => {
+        VoiceWorker.stop(
+          payload.callId
+        );
+
+        this.cleanDedupeState(
+          payload.callId
+        );
+      }
+    );
+
+    EventSubscriber.on<CallPayload>(
+      AppEvent.CALL_FAILED,
+      async payload => {
+        VoiceWorker.stop(
+          payload.callId
+        );
+
+        this.cleanDedupeState(
+          payload.callId
+        );
+      }
+    );
+
+    //------------------------------------------------
+    // Final Transcript Listener
+    //------------------------------------------------
+
+    TranscriptEvents.on(
+      TranscriptEvent.FINAL,
+      async payload => {
+        const callId =
+          payload.callId;
+
+        const log =
+          createCallLogger(
+            callId
+          );
+
+        log.debug(
+          {
+            event:
+              "transcript.final.received",
+
+            characterCount:
+              payload.text
+                ?.length ??
+              0,
+          },
+          "Final transcript event received"
+        );
+
+        //------------------------------------------
+        // Confirm Active Call Session
+        //------------------------------------------
+
+        if (
+          !AudioSessionService
+            .getByCallId(
+              callId
+            )
+        ) {
+          log.warn(
+            {
+              event:
+                "transcript.final.ignored",
+
+              reason:
+                "call_session_not_found",
+            },
+            "Transcript ignored because call session does not exist"
+          );
+
+          return;
+        }
+
+        //------------------------------------------
+        // Validate Transcript
+        //------------------------------------------
+
+        const text =
+          cleanDisplayText(
+            payload.text ??
+              ""
+          );
+
+        if (
+          !text
+        ) {
+          log.warn(
+            {
+              event:
+                "transcript.final.ignored",
+
+              reason:
+                "empty_transcript",
+            },
+            "Empty final transcript ignored"
+          );
+
+          return;
+        }
+
+        const normalizedText =
+          normalizeText(
+            text
+          );
+
+        if (
+          !normalizedText
+        ) {
+          log.warn(
+            {
+              event:
+                "transcript.final.ignored",
+
+              reason:
+                "no_usable_text",
+
+              characterCount:
+                text.length,
+            },
+            "Final transcript contained no usable text"
+          );
+
+          return;
+        }
+
+        //------------------------------------------
+        // Duplicate Protection
+        //------------------------------------------
+
+        const now =
+          Date.now();
+
+        const last =
+          this.lastTranscripts.get(
+            callId
+          );
+
+        if (
+          last &&
+          last.text ===
+            normalizedText &&
+          now -
+            last.timestamp <
+            DUPLICATE_WINDOW_MS
+        ) {
+          log.info(
+            {
+              event:
+                "transcript.final.duplicate_ignored",
+
+              characterCount:
+                text.length,
+
+              duplicateWindowMs:
+                DUPLICATE_WINDOW_MS,
+
+              millisecondsSincePrevious:
+                now -
+                last.timestamp,
+            },
+            "Duplicate transcript ignored"
+          );
+
+          return;
+        }
+
+        //------------------------------------------
+        // Add Or Merge Transcript
+        //------------------------------------------
+
+        const queued =
+          this.enqueueTranscript(
+            callId,
+            {
+              text,
+
+              normalizedText,
+
+              timestamp:
+                now,
+
+              lastUpdatedAt:
+                now,
+
+              fragmentCount:
+                1,
+            }
+          );
+
+        if (
+          !queued
+        ) {
+          log.debug(
+            {
+              event:
+                "transcript.queue.not_changed",
+
+              incomingCharacterCount:
+                text.length,
+
+              currentPendingCount:
+                this.getPendingTranscriptCount(
+                  callId
+                ),
+            },
+            "Transcript queue was not changed"
+          );
+
+          return;
+        }
+
+        /*
+         * Remember the incoming fragment after it is
+         * accepted. This suppresses exact repeated
+         * FINAL events.
+         */
+        this.lastTranscripts.set(
+          callId,
+          {
+            text:
+              normalizedText,
+
+            timestamp:
+              now,
+          }
+        );
+
+        //------------------------------------------
+        // Schedule Queue Processing
+        //------------------------------------------
+
+        this.scheduleDrain(
+          callId
+        );
+      }
+    );
+  }
+
+  //--------------------------------------------------
+  // Schedule Transcript Processing
+  //--------------------------------------------------
+
+  private static scheduleDrain(
+    callId: string
+  ): void {
+    const existingTimer =
+      this.drainTimers.get(
+        callId
+      );
+
+    if (
+      existingTimer
+    ) {
+      clearTimeout(
+        existingTimer
+      );
+    }
+
+    const timer =
+      setTimeout(
+        () => {
+          this.drainTimers.delete(
+            callId
+          );
+
+          void this.drainPendingTranscripts(
+            callId
+          );
+        },
+        UTTERANCE_MERGE_WINDOW_MS
+      );
+
+    this.drainTimers.set(
+      callId,
+      timer
+    );
+  }
+
+  //--------------------------------------------------
+  // Enqueue Or Merge Transcript
+  //--------------------------------------------------
+
+  private static enqueueTranscript(
+    callId: string,
+    transcript:
+      PendingTranscript
+  ): boolean {
+    const log =
+      createCallLogger(
+        callId
+      );
+
+    const queue =
+      this.pendingTranscripts.get(
+        callId
+      ) ??
+      [];
+
+    const lastQueued =
+      queue.length >
+        0
+        ? queue[
+            queue.length -
+              1
+          ]
+        : undefined;
+
+    //------------------------------------------
+    // Merge Nearby Final Fragments
+    //------------------------------------------
+
+    if (
+      lastQueued &&
+      transcript.timestamp -
+        lastQueued.lastUpdatedAt <=
+        UTTERANCE_MERGE_WINDOW_MS
+    ) {
+      const previousNormalized =
+        lastQueued.normalizedText;
+
+      const incomingNormalized =
+        transcript.normalizedText;
+
+      /*
+       * Exact repeated fragment.
+       */
+      if (
+        incomingNormalized ===
+        previousNormalized
+      ) {
+        log.debug(
+          {
+            event:
+              "transcript.queue.fragment_duplicate_ignored",
+
+            incomingCharacterCount:
+              transcript.text.length,
+
+            pendingCount:
+              queue.length,
+          },
+          "Repeated final transcript fragment ignored"
+        );
+
+        return false;
+      }
+
+      /*
+       * Deepgram can send cumulative results:
+       *
+       * "I need information"
+       * "I need information about pricing"
+       *
+       * Replace the previous fragment rather than
+       * appending duplicate words.
+       */
+      if (
+        incomingNormalized.startsWith(
+          previousNormalized
+        )
+      ) {
+        lastQueued.text =
+          transcript.text.slice(
+            0,
+            MAX_UTTERANCE_CHARACTER_COUNT
+          );
+
+        lastQueued.normalizedText =
+          incomingNormalized.slice(
+            0,
+            MAX_UTTERANCE_CHARACTER_COUNT
+          );
+
+        lastQueued.lastUpdatedAt =
+          transcript.timestamp;
+
+        lastQueued.fragmentCount +=
+          1;
+
+        this.pendingTranscripts.set(
+          callId,
+          queue
+        );
+
+        log.debug(
+          {
+            event:
+              "transcript.queue.cumulative_fragment_replaced",
+
+            mergedCharacterCount:
+              lastQueued.text.length,
+
+            fragmentCount:
+              lastQueued.fragmentCount,
+
+            pendingCount:
+              queue.length,
+          },
+          "Cumulative final transcript replaced previous fragment"
+        );
+
+        return true;
+      }
+
+      /*
+       * The incoming result may be a shorter version
+       * already contained in the previous result.
+       */
+      if (
+        previousNormalized.startsWith(
+          incomingNormalized
+        ) ||
+        previousNormalized.endsWith(
+          incomingNormalized
+        )
+      ) {
+        lastQueued.lastUpdatedAt =
+          transcript.timestamp;
+
+        log.debug(
+          {
+            event:
+              "transcript.queue.contained_fragment_ignored",
+
+            incomingCharacterCount:
+              transcript.text.length,
+
+            pendingCount:
+              queue.length,
+          },
+          "Contained transcript fragment ignored"
+        );
+
+        return true;
+      }
+
+      /*
+       * Normal segmented results:
+       *
+       * "I need information"
+       * "about your service"
+       *
+       * Combine them into one utterance.
+       */
+      const combinedText =
+        cleanDisplayText(
+          `${lastQueued.text} ${transcript.text}`
+        ).slice(
+          0,
+          MAX_UTTERANCE_CHARACTER_COUNT
+        );
+
+      lastQueued.text =
+        combinedText;
+
+      lastQueued.normalizedText =
+        normalizeText(
+          combinedText
+        ).slice(
+          0,
+          MAX_UTTERANCE_CHARACTER_COUNT
+        );
+
+      lastQueued.lastUpdatedAt =
+        transcript.timestamp;
+
+      lastQueued.fragmentCount +=
+        1;
+
+      this.pendingTranscripts.set(
+        callId,
+        queue
+      );
+
+      log.info(
+        {
+          event:
+            "transcript.queue.fragments_merged",
+
+          mergedCharacterCount:
+            lastQueued.text.length,
+
+          fragmentCount:
+            lastQueued.fragmentCount,
+
+          pendingCount:
+            queue.length,
+        },
+        "Final transcript fragments merged into one utterance"
+      );
+
+      return true;
+    }
+
+    //------------------------------------------
+    // Prevent Duplicate Queue Entries
+    //------------------------------------------
+
+    const alreadyQueued =
+      queue.some(
+        item =>
+          item.normalizedText ===
+          transcript.normalizedText
+      );
+
+    if (
+      alreadyQueued
+    ) {
+      log.debug(
+        {
+          event:
+            "transcript.queue.duplicate_ignored",
+
+          characterCount:
+            transcript.text.length,
+
+          pendingCount:
+            queue.length,
+        },
+        "Duplicate queued transcript ignored"
+      );
+
+      return false;
+    }
+
+    //------------------------------------------
+    // Enforce Bounded Queue
+    //------------------------------------------
+
+    if (
+      queue.length >=
+      MAX_PENDING_TRANSCRIPTS_PER_CALL
+    ) {
+      const removed =
+        queue.shift();
+
+      log.warn(
+        {
+          event:
+            "transcript.queue.oldest_removed",
+
+          removedCharacterCount:
+            removed?.text.length ??
+            0,
+
+          incomingCharacterCount:
+            transcript.text.length,
+
+          maximumQueueSize:
+            MAX_PENDING_TRANSCRIPTS_PER_CALL,
+        },
+        "Pending transcript queue limit reached; oldest transcript removed"
+      );
+    }
+
+    queue.push(
+      transcript
+    );
+
+    this.pendingTranscripts.set(
+      callId,
+      queue
+    );
+
+    const active =
+      this.activeTurns.has(
+        callId
+      );
+
+    const state =
+      ConversationStateService.getState(
+        callId
+      );
+
+    if (
+      active ||
+      state !==
+        "LISTENING"
+    ) {
+      log.debug(
+        {
+          event:
+            "transcript.queue.waiting",
+
+          state,
+
+          activeTurn:
+            active,
+
+          pendingCount:
+            queue.length,
+
+          characterCount:
+            transcript.text.length,
+        },
+        "Transcript queued while conversation turn is active"
+      );
+    } else {
+      log.debug(
+        {
+          event:
+            "transcript.queue.added",
+
+          pendingCount:
+            queue.length,
+
+          characterCount:
+            transcript.text.length,
+        },
+        "Transcript added to pending queue"
+      );
+    }
+
+    return true;
+  }
+
+  //--------------------------------------------------
+  // Process Pending Transcripts
+  //--------------------------------------------------
+
+  private static async drainPendingTranscripts(
+    callId: string
+  ): Promise<void> {
+    /*
+     * Cancel any remaining scheduled timer because
+     * processing is beginning now.
+     */
+    const scheduledTimer =
+      this.drainTimers.get(
+        callId
+      );
+
+    if (
+      scheduledTimer
+    ) {
+      clearTimeout(
+        scheduledTimer
+      );
+
+      this.drainTimers.delete(
+        callId
+      );
+    }
+
+    /*
+     * Another drain loop is already processing this
+     * call. Newly queued text will be handled later.
+     */
+    if (
+      this.activeTurns.has(
+        callId
+      )
+    ) {
+      return;
+    }
+
+    this.activeTurns.add(
+      callId
+    );
+
+    const log =
+      createCallLogger(
+        callId
+      );
+
+    try {
+      while (
+        true
+      ) {
+        //----------------------------------------
+        // Confirm Call Still Exists
+        //----------------------------------------
+
+        if (
+          !AudioSessionService
+            .getByCallId(
+              callId
+            )
+        ) {
+          const removedPendingCount =
+            this.pendingTranscripts
+              .get(
+                callId
+              )
+              ?.length ??
+            0;
+
+          this.pendingTranscripts.delete(
+            callId
+          );
+
+          log.warn(
+            {
+              event:
+                "transcript.processing.stopped",
+
+              reason:
+                "call_session_ended",
+
+              removedPendingCount,
+            },
+            "Pending transcript processing stopped because the call session ended"
+          );
+
+          return;
+        }
+
+        //----------------------------------------
+        // Read Queue
+        //----------------------------------------
+
+        const queue =
+          this.pendingTranscripts.get(
+            callId
+          );
+
+        if (
+          !queue ||
+          queue.length ===
+            0
+        ) {
+          this.pendingTranscripts.delete(
+            callId
+          );
+
+          return;
+        }
+
+        //----------------------------------------
+        // Confirm Conversation Is Ready
+        //----------------------------------------
+
+        const state =
+          ConversationStateService.getState(
+            callId
+          );
+
+        if (
+          state ===
+          "ENDED"
+        ) {
+          const removedPendingCount =
+            queue.length;
+
+          this.pendingTranscripts.delete(
+            callId
+          );
+
+          log.warn(
+            {
+              event:
+                "transcript.processing.stopped",
+
+              reason:
+                "conversation_ended",
+
+              removedPendingCount,
+            },
+            "Pending transcripts removed because conversation ended"
+          );
+
+          return;
+        }
+
+        if (
+          state !==
+          "LISTENING"
+        ) {
+          log.debug(
+            {
+              event:
+                "transcript.processing.waiting",
+
+              state,
+
+              pendingCount:
+                queue.length,
+            },
+            "Pending transcript waiting for LISTENING state"
+          );
+
+          return;
+        }
+
+        //----------------------------------------
+        // Remove Next Combined Utterance
+        //----------------------------------------
+
+        const nextTranscript =
+          queue.shift();
+
+        if (
+          queue.length ===
+          0
+        ) {
+          this.pendingTranscripts.delete(
+            callId
+          );
+        } else {
+          this.pendingTranscripts.set(
+            callId,
+            queue
+          );
+        }
+
+        if (
+          !nextTranscript
+        ) {
+          return;
+        }
+
+        //----------------------------------------
+        // Process Conversation Turn
+        //----------------------------------------
+
+        const processingStartedAt =
+          Date.now();
+
+        log.info(
+          {
+            event:
+              "transcript.processing.started",
+
+            characterCount:
+              nextTranscript.text.length,
+
+            fragmentCount:
+              nextTranscript.fragmentCount,
+
+            queueDelayMs:
+              Math.max(
+                0,
+                processingStartedAt -
+                  nextTranscript.timestamp
+              ),
+
+            remainingPending:
+              queue.length,
+          },
+          "Combined utterance processing started"
+        );
+
+        try {
+          await processUserMessage(
+            callId,
+            nextTranscript.text
+          );
+
+          log.info(
+            {
+              event:
+                "transcript.processing.completed",
+
+              characterCount:
+                nextTranscript.text.length,
+
+              fragmentCount:
+                nextTranscript.fragmentCount,
+
+              processingDurationMs:
+                Date.now() -
+                processingStartedAt,
+
+              remainingPending:
+                queue.length,
+            },
+            "Combined utterance processing completed"
+          );
+        } catch (
+          error
+        ) {
+          log.error(
+            {
+              event:
+                "transcript.processing.failed",
+
+              error:
+                normalizeError(
+                  error
+                ),
+
+              characterCount:
+                nextTranscript.text.length,
+
+              fragmentCount:
+                nextTranscript.fragmentCount,
+
+              processingDurationMs:
+                Date.now() -
+                processingStartedAt,
+
+              remainingPending:
+                queue.length,
+            },
+            "Conversation engine failed"
+          );
+        }
+      }
+    } finally {
+      this.activeTurns.delete(
+        callId
+      );
+
+      //------------------------------------------
+      // Handle Race At Loop Completion
+      //------------------------------------------
+
+      const remainingQueue =
+        this.pendingTranscripts.get(
+          callId
+        );
+
+      const state =
+        ConversationStateService.getState(
+          callId
+        );
+
+      if (
+        remainingQueue &&
+        remainingQueue.length >
+          0 &&
+        state ===
+          "LISTENING" &&
+        AudioSessionService
+          .getByCallId(
+            callId
+          )
+      ) {
+        /*
+         * Use the debounce window again. This allows
+         * any final fragments arriving at the end of
+         * playback to merge before the next turn.
+         */
+        this.scheduleDrain(
+          callId
+        );
+      }
+    }
+  }
+
+  //--------------------------------------------------
+  // Pending Queue Diagnostics
+  //--------------------------------------------------
+
+  static getPendingTranscriptCount(
+    callId: string
+  ): number {
+    return (
+      this.pendingTranscripts
+        .get(
+          callId
+        )
+        ?.length ??
+      0
+    );
+  }
+}
+===== Conversation events service =====
+import { EventEmitter } from "events";
+
+import {
+  EventPublisher,
+  AppEvent,
+} from "@/core/events";
+
+export const ConversationEvents =
+  new EventEmitter();
+
+ConversationEvents.setMaxListeners(100);
+
+//----------------------------------------
+// AI Thinking
+//----------------------------------------
+
+ConversationEvents.on(
+  "thinking",
+  async (callId: string) => {
+
+    await EventPublisher.publish(
+      AppEvent.VOICE_THINKING,
+      {
+        callId,
+        status: "AI Thinking",
+        timestamp: Date.now(),
+      }
+    );
+
+  }
+);
+
+//----------------------------------------
+// AI Listening
+//----------------------------------------
+
+ConversationEvents.on(
+  "listening",
+  async (callId: string) => {
+
+    await EventPublisher.publish(
+      AppEvent.VOICE_LISTENING,
+      {
+        callId,
+        status: "Listening",
+        timestamp: Date.now(),
+      }
+    );
+
+  }
+);
+
+//----------------------------------------
+// AI Speaking
+//----------------------------------------
+
+ConversationEvents.on(
+  "speaking",
+  async (callId: string) => {
+
+    await EventPublisher.publish(
+      AppEvent.VOICE_SPEAKING,
+      {
+        callId,
+        status: "AI Speaking",
+        timestamp: Date.now(),
+      }
+    );
+
+  }
+);
+
+//----------------------------------------
+// AI Interrupted
+//----------------------------------------
+
+ConversationEvents.on(
+  "interrupted",
+  async (callId: string) => {
+
+    await EventPublisher.publish(
+      AppEvent.VOICE_INTERRUPTED,
+      {
+        callId,
+        status: "Interrupted",
+        timestamp: Date.now(),
+      }
+    );
+
+  }
+);
+
+//----------------------------------------
+// Voice Completed
+//----------------------------------------
+
+ConversationEvents.on(
+  "completed",
+  async (callId: string) => {
+
+    await EventPublisher.publish(
+      AppEvent.VOICE_COMPLETED,
+      {
+        callId,
+        status: "Completed",
+        timestamp: Date.now(),
+      }
+    );
+
+  }
+);
+===== Legacy realtime exports =====
+export * from "./event-bus";
+export * from "./realtime.service";
+export * from "./socket-gateway.service";
+===== Remaining RealtimeService usages =====
+src\services\realtime\realtime-subscriber.ts:11:  RealtimeService,
+src\services\realtime\realtime-subscriber.ts:28:        RealtimeService.transcript(
+src\services\realtime\realtime-subscriber.ts:50:        RealtimeService.state(
+src\services\realtime\realtime-subscriber.ts:72:        RealtimeService.state(
+src\services\realtime\realtime-subscriber.ts:94:        RealtimeService.state(
+src\services\realtime\realtime.service.ts:5:export class RealtimeService {

@@ -214,6 +214,10 @@ describe(
       }
     );
 
+    //------------------------------------------------
+    // Authentication
+    //------------------------------------------------
+
     it(
       "returns 403 when webhook authentication fails",
       async () => {
@@ -256,6 +260,10 @@ describe(
         ).not.toHaveBeenCalled();
       }
     );
+
+    //------------------------------------------------
+    // Required Fields
+    //------------------------------------------------
 
     it(
       "returns 400 when CallSid is missing",
@@ -327,6 +335,10 @@ describe(
         ).not.toHaveBeenCalled();
       }
     );
+
+    //------------------------------------------------
+    // Status Update
+    //------------------------------------------------
 
     it(
       "passes callback values to updateCallStatus",
@@ -400,9 +412,19 @@ describe(
 
           ignored:
             false,
+
+          duplicate:
+            false,
+
+          eventPublished:
+            false,
         });
       }
     );
+
+    //------------------------------------------------
+    // Duration Parsing
+    //------------------------------------------------
 
     it(
       "floors a decimal duration",
@@ -544,6 +566,10 @@ describe(
       }
     );
 
+    //------------------------------------------------
+    // Unmatched Callback
+    //------------------------------------------------
+
     it(
       "returns 200 for an unmatched callback",
       async () => {
@@ -593,9 +619,19 @@ describe(
 
           ignored:
             true,
+
+          duplicate:
+            false,
+
+          eventPublished:
+            false,
         });
       }
     );
+
+    //------------------------------------------------
+    // Internal Failure
+    //------------------------------------------------
 
     it(
       "returns 500 when updateCallStatus fails",
@@ -644,6 +680,10 @@ describe(
         });
       }
     );
+
+    //------------------------------------------------
+    // Call Ordering
+    //------------------------------------------------
 
     it(
       "validates the webhook before updating the call",

@@ -1,47 +1,179 @@
-import { GoogleGenAI } from "@google/genai";
+import {
+  GoogleGenAI,
+} from "@google/genai";
 
-import { AI_CONFIG } from "@/config/ai";
+import {
+  AI_CONFIG,
+} from "@/config/ai";
 
-const ai = new GoogleGenAI({
-  apiKey: AI_CONFIG.geminiApiKey,
-});
+import {
+  createServerLogger,
+  getDurationMs,
+  normalizeError,
+} from "@/lib/logger";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "gemini-stream"
+  );
+
+//--------------------------------------------------
+// Gemini Client
+//--------------------------------------------------
+
+const ai =
+  new GoogleGenAI({
+    apiKey:
+      AI_CONFIG.geminiApiKey,
+  });
+
+//--------------------------------------------------
+// Stream Gemini Response
+//--------------------------------------------------
 
 export async function* askGeminiStream(
   prompt: string
 ): AsyncGenerator<string> {
-  console.log(
-    "\n========== GEMINI STREAM ==========\n"
+  const startedAt =
+    process.hrtime.bigint();
+
+  const model =
+    process.env
+      .GEMINI_TEXT_MODEL
+      ?.trim() ||
+    "gemini-3.5-flash";
+
+  let receivedChunkCount =
+    0;
+
+  let receivedCharacterCount =
+    0;
+
+  let yieldedWordCount =
+    0;
+
+  log.debug(
+    {
+      event:
+        "gemini.stream.started",
+
+      model,
+
+      promptCharacterCount:
+        prompt.length,
+    },
+    "Gemini response stream started"
   );
 
-  const stream =
-    await ai.models.generateContentStream({
-      model:
-  process.env.GEMINI_TEXT_MODEL?.trim() ||
-  "gemini-3.5-flash",
-      contents: prompt,
-    });
+  try {
+    const stream =
+      await ai.models
+        .generateContentStream({
+          model,
 
-  for await (const chunk of stream) {
-    const text =
-      chunk.text ?? "";
+          contents:
+            prompt,
+        });
 
-    if (!text.trim()) {
-      continue;
+    for await (
+      const chunk of
+      stream
+    ) {
+      const text =
+        chunk.text ??
+        "";
+
+      const normalizedText =
+        text.trim();
+
+      if (
+        !normalizedText
+      ) {
+        continue;
+      }
+
+      receivedChunkCount +=
+        1;
+
+      receivedCharacterCount +=
+        text.length;
+
+      const words =
+        text.split(
+          /\s+/
+        );
+
+      for (
+        const word of
+        words
+      ) {
+        if (
+          !word
+        ) {
+          continue;
+        }
+
+        yieldedWordCount +=
+          1;
+
+        yield `${word} `;
+      }
     }
 
-    console.log(text);
+    log.info(
+      {
+        event:
+          "gemini.stream.completed",
 
-    const words =
-      text.split(/\s+/);
+        model,
 
-    for (const word of words) {
-      if (!word) continue;
+        receivedChunkCount,
 
-      yield word + " ";
-    }
+        receivedCharacterCount,
+
+        yieldedWordCount,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+      },
+      "Gemini response stream completed"
+    );
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "gemini.stream.failed",
+
+        model,
+
+        promptCharacterCount:
+          prompt.length,
+
+        receivedChunkCount,
+
+        receivedCharacterCount,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Gemini response stream failed"
+    );
+
+    throw error;
   }
-
-  console.log(
-    "\n========== STREAM END ==========\n"
-  );
 }

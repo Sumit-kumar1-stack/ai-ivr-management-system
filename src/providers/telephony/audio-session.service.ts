@@ -2,6 +2,16 @@ import {
   WebSocket,
 } from "ws";
 
+import {
+  createCallLogger,
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+//--------------------------------------------------
+// Types
+//--------------------------------------------------
+
 export interface AudioSession {
   callId: string;
 
@@ -24,6 +34,24 @@ interface CreateAudioSessionInput {
   socket: WebSocket;
 }
 
+type CloseListener =
+  (
+    callId: string
+  ) => void;
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const serviceLog =
+  createServerLogger(
+    "audio-session-service"
+  );
+
+//--------------------------------------------------
+// Audio Session Manager
+//--------------------------------------------------
+
 class AudioSessionManager {
   private sessionsByStreamSid =
     new Map<
@@ -37,10 +65,21 @@ class AudioSessionManager {
       string
     >();
 
-  private closeListeners: ((callId: string) => void)[] = [];
+  private closeListeners:
+    CloseListener[] =
+    [];
 
-  onClose(listener: (callId: string) => void): void {
-    this.closeListeners.push(listener);
+  //--------------------------------------------
+  // Register Close Listener
+  //--------------------------------------------
+
+  onClose(
+    listener:
+      CloseListener
+  ): void {
+    this.closeListeners.push(
+      listener
+    );
   }
 
   //--------------------------------------------
@@ -51,9 +90,21 @@ class AudioSessionManager {
     input:
       CreateAudioSessionInput
   ): AudioSession {
+    const log =
+      createCallLogger(
+        input.callId
+      );
+
     const previousStreamSid =
       this.streamSidByCallId.get(
         input.callId
+      );
+
+    const replacedPreviousSession =
+      Boolean(
+        previousStreamSid &&
+        previousStreamSid !==
+          input.streamSid
       );
 
     if (
@@ -84,26 +135,39 @@ class AudioSessionManager {
       session.streamSid
     );
 
-    console.log(
-      `🎧 Audio Session Created (${session.callId})`
+    log.info(
+      {
+        event:
+          "audio.session.created",
+
+        twilioCallSidPresent:
+          Boolean(
+            session.twilioCallSid
+          ),
+
+        streamSidPresent:
+          Boolean(
+            session.streamSid
+          ),
+
+        replacedPreviousSession,
+
+        readyState:
+          session.socket
+            .readyState,
+
+        activeSessionCount:
+          this.sessionsByStreamSid
+            .size,
+      },
+      "Audio session created"
     );
-
-    console.log({
-      callId:
-        session.callId,
-
-      twilioCallSid:
-        session.twilioCallSid,
-
-      streamSid:
-        session.streamSid,
-    });
 
     return session;
   }
 
   //--------------------------------------------
-  // Get by stream SID
+  // Get By Stream SID
   //--------------------------------------------
 
   get(
@@ -111,11 +175,13 @@ class AudioSessionManager {
   ): AudioSession | undefined {
     return this
       .sessionsByStreamSid
-      .get(streamSid);
+      .get(
+        streamSid
+      );
   }
 
   //--------------------------------------------
-  // Get by internal call ID
+  // Get By Internal Call ID
   //--------------------------------------------
 
   getByCallId(
@@ -126,17 +192,21 @@ class AudioSessionManager {
         callId
       );
 
-    if (!streamSid) {
+    if (
+      !streamSid
+    ) {
       return undefined;
     }
 
     return this
       .sessionsByStreamSid
-      .get(streamSid);
+      .get(
+        streamSid
+      );
   }
 
   //--------------------------------------------
-  // Check whether a call has a live socket
+  // Check Whether Call Has A Live Socket
   //--------------------------------------------
 
   isReady(
@@ -156,13 +226,15 @@ class AudioSessionManager {
   }
 
   //--------------------------------------------
-  // Wait for Twilio socket
+  // Wait For Twilio Socket
   //--------------------------------------------
 
   async waitForCall(
     callId: string,
-    timeoutMs = 20000,
-    pollIntervalMs = 100
+    timeoutMs =
+      20_000,
+    pollIntervalMs =
+      100
   ): Promise<AudioSession> {
     const startedAt =
       Date.now();
@@ -187,7 +259,7 @@ class AudioSessionManager {
       }
 
       await new Promise<void>(
-        (resolve) => {
+        resolve => {
           setTimeout(
             resolve,
             pollIntervalMs
@@ -197,26 +269,43 @@ class AudioSessionManager {
     }
 
     throw new Error(
-      `Timed out waiting for Twilio Media Stream for call ${callId}`
+      `Timed out waiting for Twilio Media Stream after ${timeoutMs}ms`
     );
   }
 
   //--------------------------------------------
-  // Send audio by internal call ID
+  // Send Audio By Internal Call ID
   //--------------------------------------------
 
   sendAudioByCallId(
     callId: string,
     audio: Buffer
   ): boolean {
+    const log =
+      createCallLogger(
+        callId
+      );
+
     const session =
       this.getByCallId(
         callId
       );
 
-    if (!session) {
-      console.error(
-        `No Twilio audio session for call ${callId}`
+    if (
+      !session
+    ) {
+      log.warn(
+        {
+          event:
+            "audio.send.rejected",
+
+          reason:
+            "session_not_found",
+
+          audioSizeBytes:
+            audio.length,
+        },
+        "Twilio audio session was not found"
       );
 
       return false;
@@ -229,7 +318,7 @@ class AudioSessionManager {
   }
 
   //--------------------------------------------
-  // Send audio by stream SID
+  // Send Audio By Stream SID
   //--------------------------------------------
 
   sendAudio(
@@ -241,9 +330,26 @@ class AudioSessionManager {
         streamSid
       );
 
-    if (!session) {
-      console.error(
-        `No Twilio audio session for stream ${streamSid}`
+    if (
+      !session
+    ) {
+      serviceLog.warn(
+        {
+          event:
+            "audio.send.rejected",
+
+          reason:
+            "stream_session_not_found",
+
+          streamSidPresent:
+            Boolean(
+              streamSid
+            ),
+
+          audioSizeBytes:
+            audio.length,
+        },
+        "Twilio stream audio session was not found"
       );
 
       return false;
@@ -256,20 +362,39 @@ class AudioSessionManager {
   }
 
   //--------------------------------------------
-  // Internal outbound media sender
+  // Internal Outbound Media Sender
   //--------------------------------------------
 
   private sendAudioToSession(
     session: AudioSession,
     audio: Buffer
   ): boolean {
+    const log =
+      createCallLogger(
+        session.callId
+      );
+
     if (
       session.socket
         .readyState !==
       WebSocket.OPEN
     ) {
-      console.error(
-        `Twilio WebSocket is not open for call ${session.callId}`
+      log.warn(
+        {
+          event:
+            "audio.send.rejected",
+
+          reason:
+            "socket_not_open",
+
+          readyState:
+            session.socket
+              .readyState,
+
+          audioSizeBytes:
+            audio.length,
+        },
+        "Twilio WebSocket is not open"
       );
 
       return false;
@@ -279,54 +404,91 @@ class AudioSessionManager {
       !Buffer.isBuffer(
         audio
       ) ||
-      audio.length === 0
+      audio.length ===
+        0
     ) {
-      console.error(
-        `Invalid audio buffer for call ${session.callId}`
+      log.warn(
+        {
+          event:
+            "audio.send.rejected",
+
+          reason:
+            "invalid_audio_buffer",
+        },
+        "Invalid Twilio audio buffer"
       );
 
       return false;
     }
 
-    session.socket.send(
-      JSON.stringify({
-        event:
-          "media",
+    try {
+      session.socket.send(
+        JSON.stringify({
+          event:
+            "media",
 
-        streamSid:
-          session.streamSid,
+          streamSid:
+            session.streamSid,
 
-        media: {
-          payload:
-            audio.toString(
-              "base64"
+          media: {
+            payload:
+              audio.toString(
+                "base64"
+              ),
+          },
+        })
+      );
+
+      log.debug(
+        {
+          event:
+            "audio.send.completed",
+
+          audioSizeBytes:
+            audio.length,
+
+          streamSidPresent:
+            true,
+        },
+        "Twilio audio sent"
+      );
+
+      return true;
+    } catch (
+      error
+    ) {
+      log.error(
+        {
+          event:
+            "audio.send.failed",
+
+          audioSizeBytes:
+            audio.length,
+
+          error:
+            normalizeError(
+              error
             ),
         },
-      })
-    );
+        "Failed to send Twilio audio"
+      );
 
-    console.log(
-      `📤 Twilio audio sent (${session.callId})`
-    );
-
-    console.log({
-      streamSid:
-        session.streamSid,
-
-      bytes:
-        audio.length,
-    });
-
-    return true;
+      return false;
+    }
   }
 
   //--------------------------------------------
-  // Clear buffered Twilio playback
+  // Clear Buffered Twilio Playback
   //--------------------------------------------
 
   clearPlayback(
     callId: string
   ): boolean {
+    const log =
+      createCallLogger(
+        callId
+      );
+
     const session =
       this.getByCallId(
         callId
@@ -341,21 +503,44 @@ class AudioSessionManager {
       return false;
     }
 
-    session.socket.send(
-      JSON.stringify({
-        event:
-          "clear",
+    try {
+      session.socket.send(
+        JSON.stringify({
+          event:
+            "clear",
 
-        streamSid:
-          session.streamSid,
-      })
-    );
+          streamSid:
+            session.streamSid,
+        })
+      );
 
-    console.log(
-      `🛑 Twilio playback cleared (${callId})`
-    );
+      log.info(
+        {
+          event:
+            "audio.playback.cleared",
+        },
+        "Twilio playback cleared"
+      );
 
-    return true;
+      return true;
+    } catch (
+      error
+    ) {
+      log.error(
+        {
+          event:
+            "audio.playback.clear_failed",
+
+          error:
+            normalizeError(
+              error
+            ),
+        },
+        "Failed to clear Twilio playback"
+      );
+
+      return false;
+    }
   }
 
   //--------------------------------------------
@@ -370,15 +555,40 @@ class AudioSessionManager {
         streamSid
       );
 
-    if (!session) {
+    if (
+      !session
+    ) {
       return;
     }
 
-    for (const listener of this.closeListeners) {
+    const log =
+      createCallLogger(
+        session.callId
+      );
+
+    for (
+      const listener of
+      this.closeListeners
+    ) {
       try {
-        listener(session.callId);
-      } catch (error) {
-        console.error("Error in AudioSessionService onClose listener:", error);
+        listener(
+          session.callId
+        );
+      } catch (
+        error
+      ) {
+        log.error(
+          {
+            event:
+              "audio.session.close_listener_failed",
+
+            error:
+              normalizeError(
+                error
+              ),
+          },
+          "Audio session close listener failed"
+        );
       }
     }
 
@@ -400,13 +610,28 @@ class AudioSessionManager {
       );
     }
 
-    console.log(
-      `🔌 Audio Session Closed (${session.callId})`
+    log.info(
+      {
+        event:
+          "audio.session.closed",
+
+        lifetimeMs:
+          Math.max(
+            0,
+            Date.now() -
+              session.createdAt
+          ),
+
+        activeSessionCount:
+          this.sessionsByStreamSid
+            .size,
+      },
+      "Audio session closed"
     );
   }
 
   //--------------------------------------------
-  // Close using internal ID
+  // Close Using Internal ID
   //--------------------------------------------
 
   closeByCallId(
@@ -417,7 +642,9 @@ class AudioSessionManager {
         callId
       );
 
-    if (!streamSid) {
+    if (
+      !streamSid
+    ) {
       return;
     }
 

@@ -1,19 +1,88 @@
-import { NextRequest } from "next/server";
-import { success } from "@/lib/api-response";
-import { asyncHandler } from "@/lib/async-handler";
+import {
+  NextRequest,
+} from "next/server";
 
-import { IVRFlowService } from "@/services/ivr-flow.service";
+import {
+  success,
+} from "@/lib/api-response";
 
-export const GET = asyncHandler(async () => {
-  const flows = await IVRFlowService.findAll();
+import {
+  asyncHandler,
+} from "@/lib/async-handler";
 
-  return success(flows);
-});
+import {
+  IVRFlowService,
+} from "@/services/ivr-flow.service";
 
-export const POST = asyncHandler(async (req: NextRequest) => {
-  const body = await req.json();
+//--------------------------------------------------
+// GET
+//--------------------------------------------------
 
-  const flow = await IVRFlowService.create(body);
+export const GET =
+  asyncHandler(
+    async () => {
+      const flows =
+        await IVRFlowService
+          .findAll();
 
-  return success(flow, "Flow created successfully");
-});
+      return success(
+        flows
+      );
+    }
+  );
+
+//--------------------------------------------------
+// POST
+//--------------------------------------------------
+
+export const POST =
+  asyncHandler(
+    async (
+      request:
+        NextRequest
+    ) => {
+      const body =
+        await request.json();
+
+      const flow =
+        await IVRFlowService
+          .create({
+            name:
+              String(
+                body.name ??
+                  ""
+              ),
+
+            description:
+              typeof body.description ===
+                "string"
+                ? body.description
+                : undefined,
+
+            campaignId:
+              typeof body.campaignId ===
+                "string"
+                ? body.campaignId
+                : undefined,
+
+            nodes:
+              Array.isArray(
+                body.nodes
+              )
+                ? body.nodes
+                : [],
+
+            edges:
+              Array.isArray(
+                body.edges
+              )
+                ? body.edges
+                : [],
+          });
+
+      return success(
+        flow,
+        "Flow created successfully"
+      );
+    }
+  );

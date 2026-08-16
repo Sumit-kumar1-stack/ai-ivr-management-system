@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  useEffect,
   useState,
 } from "react";
 
@@ -89,30 +88,6 @@ export default function AssignCampaignDialog({
   } =
     assignmentMutation;
 
-  useEffect(
-    () => {
-      if (
-        open
-      ) {
-        return;
-      }
-
-      setCampaignId(
-        ""
-      );
-
-      setResult(
-        null
-      );
-
-      reset();
-    },
-    [
-      open,
-      reset,
-    ]
-  );
-
   function handleAssign(): void {
     if (
       !campaignId ||
@@ -153,6 +128,16 @@ export default function AssignCampaignDialog({
       return;
     }
 
+    setCampaignId(
+      ""
+    );
+
+    setResult(
+      null
+    );
+
+    reset();
+
     onOpenChange(
       false
     );
@@ -165,6 +150,20 @@ export default function AssignCampaignDialog({
       isPending
     ) {
       return;
+    }
+
+    if (
+      !nextOpen
+    ) {
+      setCampaignId(
+        ""
+      );
+
+      setResult(
+        null
+      );
+
+      reset();
     }
 
     onOpenChange(

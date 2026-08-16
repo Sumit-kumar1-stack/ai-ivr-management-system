@@ -1,11 +1,12 @@
 "use client";
 
+import type { IVRNode, IVRNodeData } from "../types";
 import KnowledgeUpload from "./knowledge-upload";
 import KnowledgeList from "./knowledge-list";
 
 interface Props {
-  node: any;
-  onChange: (field: string, value: any) => void;
+  node: IVRNode;
+  onChange: <K extends keyof IVRNodeData>(field: K, value: IVRNodeData[K]) => void;
 }
 
 export default function AIKnowledge({
@@ -14,7 +15,7 @@ export default function AIKnowledge({
 }: Props) {
 
   const knowledge =
-    node.data.knowledge ?? [];
+    node.data?.knowledge ?? [];
 
   function upload(file: File) {
 
@@ -36,7 +37,7 @@ export default function AIKnowledge({
     onChange(
       "knowledge",
       knowledge.filter(
-        (x: any) => x.id !== id
+        (x) => x.id !== id
       )
     );
   }

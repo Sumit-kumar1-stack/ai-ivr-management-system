@@ -1,43 +1,19 @@
-export const twilioConfig = {
+import {
+  getTwilioEnvironment,
+} from "@/config/env";
 
-  accountSid:
-    process.env.TWILIO_ACCOUNT_SID!,
+export interface TwilioConfig {
+  accountSid: string;
+  authToken: string;
+  phoneNumber: string;
+  publicBaseUrl: string;
+  mediaPublicUrl: string;
+}
 
-  authToken:
-    process.env.TWILIO_AUTH_TOKEN!,
+export function getTwilioConfig(): TwilioConfig {
+  return getTwilioEnvironment();
+}
 
-  phoneNumber:
-    process.env.TWILIO_PHONE_NUMBER!,
-
-  appUrl:
-    process.env.APP_URL!,
-
-};
-
-export function validateTwilioConfig() {
-
-  const required = [
-
-    "TWILIO_ACCOUNT_SID",
-
-    "TWILIO_AUTH_TOKEN",
-
-    "TWILIO_PHONE_NUMBER",
-
-    "APP_URL",
-
-  ];
-
-  for (const key of required) {
-
-    if (!process.env[key]) {
-
-      throw new Error(
-        `Missing environment variable: ${key}`
-      );
-
-    }
-
-  }
-
+export function validateTwilioConfig(): void {
+  getTwilioEnvironment();
 }

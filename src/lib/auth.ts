@@ -11,13 +11,16 @@ import {
 } from "@/lib/prisma";
 
 import {
+  AUTH_COOKIE_NAME,
+} from "@/lib/auth-constants";
+
+import {
   verifyToken,
 } from "@/lib/jwt";
 
-
-export const AUTH_COOKIE_NAME =
-  "token";
-
+export {
+  AUTH_COOKIE_NAME,
+} from "@/lib/auth-constants";
 
 export interface AuthenticatedUser {
   id: string;

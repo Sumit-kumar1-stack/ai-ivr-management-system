@@ -3,12 +3,13 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/axios";
 import { toast } from "sonner";
+import type { CreateContactInput } from "./contact.schema";
 
 export function useCreateContact() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (contact: any) => {
+    mutationFn: async (contact: CreateContactInput) => {
       const { data } = await api.post(
         "/contacts",
         contact

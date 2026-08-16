@@ -1,125 +1,131 @@
-import { GoogleGenAI } from "@google/genai";
+import {
+  GoogleGenAI,
+} from "@google/genai";
 
-import { AI_CONFIG } from "@/config/ai";
-import { Logger } from "@/lib/logger";
+import {
+  AI_CONFIG,
+} from "@/config/ai";
 
-const ai = new GoogleGenAI({
-  apiKey: AI_CONFIG.geminiApiKey,
-});
+import {
+  createServerLogger,
+} from "@/lib/logger";
+
+//--------------------------------------------------
+// Gemini Client
+//--------------------------------------------------
+
+const ai =
+  new GoogleGenAI({
+    apiKey:
+      AI_CONFIG.geminiApiKey,
+  });
 
 const GEMINI_TEXT_MODEL =
-  process.env.GEMINI_TEXT_MODEL?.trim() ||
+  process.env
+    .GEMINI_TEXT_MODEL
+    ?.trim() ||
   "gemini-3.6-flash";
 
-interface ApiErrorBody {
-  error?: {
-    code?: number;
-    message?: string;
-    status?: string;
-    details?: unknown[];
-  };
-}
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
 
-interface GeminiApiError extends Error {
-  status?: number;
-  statusCode?: number;
-  code?: string | number;
+const log =
+  createServerLogger(
+    "gemini-service"
+  );
+
+//--------------------------------------------------
+// Error Types
+//--------------------------------------------------
+
+interface GeminiApiError
+  extends Error {
+  status?:
+    number;
+
+  statusCode?:
+    number;
+
+  code?:
+    string |
+    number;
 }
 
 function normalizeGeminiError(
   error: unknown
 ): GeminiApiError {
-  if (error instanceof Error) {
-    return error as GeminiApiError;
+  if (
+    error instanceof
+    Error
+  ) {
+    return error as
+      GeminiApiError;
   }
 
   return new Error(
-    String(error)
+    String(
+      error
+    )
   ) as GeminiApiError;
 }
+
+//--------------------------------------------------
+// Safe Error Logging
+//--------------------------------------------------
 
 function logGeminiError(
   error: unknown,
   modelName: string,
-  prompt: string
+  promptLength: number
 ): void {
-  const err =
-    normalizeGeminiError(error);
+  const normalized =
+    normalizeGeminiError(
+      error
+    );
 
-  let apiDetails:
-    unknown[] | null = null;
-
-  let parsedMessage =
-    err.message || String(error);
-
-  if (err.message) {
-    try {
-      const parsed =
-        JSON.parse(
-          err.message
-        ) as ApiErrorBody;
-
-      if (parsed.error) {
-        apiDetails =
-          parsed.error.details ??
-          null;
-
-        parsedMessage =
-          parsed.error.message ??
-          err.message;
-      }
-    } catch {
-      // Error message is not JSON.
-    }
-  }
-
-  Logger.error(
+  log.error(
     {
-      geminiError: {
-        errorName:
-          err.name ||
-          "UnknownError",
+      event:
+        "gemini.request.failed",
 
-        status:
-          err.status ??
-          err.statusCode ??
+      errorName:
+        normalized.name ||
+        "UnknownError",
+
+      errorStatus:
+        normalized.status ??
+        normalized.statusCode ??
+        null,
+
+      errorCodePresent:
+        normalized.code !==
+          undefined &&
+        normalized.code !==
           null,
 
-        message:
-          parsedMessage,
+      modelName,
 
-        errorCode:
-          err.code ??
-          null,
-
-        apiDetails,
-
-        stack:
-          err.stack ??
-          null,
-
-        modelName,
-
-        requestSummary: {
-          promptLength:
-            prompt.length,
-        },
-      },
+      promptCharacterCount:
+        promptLength,
     },
-    `Gemini API Error: ${parsedMessage}`
+    "Gemini request failed"
   );
 }
 
-/**
- * Standard completion.
- */
+//--------------------------------------------------
+// Standard Completion
+//--------------------------------------------------
+
 export async function askGemini(
   prompt: string
 ): Promise<string> {
   const normalizedPrompt =
     prompt.trim();
 
-  if (!normalizedPrompt) {
+  if (
+    !normalizedPrompt
+  ) {
     throw new Error(
       "Gemini prompt cannot be empty"
     );
@@ -127,32 +133,37 @@ export async function askGemini(
 
   try {
     const response =
-      await ai.models.generateContent({
-        model:
-          GEMINI_TEXT_MODEL,
+      await ai.models
+        .generateContent({
+          model:
+            GEMINI_TEXT_MODEL,
 
-        contents:
-          normalizedPrompt,
-      });
+          contents:
+            normalizedPrompt,
+        });
 
     return (
-      response.text?.trim() ??
+      response.text
+        ?.trim() ??
       ""
     );
-  } catch (error) {
+  } catch (
+    error
+  ) {
     logGeminiError(
       error,
       GEMINI_TEXT_MODEL,
-      normalizedPrompt
+      normalizedPrompt.length
     );
 
     throw error;
   }
 }
 
-/**
- * Streaming completion.
- */
+//--------------------------------------------------
+// Streaming Completion
+//--------------------------------------------------
+
 export async function* askGeminiStream(
   prompt: string,
   signal?: AbortSignal
@@ -160,51 +171,70 @@ export async function* askGeminiStream(
   const normalizedPrompt =
     prompt.trim();
 
-  if (!normalizedPrompt) {
+  if (
+    !normalizedPrompt
+  ) {
     throw new Error(
       "Gemini prompt cannot be empty"
     );
   }
 
-  if (signal?.aborted) {
+  if (
+    signal?.aborted
+  ) {
     return;
   }
 
   try {
     const stream =
-      await ai.models.generateContentStream({
-        model:
-          GEMINI_TEXT_MODEL,
+      await ai.models
+        .generateContentStream({
+          model:
+            GEMINI_TEXT_MODEL,
 
-        contents:
-          normalizedPrompt,
-      });
+          contents:
+            normalizedPrompt,
+        });
 
     for await (
       const chunk of stream
     ) {
-      if (signal?.aborted) {
-        console.log(
-          "🛑 Gemini stream aborted"
+      if (
+        signal?.aborted
+      ) {
+        log.debug(
+          {
+            event:
+              "gemini.stream.aborted",
+
+            modelName:
+              GEMINI_TEXT_MODEL,
+          },
+          "Gemini stream aborted"
         );
 
         return;
       }
 
       const text =
-        chunk.text ?? "";
+        chunk.text ??
+        "";
 
-      if (!text) {
+      if (
+        !text
+      ) {
         continue;
       }
 
       yield text;
     }
-  } catch (error) {
+  } catch (
+    error
+  ) {
     logGeminiError(
       error,
       GEMINI_TEXT_MODEL,
-      normalizedPrompt
+      normalizedPrompt.length
     );
 
     throw error;

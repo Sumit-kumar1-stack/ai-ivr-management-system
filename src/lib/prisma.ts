@@ -31,7 +31,7 @@ const prismaGlobal =
   globalThis as PrismaGlobal;
 
 //--------------------------------------------------
-// Prisma Client
+// Create Prisma Client
 //--------------------------------------------------
 
 function createPrismaClient():
@@ -50,23 +50,80 @@ function createPrismaClient():
   return client;
 }
 
-export const prisma =
-  prismaGlobal
-    .__ivrPrismaClient ??
-  createPrismaClient();
+//--------------------------------------------------
+// Get Prisma Client
+//--------------------------------------------------
 
-/*
- * Preserve one Prisma client across Next.js
- * development hot reloads.
- */
-if (
-  process.env.NODE_ENV !==
-  "production"
-) {
+function getPrismaClient():
+  PrismaClient {
+  const existing =
+    prismaGlobal
+      .__ivrPrismaClient;
+
+  if (
+    existing
+  ) {
+    return existing;
+  }
+
+  const client =
+    createPrismaClient();
+
   prismaGlobal
     .__ivrPrismaClient =
-    prisma;
+    client;
+
+  return client;
 }
+
+//--------------------------------------------------
+// Lazy Prisma Proxy
+//--------------------------------------------------
+
+/*
+ * Preserve the existing prisma.model.method() API.
+ *
+ * The real PrismaClient is created only when code
+ * first accesses a Prisma property at runtime.
+ * Importing this module during next build therefore
+ * does not create a Prisma client.
+ */
+export const prisma =
+  new Proxy(
+    {} as PrismaClient,
+    {
+      get(
+        _target,
+        property
+      ) {
+        const client =
+          getPrismaClient();
+
+        /*
+         * Use the actual Prisma client as the receiver.
+         * Some Prisma properties rely on their internal
+         * `this` value being the real client instance.
+         */
+        const value =
+          Reflect.get(
+            client,
+            property,
+            client
+          );
+
+        if (
+          typeof value ===
+            "function"
+        ) {
+          return value.bind(
+            client
+          );
+        }
+
+        return value;
+      },
+    }
+  );
 
 //--------------------------------------------------
 // Close Prisma Connection
@@ -74,8 +131,24 @@ if (
 
 export async function closePrismaConnection():
   Promise<void> {
+  const client =
+    prismaGlobal
+      .__ivrPrismaClient;
+
+  /*
+   * Do not create a Prisma client merely to close it.
+   */
+  if (
+    !client
+  ) {
+    return;
+  }
+
   const startedAt =
     process.hrtime.bigint();
+
+  delete prismaGlobal
+    .__ivrPrismaClient;
 
   log.info(
     {
@@ -86,16 +159,7 @@ export async function closePrismaConnection():
   );
 
   try {
-    await prisma.$disconnect();
-
-    if (
-      prismaGlobal
-        .__ivrPrismaClient ===
-      prisma
-    ) {
-      delete prismaGlobal
-        .__ivrPrismaClient;
-    }
+    await client.$disconnect();
 
     log.info(
       {

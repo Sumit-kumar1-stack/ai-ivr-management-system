@@ -1,0 +1,16 @@
+src\app\api\auth\login\route.ts:7:} from "@/lib/prisma";
+src\app\api\calls\route.ts:20:} from "@/lib/prisma";
+src\app\api\calls\[id]\recording\route.ts:12:} from "@/lib/prisma";
+src\app\api\calls\[id]\route.ts:18:} from "@/lib/prisma";
+src\app\api\campaigns\[id]\route.ts:8:} from "@/lib/prisma";
+src\app\api\campaigns\[id]\start\route.ts:14:} from "@/lib/prisma";
+src\app\api\campaigns\[id]\stats\route.ts:12:} from "@/lib/prisma";
+src\app\api\contacts\[id]\route.ts:8:} from "@/lib/prisma";
+src\app\api\knowledge\route.ts:1:import { prisma } from "@/lib/prisma";
+src\app\api\knowledge\[id]\route.ts:1:import { prisma } from "@/lib/prisma";
+src\app\api\ready\route.ts:12:} from "@/lib/prisma";
+src\app\api\ready\route.ts:16:} from "@/lib/redis";
+src\app\api\twilio\gather\route.ts:17:} from "@/lib/prisma";
+src\app\api\twilio\recording\route.ts:8:} from "@/lib/prisma";
+src\app\api\twilio\voice\route.ts:17:} from "@/lib/prisma";
+src\app\api\twilio\voice-stream\route.ts:14:} from "@/lib/prisma";

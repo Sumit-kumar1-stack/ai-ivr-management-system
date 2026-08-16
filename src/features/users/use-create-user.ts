@@ -1,21 +1,48 @@
 "use client";
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/axios";
+import {
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query";
+
+import {
+  api,
+} from "@/lib/axios";
+
+type CreateUserInput =
+  Record<
+    string,
+    unknown
+  >;
 
 export function useCreateUser() {
-  const queryClient = useQueryClient();
+  const queryClient =
+    useQueryClient();
 
   return useMutation({
-    mutationFn: async (body: any) => {
-      const { data } = await api.post("/users", body);
-      return data;
-    },
+    mutationFn:
+      async (
+        body:
+          CreateUserInput
+      ) => {
+        const {
+          data,
+        } =
+          await api.post(
+            "/users",
+            body
+          );
+
+        return data;
+      },
 
     onSuccess() {
-      queryClient.invalidateQueries({
-        queryKey: ["users"],
-      });
+      void queryClient
+        .invalidateQueries({
+          queryKey: [
+            "users",
+          ],
+        });
     },
   });
 }

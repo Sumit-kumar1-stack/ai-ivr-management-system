@@ -1,61 +1,83 @@
-import { AppEvent } from "./event-types";
+import {
+  randomUUID,
+} from "node:crypto";
+
+import {
+  AppEvent,
+} from "./event-types";
+
+import {
+  createSafeEventSnapshot,
+  SafeEventSnapshot,
+} from "./event-snapshot";
 
 export interface EventRecord {
+  id:
+    string;
 
-  id: string;
+  event:
+    AppEvent;
 
-  event: AppEvent;
+  /**
+   * Contains only safe payload metadata.
+   * It never stores raw transcript or AI text.
+   */
+  payload:
+    SafeEventSnapshot;
 
-  payload: unknown;
-
-  timestamp: Date;
-
+  timestamp:
+    Date;
 }
 
 export class EventMonitor {
+  private static events:
+    EventRecord[] =
+    [];
 
-  private static events: EventRecord[] = [];
-
-  private static readonly MAX_EVENTS = 500;
+  private static readonly MAX_EVENTS =
+    500;
 
   static add(
     event: AppEvent,
     payload: unknown
-  ) {
-
+  ): void {
     this.events.unshift({
-
-      id: crypto.randomUUID(),
+      id:
+        randomUUID(),
 
       event,
 
-      payload,
+      payload:
+        createSafeEventSnapshot(
+          payload
+        ),
 
-      timestamp: new Date(),
-
+      timestamp:
+        new Date(),
     });
 
     if (
       this.events.length >
       this.MAX_EVENTS
     ) {
-
       this.events.pop();
-
     }
-
   }
 
-  static getAll() {
-
-    return this.events;
-
+  static getAll():
+    EventRecord[] {
+    /*
+     * Return a copy so external consumers cannot
+     * mutate the monitor's internal collection.
+     */
+    return [
+      ...this.events,
+    ];
   }
 
-  static clear() {
-
-    this.events = [];
-
+  static clear():
+    void {
+    this.events =
+      [];
   }
-
 }

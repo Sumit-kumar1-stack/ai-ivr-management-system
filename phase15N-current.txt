@@ -1,0 +1,2685 @@
+===== src\services\conversations\action.service.ts =====
+import {
+  createCallLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  prisma,
+} from "@/lib/prisma";
+
+import {
+  beginCallbackConversation,
+} from "./callback-conversation.service";
+
+import {
+  beginLeadConversation,
+} from "./lead-conversation.service";
+
+//--------------------------------------------------
+// Supported Actions
+//--------------------------------------------------
+
+type SupportedAction =
+  | "CALLBACK"
+  | "TRANSFER"
+  | "BLOCK_CONTACT"
+  | "CREATE_LEAD";
+
+//--------------------------------------------------
+// Execute Conversation Action
+//--------------------------------------------------
+
+export async function executeAction(
+  action: string,
+  callId: string
+): Promise<void> {
+  const log =
+    createCallLogger(
+      callId
+    );
+
+  try {
+    switch (
+      action as SupportedAction
+    ) {
+      //------------------------------------------------
+      // CALLBACK
+      //------------------------------------------------
+
+      case "CALLBACK": {
+        const result =
+          await beginCallbackConversation(
+            callId
+          );
+
+        log.info(
+          {
+            event:
+              "conversation.callback.workflow_started",
+
+            action:
+              "CALLBACK",
+
+            handled:
+              result.handled,
+
+            completed:
+              result.completed,
+
+            needsConfirmation:
+              result.needsConfirmation,
+
+            missingFields:
+              result.missingFields,
+
+            prompt:
+              result.prompt,
+          },
+          "Callback collection workflow started"
+        );
+
+        return;
+      }
+
+      //------------------------------------------------
+      // TRANSFER
+      //------------------------------------------------
+
+      case "TRANSFER":
+        /*
+         * Human-transfer execution is intentionally
+         * not performed directly from this legacy
+         * post-call action handler.
+         *
+         * Live human transfer should go through the
+         * Tool Gateway + transfer orchestrator while
+         * the provider call is still active.
+         *
+         * A post-call TRANSFER action cannot transfer
+         * an already-ended phone call.
+         */
+
+        log.info(
+          {
+            event:
+              "conversation.action.skipped",
+
+            action:
+              "TRANSFER",
+
+            reason:
+              "requires_live_call_runtime",
+          },
+          "Transfer action requires active live-call workflow"
+        );
+
+        return;
+
+      //------------------------------------------------
+      // BLOCK CONTACT
+      //------------------------------------------------
+
+      case "BLOCK_CONTACT": {
+        const call =
+          await prisma.call
+            .findUnique({
+              where: {
+                id:
+                  callId,
+              },
+
+              select: {
+                contactId:
+                  true,
+              },
+            });
+
+        if (
+          !call
+        ) {
+          log.warn(
+            {
+              event:
+                "conversation.action.skipped",
+
+              action:
+                "BLOCK_CONTACT",
+
+              reason:
+                "call_not_found",
+            },
+            "Block-contact action skipped"
+          );
+
+          return;
+        }
+
+        //------------------------------------------------
+        // Contact ID Guard
+        //------------------------------------------------
+
+        if (
+          !call.contactId
+        ) {
+          log.warn(
+            {
+              event:
+                "conversation.action.skipped",
+
+              action:
+                "BLOCK_CONTACT",
+
+              reason:
+                "contact_not_available",
+            },
+            "Block-contact action skipped because call has no contact"
+          );
+
+          return;
+        }
+
+        //------------------------------------------------
+        // Update Contact
+        //------------------------------------------------
+
+        await prisma.contact
+          .update({
+            where: {
+              id:
+                call.contactId,
+            },
+
+            data: {
+              status:
+                "BLOCKED",
+            },
+          });
+
+        log.info(
+          {
+            event:
+              "conversation.action.completed",
+
+            action:
+              "BLOCK_CONTACT",
+
+            contactId:
+              call.contactId,
+          },
+          "Contact blocked"
+        );
+
+        return;
+      }
+
+      //------------------------------------------------
+      // CREATE LEAD
+      //------------------------------------------------
+
+      case "CREATE_LEAD": {
+        const result =
+          await beginLeadConversation(
+            callId
+          );
+
+        log.info(
+          {
+            event:
+              "conversation.lead.workflow_started",
+
+            action:
+              "CREATE_LEAD",
+
+            handled:
+              result.handled,
+
+            completed:
+              result.completed,
+
+            needsConfirmation:
+              result.needsConfirmation,
+
+            missingFields:
+              result.missingFields,
+
+            prompt:
+              result.prompt,
+          },
+          "Lead collection workflow started"
+        );
+
+        return;
+      }
+
+      //------------------------------------------------
+      // Unsupported
+      //------------------------------------------------
+
+      default:
+        log.debug(
+          {
+            event:
+              "conversation.action.skipped",
+
+            reason:
+              "unsupported_action",
+
+            actionPresent:
+              Boolean(
+                action
+              ),
+
+            actionCharacterCount:
+              action.length,
+          },
+          "No handler configured for conversation action"
+        );
+
+        return;
+    }
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "conversation.action.failed",
+
+        actionPresent:
+          Boolean(
+            action
+          ),
+
+        action,
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Conversation action execution failed"
+    );
+  }
+}
+===== src\services\campaigns\campaign-runner.service.ts =====
+import {
+  CampaignRunStatus,
+  CampaignStatus,
+  ContactStatus,
+} from "@prisma/client";
+
+import {
+  prisma,
+} from "@/lib/prisma";
+
+import {
+  createCampaignLogger,
+  getDurationMs,
+  maskPhoneNumber,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  startCall,
+} from "@/services/telephony/telephony.service";
+
+import {
+  resolveOutboundWorkflow,
+} from "@/services/campaigns/outbound-workflow.service";
+
+//--------------------------------------------------
+// Campaign Contact Result Types
+//--------------------------------------------------
+
+interface CampaignContactSuccessResult {
+  contactId: string;
+
+  contactPhone: string;
+
+  providerDestination: string;
+
+  success: true;
+
+  callId: string;
+
+  providerCallId?: string;
+
+  duplicate: boolean;
+}
+
+interface CampaignContactFailureResult {
+  contactId: string;
+
+  contactPhone: string;
+
+  providerDestination?: string;
+
+  success: false;
+
+  error: {
+    name: string;
+
+    message: string;
+
+    code?:
+      | string
+      | number;
+  };
+}
+
+export type CampaignContactResult =
+  | CampaignContactSuccessResult
+  | CampaignContactFailureResult;
+
+export interface RunCampaignResult {
+  campaignId: string;
+
+  campaignRunId: string;
+
+  total: number;
+
+  processed: number;
+
+  successful: number;
+
+  failed: number;
+
+  status: CampaignRunStatus;
+
+  results:
+    CampaignContactResult[];
+}
+
+//--------------------------------------------------
+// Run Campaign
+//--------------------------------------------------
+
+export async function runCampaign(
+  campaignId: string,
+  campaignRunId: string
+): Promise<RunCampaignResult> {
+  const startedAt =
+    process.hrtime.bigint();
+
+  const log =
+    createCampaignLogger(
+      campaignId,
+      campaignRunId
+    );
+
+  log.info(
+    {
+      event:
+        "campaign.dispatch.execution.started",
+    },
+    "Campaign execution started"
+  );
+
+  try {
+    //------------------------------------------------
+    // Load Campaign And Contacts
+    //------------------------------------------------
+
+    const campaign =
+      await prisma.campaign.findUnique({
+        where: {
+          id:
+            campaignId,
+        },
+
+        include: {
+          contacts: {
+            include: {
+              contact:
+                true,
+            },
+          },
+        },
+      });
+
+    if (
+      !campaign
+    ) {
+      throw new Error(
+        `Campaign not found: ${campaignId}`
+      );
+    }
+
+    //------------------------------------------------
+    // Load Campaign Run
+    //------------------------------------------------
+
+    const campaignRun =
+      await prisma.campaignRun.findUnique({
+        where: {
+          id:
+            campaignRunId,
+        },
+      });
+
+    if (
+      !campaignRun
+    ) {
+      throw new Error(
+        `Campaign run not found: ${campaignRunId}`
+      );
+    }
+
+    if (
+      campaignRun.campaignId !==
+      campaign.id
+    ) {
+      throw new Error(
+        "Campaign run does not belong to the supplied campaign"
+      );
+    }
+
+    //------------------------------------------------
+    // Resolve Callable Campaign Contacts
+    //------------------------------------------------
+
+    const callableContacts =
+      campaign.contacts.filter(
+        ({
+          contact,
+        }) => {
+          if (
+            contact.status ===
+            ContactStatus.BLOCKED
+          ) {
+            return false;
+          }
+
+          return isCallablePhoneNumber(
+            contact.phone
+          );
+        }
+      );
+
+    const excludedContactCount =
+      campaign.contacts.length -
+      callableContacts.length;
+
+    log.info(
+      {
+        event:
+          "campaign.contacts.callable_resolved",
+
+        assignedContacts:
+          campaign.contacts.length,
+
+        callableContacts:
+          callableContacts.length,
+
+        excludedContacts:
+          excludedContactCount,
+      },
+      "Campaign callable contacts resolved"
+    );
+
+    //------------------------------------------------
+    // Return Existing Final Run
+    //------------------------------------------------
+
+    if (
+      campaignRun.status ===
+        CampaignRunStatus.COMPLETED ||
+      campaignRun.status ===
+        CampaignRunStatus.FAILED ||
+      campaignRun.status ===
+        CampaignRunStatus.CANCELLED
+    ) {
+      log.warn(
+        {
+          event:
+            "campaign.dispatch.execution.skipped",
+
+          reason:
+            "run_already_terminal",
+
+          status:
+            campaignRun.status,
+
+          total:
+            campaignRun.total,
+
+          processed:
+            campaignRun.processed,
+
+          successful:
+            campaignRun.successful,
+
+          failed:
+            campaignRun.failed,
+
+          durationMs:
+            getDurationMs(
+              startedAt
+            ),
+        },
+        "Campaign run is already finished"
+      );
+
+      return {
+        campaignId,
+
+        campaignRunId,
+
+        total:
+          campaignRun.total,
+
+        processed:
+          campaignRun.processed,
+
+        successful:
+          campaignRun.successful,
+
+        failed:
+          campaignRun.failed,
+
+        status:
+          campaignRun.status,
+
+        results:
+          [],
+      };
+    }
+
+    //------------------------------------------------
+    // Handle No Callable Contacts
+    //------------------------------------------------
+
+    if (
+      callableContacts.length ===
+      0
+    ) {
+      const completedAt =
+        new Date();
+
+      await prisma.$transaction([
+        prisma.campaignRun.update({
+          where: {
+            id:
+              campaignRunId,
+          },
+
+          data: {
+            status:
+              CampaignRunStatus.COMPLETED,
+
+            total:
+              0,
+
+            processed:
+              0,
+
+            successful:
+              0,
+
+            failed:
+              0,
+
+            completedAt,
+          },
+        }),
+
+        prisma.campaign.update({
+          where: {
+            id:
+              campaign.id,
+          },
+
+          data: {
+            status:
+              CampaignStatus.COMPLETED,
+
+            completedAt,
+          },
+        }),
+      ]);
+
+      log.info(
+        {
+          event:
+            "campaign.dispatch.no_callable_contacts.completed",
+
+          assignedContacts:
+            campaign.contacts.length,
+
+          excludedContacts:
+            excludedContactCount,
+
+          completedAt:
+            completedAt.toISOString(),
+
+          durationMs:
+            getDurationMs(
+              startedAt
+            ),
+        },
+        "Campaign completed because no callable contacts remained"
+      );
+
+      return {
+        campaignId,
+
+        campaignRunId,
+
+        total:
+          0,
+
+        processed:
+          0,
+
+        successful:
+          0,
+
+        failed:
+          0,
+
+        status:
+          CampaignRunStatus.COMPLETED,
+
+        results:
+          [],
+      };
+    }
+
+    //------------------------------------------------
+    // Atomically Claim Campaign Run
+    //------------------------------------------------
+
+    const campaignStartedAt =
+      new Date();
+
+    const claimedRun =
+      await prisma.campaignRun.updateMany({
+        where: {
+          id:
+            campaignRunId,
+
+          campaignId,
+
+          status:
+            CampaignRunStatus.QUEUED,
+        },
+
+        data: {
+          status:
+            CampaignRunStatus.RUNNING,
+
+          startedAt:
+            campaignStartedAt,
+
+          total:
+            callableContacts.length,
+        },
+      });
+
+    if (
+      claimedRun.count ===
+      0
+    ) {
+      const currentRun =
+        await prisma.campaignRun.findUnique({
+          where: {
+            id:
+              campaignRunId,
+          },
+        });
+
+      if (
+        !currentRun
+      ) {
+        throw new Error(
+          `Campaign run disappeared: ${campaignRunId}`
+        );
+      }
+
+      log.warn(
+        {
+          event:
+            "campaign.dispatch.claim.skipped",
+
+          reason:
+            "run_not_queued",
+
+          currentStatus:
+            currentRun.status,
+
+          durationMs:
+            getDurationMs(
+              startedAt
+            ),
+        },
+        "Campaign run could not be claimed"
+      );
+
+      return {
+        campaignId,
+
+        campaignRunId,
+
+        total:
+          currentRun.total,
+
+        processed:
+          currentRun.processed,
+
+        successful:
+          currentRun.successful,
+
+        failed:
+          currentRun.failed,
+
+        status:
+          currentRun.status,
+
+        results:
+          [],
+      };
+    }
+
+    log.info(
+      {
+        event:
+          "campaign.dispatch.claim.completed",
+
+        totalContacts:
+          callableContacts.length,
+
+        assignedContacts:
+          campaign.contacts.length,
+
+        excludedContacts:
+          excludedContactCount,
+
+        startedAt:
+          campaignStartedAt.toISOString(),
+      },
+      "Campaign run claimed"
+    );
+
+    //------------------------------------------------
+    // Mark Campaign Running
+    //------------------------------------------------
+
+    await prisma.campaign.update({
+      where: {
+        id:
+          campaign.id,
+      },
+
+      data: {
+        status:
+          CampaignStatus.RUNNING,
+
+        startedAt:
+          campaign.startedAt ??
+          campaignStartedAt,
+
+        completedAt:
+          null,
+      },
+    });
+
+    //------------------------------------------------
+    // Validate Campaign-Level Configuration
+    //------------------------------------------------
+
+    const providerPhoneNumber =
+      getRequiredEnvironmentVariable(
+        "TWILIO_PHONE_NUMBER"
+      );
+
+    const testDestination =
+      process.env
+        .TEST_DESTINATION_NUMBER
+        ?.trim();
+
+    const developmentOverrideEnabled =
+      process.env.NODE_ENV ===
+        "development" &&
+      Boolean(
+        testDestination
+      );
+
+    //------------------------------------------------
+    // Prepare Campaign Counters
+    //------------------------------------------------
+
+    const total =
+      callableContacts.length;
+
+    const results:
+      CampaignContactResult[] =
+      [];
+
+    let processed =
+      0;
+
+    let successful =
+      0;
+
+    let failed =
+      0;
+
+    log.info(
+      {
+        event:
+          "campaign.dispatch.started",
+
+        totalContacts:
+          total,
+
+        assignedContacts:
+          campaign.contacts.length,
+
+        excludedContacts:
+          excludedContactCount,
+
+        developmentOverrideEnabled,
+      },
+      "Campaign contact dispatch started"
+    );
+
+    //------------------------------------------------
+    // Handle Empty Campaign
+    //------------------------------------------------
+
+    if (
+      total ===
+      0
+    ) {
+      const completedAt =
+        new Date();
+
+      await prisma.$transaction([
+        prisma.campaignRun.update({
+          where: {
+            id:
+              campaignRunId,
+          },
+
+          data: {
+            status:
+              CampaignRunStatus.COMPLETED,
+
+            total:
+              0,
+
+            processed:
+              0,
+
+            successful:
+              0,
+
+            failed:
+              0,
+
+            completedAt,
+          },
+        }),
+
+        prisma.campaign.update({
+          where: {
+            id:
+              campaign.id,
+          },
+
+          data: {
+            status:
+              CampaignStatus.COMPLETED,
+
+            completedAt,
+          },
+        }),
+      ]);
+
+      log.info(
+        {
+          event:
+            "campaign.dispatch.empty.completed",
+
+          completedAt:
+            completedAt.toISOString(),
+
+          durationMs:
+            getDurationMs(
+              startedAt
+            ),
+        },
+        "Empty campaign completed"
+      );
+
+      return {
+        campaignId,
+
+        campaignRunId,
+
+        total:
+          0,
+
+        processed:
+          0,
+
+        successful:
+          0,
+
+        failed:
+          0,
+
+        status:
+          CampaignRunStatus.COMPLETED,
+
+        results:
+          [],
+      };
+    }
+
+    //------------------------------------------------
+    // Process Contacts Independently
+    //------------------------------------------------
+
+    for (
+      const item of
+      callableContacts
+    ) {
+      const contact =
+        item.contact;
+
+      const contactStartedAt =
+        process.hrtime.bigint();
+
+      const contactPhone =
+        contact.phone
+          ?.trim() ??
+        "";
+
+      let providerDestination:
+        string |
+        undefined;
+
+      try {
+        //--------------------------------------------
+        // Validate Contact
+        //--------------------------------------------
+
+        if (
+          !contactPhone
+        ) {
+          throw new Error(
+            "Contact phone number is missing"
+          );
+        }
+
+        //--------------------------------------------
+        // Resolve Actual Provider Destination
+        //--------------------------------------------
+
+        providerDestination =
+          developmentOverrideEnabled
+            ? testDestination!
+            : contactPhone;
+
+        if (
+          !providerDestination
+        ) {
+          throw new Error(
+            "Provider destination is missing"
+          );
+        }
+
+        log.debug(
+          {
+            event:
+              "campaign.contact.dispatch.started",
+
+            contactId:
+              contact.id,
+
+            contactPhone:
+              maskPhoneNumber(
+                contactPhone
+              ),
+
+            providerDestination:
+              maskPhoneNumber(
+                providerDestination
+              ),
+
+            developmentOverrideEnabled,
+          },
+          "Campaign contact dispatch started"
+        );
+
+        //--------------------------------------------
+        // Resolve Outbound Workflow
+        //--------------------------------------------
+
+        const workflow =
+          resolveOutboundWorkflow({
+            purpose:
+              campaign.purpose,
+
+            campaignName:
+              campaign.name,
+
+            description:
+              campaign.description,
+
+            prompt:
+              campaign.prompt,
+
+            contactName:
+              contact.fullName,
+          });
+
+        //--------------------------------------------
+        // Start Call
+        //--------------------------------------------
+
+        const result =
+          await startCall({
+            campaignId:
+              campaign.id,
+
+            campaignRunId,
+
+            contactId:
+              contact.id,
+
+            contactPhone,
+
+            to:
+              providerDestination,
+
+            from:
+              providerPhoneNumber,
+
+            language:
+              contact.language ??
+              campaign.language ??
+              "English",
+
+            script:
+              workflow.openingMessage,
+
+            workflowPurpose:
+              workflow.purpose,
+
+            workflowInstruction:
+              workflow.systemInstruction,
+
+            usedDevelopmentOverride:
+              developmentOverrideEnabled,
+
+            destinationOverrideSource:
+              developmentOverrideEnabled
+                ? "TEST_DESTINATION_NUMBER"
+                : undefined,
+          });
+
+        successful +=
+          1;
+
+        results.push({
+          contactId:
+            contact.id,
+
+          contactPhone,
+
+          providerDestination,
+
+          success:
+            true,
+
+          callId:
+            result.callId,
+
+          providerCallId:
+            result.providerCallId,
+
+          duplicate:
+            result.duplicate ??
+            false,
+        });
+
+        log.info(
+          {
+            event:
+              "campaign.contact.dispatch.completed",
+
+            contactId:
+              contact.id,
+
+            callId:
+              result.callId,
+
+            providerCallId:
+              result.providerCallId,
+
+            duplicate:
+              result.duplicate ??
+              false,
+
+            workflowPurpose:
+              workflow.purpose,
+
+            usedDevelopmentOverride:
+              developmentOverrideEnabled,
+
+            durationMs:
+              getDurationMs(
+                contactStartedAt
+              ),
+          },
+          "Campaign contact dispatched successfully"
+        );
+      } catch (
+        error
+      ) {
+        failed +=
+          1;
+
+        const normalizedError =
+          normalizeCampaignError(
+            error
+          );
+
+        results.push({
+          contactId:
+            contact.id,
+
+          contactPhone,
+
+          providerDestination,
+
+          success:
+            false,
+
+          error:
+            normalizedError,
+        });
+
+        log.error(
+          {
+            event:
+              "campaign.contact.dispatch.failed",
+
+            contactId:
+              contact.id,
+
+            contactPhone:
+              maskPhoneNumber(
+                contactPhone
+              ),
+
+            providerDestination:
+              providerDestination
+                ? maskPhoneNumber(
+                    providerDestination
+                  )
+                : undefined,
+
+            durationMs:
+              getDurationMs(
+                contactStartedAt
+              ),
+
+            error:
+              normalizedError,
+          },
+          "Campaign contact processing failed"
+        );
+      } finally {
+        processed +=
+          1;
+
+        await updateCampaignRunProgressSafely({
+          campaignId,
+
+          campaignRunId,
+
+          total,
+
+          processed,
+
+          successful,
+
+          failed,
+        });
+      }
+    }
+
+    //------------------------------------------------
+    // Initial Dispatch Finished
+    //------------------------------------------------
+
+    await prisma.$transaction([
+      prisma.campaignRun.update({
+        where: {
+          id:
+            campaignRunId,
+        },
+
+        data: {
+          status:
+            CampaignRunStatus.RUNNING,
+
+          total,
+
+          processed,
+
+          successful,
+
+          failed,
+
+          completedAt:
+            null,
+        },
+      }),
+
+      prisma.campaign.update({
+        where: {
+          id:
+            campaign.id,
+        },
+
+        data: {
+          status:
+            CampaignStatus.RUNNING,
+
+          completedAt:
+            null,
+        },
+      }),
+    ]);
+
+    log.info(
+      {
+        event:
+          "campaign.dispatch.completed",
+
+        totalContacts:
+          total,
+
+        processedContacts:
+          processed,
+
+        dispatchedContacts:
+          successful,
+
+        dispatchFailedContacts:
+          failed,
+
+        runStatus:
+          CampaignRunStatus.RUNNING,
+
+        campaignStatus:
+          CampaignStatus.RUNNING,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+      },
+      "Campaign initial dispatch completed"
+    );
+
+    //------------------------------------------------
+    // Re-Evaluate Finalization
+    //------------------------------------------------
+
+    const {
+      finalizeCampaignRunIfReady,
+    } = await import(
+      "@/services/campaigns/campaign-finalizer.service"
+    );
+
+    const finalizationStartedAt =
+      process.hrtime.bigint();
+
+    const finalization =
+      await finalizeCampaignRunIfReady(
+        campaignRunId
+      );
+
+    log.info(
+      {
+        event:
+          "campaign.finalization.checked_after_dispatch",
+
+        finalized:
+          finalization.finalized,
+
+        skipped:
+          finalization.skipped,
+
+        reason:
+          finalization.reason,
+
+        runStatus:
+          finalization.runStatus,
+
+        settledContacts:
+          finalization.settledContacts,
+
+        unresolvedContacts:
+          finalization.unresolvedContacts,
+
+        durationMs:
+          getDurationMs(
+            finalizationStartedAt
+          ),
+      },
+      "Campaign finalization checked after initial dispatch"
+    );
+
+    return {
+      campaignId,
+
+      campaignRunId,
+
+      total,
+
+      processed,
+
+      successful,
+
+      failed,
+
+      status:
+        finalization.runStatus,
+
+      results,
+    };
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "campaign.dispatch.execution.failed",
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Campaign execution failed"
+    );
+
+    throw error;
+  }
+}
+
+//--------------------------------------------------
+// Safely Persist Campaign Progress
+//--------------------------------------------------
+
+async function updateCampaignRunProgressSafely(
+  input: {
+    campaignId: string;
+
+    campaignRunId: string;
+
+    total: number;
+
+    processed: number;
+
+    successful: number;
+
+    failed: number;
+  }
+): Promise<void> {
+  const log =
+    createCampaignLogger(
+      input.campaignId,
+      input.campaignRunId
+    );
+
+  try {
+    await prisma.campaignRun.update({
+      where: {
+        id:
+          input.campaignRunId,
+      },
+
+      data: {
+        total:
+          input.total,
+
+        processed:
+          input.processed,
+
+        successful:
+          input.successful,
+
+        failed:
+          input.failed,
+      },
+    });
+
+    log.debug(
+      {
+        event:
+          "campaign.progress.persisted",
+
+        total:
+          input.total,
+
+        processed:
+          input.processed,
+
+        successful:
+          input.successful,
+
+        failed:
+          input.failed,
+      },
+      "Campaign progress persisted"
+    );
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "campaign.progress.persistence_failed",
+
+        total:
+          input.total,
+
+        processed:
+          input.processed,
+
+        successful:
+          input.successful,
+
+        failed:
+          input.failed,
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Failed to persist campaign progress"
+    );
+  }
+}
+
+//--------------------------------------------------
+// Validate Callable Phone Number
+//--------------------------------------------------
+
+function isCallablePhoneNumber(
+  phone:
+    | string
+    | null
+    | undefined
+): boolean {
+  if (
+    !phone
+  ) {
+    return false;
+  }
+
+  const normalized =
+    phone
+      .trim()
+      .replace(
+        /[\s()-]/g,
+        ""
+      );
+
+  return /^\+?[1-9]\d{9,14}$/.test(
+    normalized
+  );
+}
+
+//--------------------------------------------------
+// Read Required Environment Variable
+//--------------------------------------------------
+
+function getRequiredEnvironmentVariable(
+  name: string
+): string {
+  const value =
+    process.env[
+      name
+    ]
+      ?.trim();
+
+  if (
+    !value
+  ) {
+    throw new Error(
+      `${name} is not configured`
+    );
+  }
+
+  return value;
+}
+
+//--------------------------------------------------
+// Campaign Result Error
+//--------------------------------------------------
+
+function normalizeCampaignError(
+  error: unknown
+): {
+  name: string;
+
+  message: string;
+
+  code?:
+    | string
+    | number;
+} {
+  const normalized =
+    normalizeError(
+      error
+    );
+
+  return {
+    name:
+      normalized.name ??
+      "Error",
+
+    message:
+      normalized.message,
+
+    code:
+      normalized.code,
+  };
+}
+===== src\services\campaigns\campaign-queue.service.ts =====
+import {
+  Queue,
+} from "bullmq";
+
+import {
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  redisConnection,
+} from "@/lib/redis";
+
+//--------------------------------------------------
+// Queue Constants
+//--------------------------------------------------
+
+export const CAMPAIGN_QUEUE_NAME =
+  "campaign-processing";
+
+export const CAMPAIGN_JOB_NAME =
+  "run-campaign";
+
+//--------------------------------------------------
+// Limits
+//--------------------------------------------------
+
+const MAX_DELAY_MS =
+  30 *
+  24 *
+  60 *
+  60 *
+  1000;
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "campaign-queue"
+  );
+
+//--------------------------------------------------
+// Job Payload
+//--------------------------------------------------
+
+export interface CampaignJobData {
+  campaignId:
+    string;
+
+  campaignRunId:
+    string;
+}
+
+//--------------------------------------------------
+// Enqueue Options
+//--------------------------------------------------
+
+export interface CampaignEnqueueOptions {
+  delayMs?:
+    number;
+}
+
+//--------------------------------------------------
+// Build Safe BullMQ Job ID
+//--------------------------------------------------
+
+function buildCampaignJobId(
+  campaignRunId:
+    string
+): string {
+  return `campaign-run-${campaignRunId}`;
+}
+
+//--------------------------------------------------
+// Normalize Delay
+//--------------------------------------------------
+
+function normalizeDelay(
+  delayMs:
+    number | undefined
+): number {
+  if (
+    delayMs ===
+      undefined ||
+    !Number.isFinite(
+      delayMs
+    ) ||
+    delayMs <=
+      0
+  ) {
+    return 0;
+  }
+
+  return Math.min(
+    Math.floor(
+      delayMs
+    ),
+    MAX_DELAY_MS
+  );
+}
+
+//--------------------------------------------------
+// BullMQ Queue
+//--------------------------------------------------
+
+export const campaignQueue =
+  new Queue<CampaignJobData>(
+    CAMPAIGN_QUEUE_NAME,
+    {
+      connection:
+        redisConnection,
+
+      defaultJobOptions: {
+        attempts:
+          3,
+
+        backoff: {
+          type:
+            "exponential",
+
+          delay:
+            5_000,
+        },
+
+        removeOnComplete: {
+          age:
+            24 *
+            60 *
+            60,
+
+          count:
+            1_000,
+        },
+
+        removeOnFail: {
+          age:
+            7 *
+            24 *
+            60 *
+            60,
+
+          count:
+            5_000,
+        },
+      },
+    }
+  );
+
+//--------------------------------------------------
+// Campaign Queue Service
+//--------------------------------------------------
+
+export class CampaignQueueService {
+  //------------------------------------------------
+  // Enqueue
+  //------------------------------------------------
+
+  static async enqueue(
+    data:
+      CampaignJobData,
+
+    options:
+      CampaignEnqueueOptions =
+      {}
+  ) {
+    const jobId =
+      buildCampaignJobId(
+        data.campaignRunId
+      );
+
+    const delayMs =
+      normalizeDelay(
+        options.delayMs
+      );
+
+    log.info(
+      {
+        event:
+          "campaign.queue.enqueue_started",
+
+        campaignId:
+          data.campaignId,
+
+        campaignRunId:
+          data.campaignRunId,
+
+        jobId,
+
+        delayed:
+          delayMs >
+          0,
+
+        delayMs,
+      },
+      "Adding campaign job"
+    );
+
+    try {
+      const job =
+        await campaignQueue.add(
+          CAMPAIGN_JOB_NAME,
+          data,
+          {
+            /*
+             * Prevent duplicate BullMQ jobs for
+             * the same database campaign run.
+             */
+            jobId,
+
+            delay:
+              delayMs,
+          }
+        );
+
+      log.info(
+        {
+          event:
+            "campaign.queue.enqueued",
+
+          jobId:
+            job.id,
+
+          campaignId:
+            data.campaignId,
+
+          campaignRunId:
+            data.campaignRunId,
+
+          delayed:
+            delayMs >
+            0,
+
+          delayMs,
+        },
+        "Campaign job added"
+      );
+
+      return job;
+    } catch (
+      error
+    ) {
+      log.error(
+        {
+          event:
+            "campaign.queue.enqueue_failed",
+
+          campaignId:
+            data.campaignId,
+
+          campaignRunId:
+            data.campaignRunId,
+
+          jobId,
+
+          delayMs,
+
+          error:
+            normalizeError(
+              error
+            ),
+        },
+        "BullMQ campaign enqueue failed"
+      );
+
+      throw error;
+    }
+  }
+
+  //------------------------------------------------
+  // Get Job
+  //------------------------------------------------
+
+  static async getJob(
+    campaignRunId:
+      string
+  ) {
+    const jobId =
+      buildCampaignJobId(
+        campaignRunId
+      );
+
+    return campaignQueue.getJob(
+      jobId
+    );
+  }
+
+  //------------------------------------------------
+  // Remove Job
+  //------------------------------------------------
+
+  static async removeJob(
+    campaignRunId:
+      string
+  ): Promise<boolean> {
+    const job =
+      await this.getJob(
+        campaignRunId
+      );
+
+    if (
+      !job
+    ) {
+      return false;
+    }
+
+    await job.remove();
+
+    return true;
+  }
+
+  //------------------------------------------------
+  // Close
+  //------------------------------------------------
+
+  static async close():
+    Promise<void> {
+    await campaignQueue.close();
+  }
+}
+===== src\app\api\campaigns\[id]\start\route.ts =====
+import {
+  CampaignRunStatus,
+  CampaignStatus,
+  ContactStatus,
+} from "@prisma/client";
+
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
+
+import {
+  prisma,
+} from "@/lib/prisma";
+
+import {
+  asyncHandler,
+} from "@/lib/async-handler";
+
+import {
+  requireRole,
+} from "@/lib/auth";
+
+import {
+  CampaignConflictError,
+  CampaignNotFoundError,
+  NoCallableContactsError,
+  ProviderUnavailableError,
+} from "@/lib/app-error";
+
+import {
+  CampaignQueueService,
+} from "@/services/campaigns/campaign-queue.service";
+
+import {
+  resolveOutboundSchedule,
+} from "@/services/campaigns/outbound-schedule.service";
+
+//--------------------------------------------------
+// Context Type
+//--------------------------------------------------
+
+interface RouteContext {
+  params:
+    Promise<{
+      id: string;
+    }>;
+}
+
+//--------------------------------------------------
+// Start Campaign
+//--------------------------------------------------
+
+export const POST =
+  asyncHandler<RouteContext>(
+    async (
+      _request:
+        NextRequest,
+
+      context:
+        RouteContext
+    ) => {
+      //----------------------------------------
+      // Authorization
+      //----------------------------------------
+
+      await requireRole([
+        "ADMIN",
+        "SUPER_ADMIN",
+      ]);
+
+      //----------------------------------------
+      // Read Campaign ID
+      //----------------------------------------
+
+      const {
+        id:
+          campaignId,
+      } =
+        await context.params;
+
+      //----------------------------------------
+      // Normalize Campaign ID
+      //----------------------------------------
+
+      const normalizedCampaignId =
+        campaignId.trim();
+
+      if (
+        !normalizedCampaignId
+      ) {
+        throw new CampaignNotFoundError(
+          campaignId
+        );
+      }
+
+      //----------------------------------------
+      // Load Campaign
+      //----------------------------------------
+
+      const campaign =
+        await prisma
+          .campaign
+          .findUnique({
+            where: {
+              id:
+                normalizedCampaignId,
+            },
+
+            select: {
+              id:
+                true,
+
+              status:
+                true,
+
+              scheduledAt:
+                true,
+
+              contacts: {
+                select: {
+                  contactId:
+                    true,
+
+                  contact: {
+                    select: {
+                      id:
+                        true,
+
+                      phone:
+                        true,
+
+                      status:
+                        true,
+                    },
+                  },
+                },
+              },
+            },
+          });
+
+      //----------------------------------------
+      // Campaign Must Exist
+      //----------------------------------------
+
+      if (
+        !campaign
+      ) {
+        throw new CampaignNotFoundError(
+          normalizedCampaignId
+        );
+      }
+
+      //----------------------------------------
+      // Reject Active / Scheduled Campaign
+      //----------------------------------------
+
+      /*
+       * SCHEDULED is treated as an active campaign
+       * state here.
+       *
+       * Allowing another POST /start while already
+       * SCHEDULED could create a second CampaignRun
+       * and a second BullMQ delayed job.
+       */
+      if (
+        campaign.status ===
+          CampaignStatus.SCHEDULED ||
+        campaign.status ===
+          CampaignStatus.QUEUED ||
+        campaign.status ===
+          CampaignStatus.RUNNING
+      ) {
+        throw new CampaignConflictError(
+          campaign.status ===
+            CampaignStatus.SCHEDULED
+            ? "Campaign is already scheduled"
+            : "Campaign is already queued or running",
+          campaign.status
+        );
+      }
+
+      //----------------------------------------
+      // Cancelled Campaign Guard
+      //----------------------------------------
+
+      if (
+        campaign.status ===
+        CampaignStatus.CANCELLED
+      ) {
+        throw new CampaignConflictError(
+          "Cancelled campaigns cannot be started",
+          campaign.status
+        );
+      }
+
+      //----------------------------------------
+      // Resolve Callable Contacts
+      //----------------------------------------
+
+      const callableContacts =
+        campaign.contacts.filter(
+          ({
+            contact,
+          }) => {
+            //----------------------------------
+            // Blocked Contacts
+            //----------------------------------
+
+            if (
+              contact.status ===
+              ContactStatus.BLOCKED
+            ) {
+              return false;
+            }
+
+            //----------------------------------
+            // Invalid / Missing Phone
+            //----------------------------------
+
+            return isCallablePhoneNumber(
+              contact.phone
+            );
+          }
+        );
+
+      //----------------------------------------
+      // Require At Least One Callable Contact
+      //----------------------------------------
+
+      if (
+        callableContacts.length ===
+        0
+      ) {
+        throw new NoCallableContactsError(
+          campaign.id
+        );
+      }
+
+      //----------------------------------------
+      // Validate Provider Configuration
+      //----------------------------------------
+
+      validateProviderConfiguration();
+
+      //----------------------------------------
+      // Resolve Outbound Schedule
+      //----------------------------------------
+
+      const schedule =
+        resolveOutboundSchedule(
+          campaign.scheduledAt
+        );
+
+      //----------------------------------------
+      // Resolve Target Campaign Status
+      //----------------------------------------
+
+      const targetCampaignStatus =
+        schedule.scheduled
+          ? CampaignStatus.SCHEDULED
+          : CampaignStatus.QUEUED;
+
+      //----------------------------------------
+      // Atomically Claim Campaign
+      //----------------------------------------
+
+      const result =
+        await prisma.$transaction(
+          async transaction => {
+            /*
+             * This compare-and-set prevents two
+             * concurrent /start requests from both
+             * creating campaign runs.
+             *
+             * SCHEDULED is intentionally NOT included.
+             */
+            const claimed =
+              await transaction
+                .campaign
+                .updateMany({
+                  where: {
+                    id:
+                      campaign.id,
+
+                    status: {
+                      in: [
+                        CampaignStatus.DRAFT,
+                        CampaignStatus.PAUSED,
+                        CampaignStatus.COMPLETED,
+                        CampaignStatus.FAILED,
+                      ],
+                    },
+                  },
+
+                  data: {
+                    status:
+                      targetCampaignStatus,
+
+                    /*
+                     * The worker owns the real
+                     * SCHEDULED/QUEUED -> RUNNING
+                     * transition.
+                     */
+                    startedAt:
+                      null,
+
+                    completedAt:
+                      null,
+                  },
+                });
+
+            //----------------------------------
+            // Campaign Claim Failed
+            //----------------------------------
+
+            if (
+              claimed.count ===
+              0
+            ) {
+              const currentCampaign =
+                await transaction
+                  .campaign
+                  .findUnique({
+                    where: {
+                      id:
+                        campaign.id,
+                    },
+
+                    select: {
+                      status:
+                        true,
+                    },
+                  });
+
+              if (
+                !currentCampaign
+              ) {
+                throw new CampaignNotFoundError(
+                  campaign.id
+                );
+              }
+
+              throw new CampaignConflictError(
+                getCampaignConflictMessage(
+                  currentCampaign.status
+                ),
+                currentCampaign.status
+              );
+            }
+
+            //----------------------------------
+            // Create Campaign Run
+            //----------------------------------
+
+            const campaignRun =
+              await transaction
+                .campaignRun
+                .create({
+                  data: {
+                    campaignId:
+                      campaign.id,
+
+                    /*
+                     * Even scheduled campaigns keep
+                     * their run QUEUED.
+                     *
+                     * BullMQ's delay represents the
+                     * scheduled waiting state.
+                     */
+                    status:
+                      CampaignRunStatus.QUEUED,
+
+                    total:
+                      callableContacts.length,
+
+                    processed:
+                      0,
+
+                    successful:
+                      0,
+
+                    failed:
+                      0,
+
+                    startedAt:
+                      null,
+
+                    completedAt:
+                      null,
+                  },
+                });
+
+            return {
+              campaignRun,
+            };
+          }
+        );
+
+      //----------------------------------------
+      // Enqueue Background Job
+      //----------------------------------------
+
+      try {
+        await CampaignQueueService.enqueue(
+          {
+            campaignId:
+              campaign.id,
+
+            campaignRunId:
+              result
+                .campaignRun
+                .id,
+          },
+          {
+            delayMs:
+              schedule.delayMs,
+          }
+        );
+      } catch (
+        error
+      ) {
+        //--------------------------------------
+        // Queue Failure Compensation
+        //--------------------------------------
+
+        const failedAt =
+          new Date();
+
+        /*
+         * If BullMQ cannot accept the job,
+         * compensate the database transaction so
+         * nothing remains permanently QUEUED or
+         * SCHEDULED without an actual job.
+         */
+        await prisma.$transaction([
+          prisma
+            .campaignRun
+            .updateMany({
+              where: {
+                id:
+                  result
+                    .campaignRun
+                    .id,
+
+                campaignId:
+                  campaign.id,
+
+                status:
+                  CampaignRunStatus.QUEUED,
+              },
+
+              data: {
+                status:
+                  CampaignRunStatus.FAILED,
+
+                failed:
+                  callableContacts.length,
+
+                completedAt:
+                  failedAt,
+              },
+            }),
+
+          prisma
+            .campaign
+            .updateMany({
+              where: {
+                id:
+                  campaign.id,
+
+                status: {
+                  in: [
+                    CampaignStatus.SCHEDULED,
+                    CampaignStatus.QUEUED,
+                  ],
+                },
+              },
+
+              data: {
+                status:
+                  CampaignStatus.FAILED,
+
+                completedAt:
+                  failedAt,
+              },
+            }),
+        ]);
+
+        throw new ProviderUnavailableError(
+          "Campaign queue is currently unavailable",
+          normalizeUnknownError(
+            error
+          )
+        );
+      }
+
+      //----------------------------------------
+      // Response Message
+      //----------------------------------------
+
+      const message =
+        schedule.scheduled
+          ? "Campaign scheduled successfully"
+          : "Campaign queued successfully";
+
+      //----------------------------------------
+      // Return Accepted Response
+      //----------------------------------------
+
+      return NextResponse.json(
+        {
+          success:
+            true,
+
+          message,
+
+          data: {
+            campaignId:
+              campaign.id,
+
+            campaignRunId:
+              result
+                .campaignRun
+                .id,
+
+            campaignStatus:
+              targetCampaignStatus,
+
+            runStatus:
+              CampaignRunStatus.QUEUED,
+
+            scheduled:
+              schedule.scheduled,
+
+            scheduledAt:
+              schedule
+                .scheduledAt
+                ?.toISOString() ??
+              null,
+
+            delayMs:
+              schedule.delayMs,
+
+            total:
+              callableContacts.length,
+
+            excluded:
+              campaign
+                .contacts
+                .length -
+              callableContacts
+                .length,
+          },
+        },
+        {
+          status:
+            202,
+
+          headers: {
+            "Cache-Control":
+              "no-store",
+          },
+        }
+      );
+    }
+  );
+
+//--------------------------------------------------
+// Campaign Conflict Message
+//--------------------------------------------------
+
+function getCampaignConflictMessage(
+  status:
+    CampaignStatus
+): string {
+  switch (
+    status
+  ) {
+    case CampaignStatus.SCHEDULED:
+      return "Campaign is already scheduled";
+
+    case CampaignStatus.QUEUED:
+      return "Campaign is already queued";
+
+    case CampaignStatus.RUNNING:
+      return "Campaign is already running";
+
+    case CampaignStatus.CANCELLED:
+      return "Cancelled campaigns cannot be started";
+
+    default:
+      return "Campaign could not be started in its current state";
+  }
+}
+
+//--------------------------------------------------
+// Validate Callable Phone Number
+//--------------------------------------------------
+
+function isCallablePhoneNumber(
+  phone:
+    | string
+    | null
+    | undefined
+): boolean {
+  if (
+    !phone
+  ) {
+    return false;
+  }
+
+  const normalized =
+    phone
+      .trim()
+      .replace(
+        /[\s()-]/g,
+        ""
+      );
+
+  /*
+   * Basic E.164-compatible validation.
+   *
+   * Examples:
+   *
+   * +919876543210
+   * 919876543210
+   * 9876543210
+   *
+   * Optional leading + followed by
+   * 10 to 15 digits.
+   */
+  return /^\+?[1-9]\d{9,14}$/.test(
+    normalized
+  );
+}
+
+//--------------------------------------------------
+// Validate Provider Configuration
+//--------------------------------------------------
+
+function validateProviderConfiguration():
+  void {
+  const provider =
+    process.env
+      .TELEPHONY_PROVIDER
+      ?.trim()
+      .toLowerCase() ??
+    "twilio";
+
+  //----------------------------------------
+  // Twilio
+  //----------------------------------------
+
+  if (
+    provider ===
+    "twilio"
+  ) {
+    const requiredVariables =
+      [
+        "TWILIO_ACCOUNT_SID",
+        "TWILIO_AUTH_TOKEN",
+        "TWILIO_PHONE_NUMBER",
+        "TWILIO_PUBLIC_BASE_URL",
+        "TWILIO_MEDIA_PUBLIC_URL",
+      ] as const;
+
+    const missingVariables =
+      requiredVariables.filter(
+        name =>
+          !process
+            .env[name]
+            ?.trim()
+      );
+
+    if (
+      missingVariables.length >
+      0
+    ) {
+      throw new ProviderUnavailableError(
+        "Twilio provider is not configured",
+        {
+          missingVariables:
+            [
+              ...missingVariables,
+            ],
+        }
+      );
+    }
+
+    return;
+  }
+
+  //----------------------------------------
+  // Unsupported Provider Guard
+  //----------------------------------------
+
+  /*
+   * Do not silently continue when a provider
+   * is selected but its production adapter has
+   * not yet been enabled.
+   */
+  throw new ProviderUnavailableError(
+    `Telephony provider "${provider}" is not configured for campaign dispatch`,
+    {
+      provider,
+    }
+  );
+}
+
+//--------------------------------------------------
+// Normalize Unknown Error
+//--------------------------------------------------
+
+function normalizeUnknownError(
+  error:
+    unknown
+): {
+  name?:
+    string;
+
+  message:
+    string;
+
+  code?:
+    string |
+    number;
+} {
+  if (
+    error instanceof
+    Error
+  ) {
+    const errorWithCode =
+      error as
+        Error & {
+          code?:
+            string |
+            number;
+        };
+
+    return {
+      name:
+        error.name,
+
+      message:
+        error.message,
+
+      code:
+        errorWithCode.code,
+    };
+  }
+
+  return {
+    message:
+      String(
+        error
+      ),
+  };
+}

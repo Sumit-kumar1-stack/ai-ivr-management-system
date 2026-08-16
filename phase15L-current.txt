@@ -1,0 +1,2288 @@
+===== src\services\tools\transfer-to-human.tool.ts =====
+import {
+  z,
+} from "zod";
+
+import {
+  prisma,
+} from "@/lib/prisma";
+
+import {
+  transferHumanCall,
+} from "@/services/telephony/human-transfer.service";
+
+import type {
+  HumanTransferProvider,
+  HumanTransferStrategy,
+} from "@/services/telephony/human-transfer.types";
+
+import type {
+  BusinessToolDefinition,
+  ToolExecutionContext,
+} from "./tool-gateway.types";
+
+//--------------------------------------------------
+// Schema
+//--------------------------------------------------
+
+export const transferToHumanInputSchema =
+  z.object({
+    destination:
+      z
+        .string()
+        .trim()
+        .min(
+          1,
+          "Transfer destination is required"
+        )
+        .max(
+          200
+        ),
+
+    strategy:
+      z
+        .enum([
+          "DIRECT_NUMBER",
+          "QUEUE",
+          "SIP",
+        ])
+        .default(
+          "DIRECT_NUMBER"
+        ),
+
+    reason:
+      z
+        .string()
+        .trim()
+        .max(
+          500
+        )
+        .optional(),
+
+    announcement:
+      z
+        .string()
+        .trim()
+        .max(
+          500
+        )
+        .optional(),
+
+    timeoutSeconds:
+      z
+        .number()
+        .int()
+        .min(
+          5
+        )
+        .max(
+          120
+        )
+        .optional(),
+  });
+
+//--------------------------------------------------
+// Tool
+//--------------------------------------------------
+
+export const transferToHumanTool:
+  BusinessToolDefinition =
+{
+  name:
+    "transferToHuman",
+
+  description:
+    "Transfers the current active call to an approved human-agent destination.",
+
+  risk:
+    "SENSITIVE",
+
+  mutating:
+    true,
+
+  requiresConfirmation:
+    true,
+
+  timeoutMs:
+    10000,
+
+  inputSchema:
+    transferToHumanInputSchema,
+
+  handler:
+    async (
+      rawInput,
+      context
+    ) => {
+      const input =
+        transferToHumanInputSchema.parse(
+          rawInput
+        );
+
+      return executeTransfer(
+        input,
+        context
+      );
+    },
+};
+
+//--------------------------------------------------
+// Execute Transfer
+//--------------------------------------------------
+
+async function executeTransfer(
+  input:
+    z.infer<
+      typeof transferToHumanInputSchema
+    >,
+
+  context:
+    ToolExecutionContext
+) {
+  //------------------------------------------------
+  // Load Current Call
+  //------------------------------------------------
+
+  const call =
+    await prisma.call.findUnique({
+      where: {
+        id:
+          context.callId,
+      },
+
+ select: {
+  id:
+    true,
+
+  providerCallId:
+    true,
+
+  status:
+    true,
+},
+    });
+
+  if (
+    !call
+  ) {
+    throw new Error(
+      `Call not found: ${context.callId}`
+    );
+  }
+
+  if (
+    !call.providerCallId
+  ) {
+    throw new Error(
+      "Active provider call ID is unavailable"
+    );
+  }
+
+  //------------------------------------------------
+  // Resolve Provider
+  //------------------------------------------------
+
+const provider =
+  resolveProviderFromCallId(
+    call.providerCallId
+  );
+
+  if (
+    !provider
+  ) {
+    throw new Error(
+      "Current telephony provider does not support human transfer"
+    );
+  }
+
+  //------------------------------------------------
+  // Execute Through Provider-Neutral Layer
+  //------------------------------------------------
+
+  const result =
+    await transferHumanCall({
+      callId:
+        call.id,
+
+      providerCallId:
+        call.providerCallId,
+
+      provider,
+
+      strategy:
+        input.strategy as
+          HumanTransferStrategy,
+
+      destination:
+        input.destination,
+
+      reason:
+        input.reason,
+
+      announcement:
+        input.announcement,
+
+      timeoutSeconds:
+        input.timeoutSeconds,
+
+      signal:
+        context.signal,
+    });
+
+  if (
+    !result.success
+  ) {
+    throw new Error(
+      `${result.code}: ${result.message}`
+    );
+  }
+
+  return result;
+}
+
+//--------------------------------------------------
+// Provider Resolution
+//--------------------------------------------------
+
+function resolveProviderFromCallId(
+  providerCallId:
+    string
+): HumanTransferProvider | null {
+  const normalized =
+    providerCallId.trim();
+
+  /*
+   * Twilio Call SIDs always use the CA prefix.
+   *
+   * We resolve from the persisted provider identifier
+   * instead of inventing a provider field on Call.
+   */
+
+  if (
+    /^CA[a-fA-F0-9]{32}$/.test(
+      normalized
+    )
+  ) {
+    return "TWILIO";
+  }
+
+  return null;
+}
+===== src\services\telephony\human-transfer.service.ts =====
+import {
+  createCallLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  getHumanTransferAdapter,
+} from "./human-transfer-registry.service";
+
+import type {
+  HumanTransferRequest,
+  HumanTransferResult,
+} from "./human-transfer.types";
+
+import {
+  registerHumanTransferAdapters,
+} from "./register-human-transfer-adapters.service";
+
+//--------------------------------------------------
+// Transfer
+//--------------------------------------------------
+
+export async function transferHumanCall(
+  request:
+    HumanTransferRequest
+): Promise<HumanTransferResult> {
+  const log =
+    createCallLogger(
+      request.callId
+    );
+
+//------------------------------------------------
+// Ensure Provider Adapters Are Registered
+//------------------------------------------------
+
+registerHumanTransferAdapters();
+
+  //------------------------------------------------
+  // Validate
+  //------------------------------------------------
+
+  const destination =
+    request.destination.trim();
+
+  const providerCallId =
+    request.providerCallId.trim();
+
+  if (
+    !providerCallId
+  ) {
+    return {
+      success:
+        false,
+
+      provider:
+        request.provider,
+
+      providerCallId:
+        "",
+
+      code:
+        "PROVIDER_CALL_ID_REQUIRED",
+
+      message:
+        "Provider call ID is required for transfer.",
+    };
+  }
+
+  if (
+    !destination
+  ) {
+    return {
+      success:
+        false,
+
+      provider:
+        request.provider,
+
+      providerCallId,
+
+      code:
+        "TRANSFER_DESTINATION_REQUIRED",
+
+      message:
+        "Human transfer destination is required.",
+    };
+  }
+
+  //------------------------------------------------
+  // Abort Guard
+  //------------------------------------------------
+
+  if (
+    request.signal?.aborted
+  ) {
+    return {
+      success:
+        false,
+
+      provider:
+        request.provider,
+
+      providerCallId,
+
+      code:
+        "TRANSFER_ABORTED",
+
+      message:
+        "Human transfer was cancelled.",
+    };
+  }
+
+  //------------------------------------------------
+  // Resolve Provider Adapter
+  //------------------------------------------------
+
+  const adapter =
+    getHumanTransferAdapter(
+      request.provider
+    );
+
+  if (
+    !adapter
+  ) {
+    log.warn(
+      {
+        event:
+          "human_transfer.adapter_missing",
+
+        provider:
+          request.provider,
+      },
+      "Human transfer adapter is not registered"
+    );
+
+    return {
+      success:
+        false,
+
+      provider:
+        request.provider,
+
+      providerCallId,
+
+      code:
+        "TRANSFER_NOT_SUPPORTED",
+
+      message:
+        "Human transfer is not configured for this telephony provider.",
+    };
+  }
+
+  if (
+    !adapter.isConfigured()
+  ) {
+    return {
+      success:
+        false,
+
+      provider:
+        request.provider,
+
+      providerCallId,
+
+      code:
+        "TRANSFER_PROVIDER_NOT_CONFIGURED",
+
+      message:
+        "Human transfer provider configuration is incomplete.",
+    };
+  }
+
+  //------------------------------------------------
+  // Execute Provider Transfer
+  //------------------------------------------------
+
+  try {
+    log.info(
+      {
+        event:
+          "human_transfer.started",
+
+        provider:
+          request.provider,
+
+        strategy:
+          request.strategy,
+
+        reasonPresent:
+          Boolean(
+            request.reason
+          ),
+      },
+      "Human transfer started"
+    );
+
+    const result =
+      await adapter.transfer({
+        ...request,
+
+        providerCallId,
+
+        destination,
+      });
+
+    if (
+      result.success
+    ) {
+      log.info(
+        {
+          event:
+            "human_transfer.completed",
+
+          provider:
+            result.provider,
+
+          transferReference:
+            result.transferReference,
+        },
+        "Human transfer completed"
+      );
+    } else {
+      log.warn(
+        {
+          event:
+            "human_transfer.rejected",
+
+          provider:
+            result.provider,
+
+          code:
+            result.code,
+        },
+        "Human transfer was not completed"
+      );
+    }
+
+    return result;
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "human_transfer.failed",
+
+        provider:
+          request.provider,
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Human transfer failed"
+    );
+
+    return {
+      success:
+        false,
+
+      provider:
+        request.provider,
+
+      providerCallId,
+
+      code:
+        "TRANSFER_PROVIDER_ERROR",
+
+      message:
+        "The telephony provider could not complete the human transfer.",
+    };
+  }
+}
+===== src\services\telephony\human-transfer-lifecycle.service.ts =====
+import {
+  redisConnection,
+} from "@/lib/redis";
+
+import {
+  createCallLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+//--------------------------------------------------
+// Transfer Status
+//--------------------------------------------------
+
+export type HumanTransferStatus =
+  | "REQUESTED"
+  | "ACCEPTED"
+  | "DIALING"
+  | "ANSWERED"
+  | "FAILED"
+  | "CANCELLED"
+  | "COMPLETED";
+
+//--------------------------------------------------
+// State
+//--------------------------------------------------
+
+export interface HumanTransferLifecycleState {
+  callId:
+    string;
+
+  status:
+    HumanTransferStatus;
+
+  provider?:
+    string;
+
+  destination?:
+    string;
+
+  failureCode?:
+    string;
+
+  failureMessage?:
+    string;
+
+  requestedAt:
+    string;
+
+  updatedAt:
+    string;
+
+  answeredAt?:
+    string;
+
+  completedAt?:
+    string;
+}
+
+//--------------------------------------------------
+// Constants
+//--------------------------------------------------
+
+const DEFAULT_TTL_SECONDS =
+  60 *
+  60 *
+  6;
+
+const ACTIVE_STATUSES:
+  HumanTransferStatus[] =
+[
+  "REQUESTED",
+  "ACCEPTED",
+  "DIALING",
+  "ANSWERED",
+];
+
+//--------------------------------------------------
+// Request Transfer
+//--------------------------------------------------
+
+export async function markHumanTransferRequested(
+  callId:
+    string
+): Promise<HumanTransferLifecycleState> {
+  const now =
+    new Date()
+      .toISOString();
+
+  const state:
+    HumanTransferLifecycleState =
+    {
+      callId,
+
+      status:
+        "REQUESTED",
+
+      requestedAt:
+        now,
+
+      updatedAt:
+        now,
+    };
+
+  await saveHumanTransferState(
+    state
+  );
+
+  return state;
+}
+
+//--------------------------------------------------
+// Accepted
+//--------------------------------------------------
+
+export async function markHumanTransferAccepted(
+  callId:
+    string,
+
+  input?: {
+    provider?:
+      string;
+
+    destination?:
+      string;
+  }
+): Promise<HumanTransferLifecycleState> {
+  return updateHumanTransferState(
+    callId,
+    "ACCEPTED",
+    input
+  );
+}
+
+//--------------------------------------------------
+// Dialing
+//--------------------------------------------------
+
+export async function markHumanTransferDialing(
+  callId:
+    string
+): Promise<HumanTransferLifecycleState> {
+  return updateHumanTransferState(
+    callId,
+    "DIALING"
+  );
+}
+
+//--------------------------------------------------
+// Answered
+//--------------------------------------------------
+
+export async function markHumanTransferAnswered(
+  callId:
+    string
+): Promise<HumanTransferLifecycleState> {
+  const state =
+    await updateHumanTransferState(
+      callId,
+      "ANSWERED"
+    );
+
+  const updated:
+    HumanTransferLifecycleState =
+    {
+      ...state,
+
+      answeredAt:
+        new Date()
+          .toISOString(),
+    };
+
+  await saveHumanTransferState(
+    updated
+  );
+
+  return updated;
+}
+
+//--------------------------------------------------
+// Failed
+//--------------------------------------------------
+
+export async function markHumanTransferFailed(
+  callId:
+    string,
+
+  input?: {
+    failureCode?:
+      string;
+
+    failureMessage?:
+      string;
+  }
+): Promise<HumanTransferLifecycleState> {
+  return updateHumanTransferState(
+    callId,
+    "FAILED",
+    {
+      failureCode:
+        input
+          ?.failureCode,
+
+      failureMessage:
+        input
+          ?.failureMessage,
+    }
+  );
+}
+
+//--------------------------------------------------
+// Cancelled
+//--------------------------------------------------
+
+export async function markHumanTransferCancelled(
+  callId:
+    string
+): Promise<HumanTransferLifecycleState> {
+  return updateHumanTransferState(
+    callId,
+    "CANCELLED"
+  );
+}
+
+//--------------------------------------------------
+// Completed
+//--------------------------------------------------
+
+export async function markHumanTransferCompleted(
+  callId:
+    string
+): Promise<HumanTransferLifecycleState> {
+  const state =
+    await updateHumanTransferState(
+      callId,
+      "COMPLETED"
+    );
+
+  const updated:
+    HumanTransferLifecycleState =
+    {
+      ...state,
+
+      completedAt:
+        new Date()
+          .toISOString(),
+    };
+
+  await saveHumanTransferState(
+    updated
+  );
+
+  return updated;
+}
+
+//--------------------------------------------------
+// Get
+//--------------------------------------------------
+
+export async function getHumanTransferState(
+  callId:
+    string
+): Promise<HumanTransferLifecycleState | null> {
+  try {
+    const raw =
+      await redisConnection.get(
+        buildKey(
+          callId
+        )
+      );
+
+    if (
+      !raw
+    ) {
+      return null;
+    }
+
+    const state =
+      JSON.parse(
+        raw
+      ) as HumanTransferLifecycleState;
+
+    if (
+      !state ||
+      state.callId !==
+        callId
+    ) {
+      await clearHumanTransferState(
+        callId
+      );
+
+      return null;
+    }
+
+    return state;
+  } catch (
+    error
+  ) {
+    const log =
+      createCallLogger(
+        callId
+      );
+
+    log.error(
+      {
+        event:
+          "human_transfer.lifecycle.read_failed",
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Human-transfer lifecycle state could not be read"
+    );
+
+    return null;
+  }
+}
+
+//--------------------------------------------------
+// Is Active
+//--------------------------------------------------
+
+export async function isHumanTransferInProgress(
+  callId:
+    string
+): Promise<boolean> {
+  const state =
+    await getHumanTransferState(
+      callId
+    );
+
+  if (
+    !state
+  ) {
+    return false;
+  }
+
+  return ACTIVE_STATUSES.includes(
+    state.status
+  );
+}
+
+//--------------------------------------------------
+// Should Preserve Call On Media Stop
+//--------------------------------------------------
+
+export async function shouldPreserveCallAfterMediaStop(
+  callId:
+    string
+): Promise<boolean> {
+  const state =
+    await getHumanTransferState(
+      callId
+    );
+
+  if (
+    !state
+  ) {
+    return false;
+  }
+
+  switch (
+    state.status
+  ) {
+    case "REQUESTED":
+    case "ACCEPTED":
+    case "DIALING":
+    case "ANSWERED":
+      return true;
+
+    default:
+      return false;
+  }
+}
+
+//--------------------------------------------------
+// Clear
+//--------------------------------------------------
+
+export async function clearHumanTransferState(
+  callId:
+    string
+): Promise<void> {
+  await redisConnection.del(
+    buildKey(
+      callId
+    )
+  );
+}
+
+//--------------------------------------------------
+// Update
+//--------------------------------------------------
+
+async function updateHumanTransferState(
+  callId:
+    string,
+
+  status:
+    HumanTransferStatus,
+
+  patch?: Partial<
+    HumanTransferLifecycleState
+  >
+): Promise<HumanTransferLifecycleState> {
+  const current =
+    await getHumanTransferState(
+      callId
+    );
+
+  const now =
+    new Date()
+      .toISOString();
+
+  const state:
+    HumanTransferLifecycleState =
+    {
+      callId,
+
+      status,
+
+      requestedAt:
+        current
+          ?.requestedAt ??
+        now,
+
+      updatedAt:
+        now,
+
+      provider:
+        patch
+          ?.provider ??
+        current
+          ?.provider,
+
+      destination:
+        patch
+          ?.destination ??
+        current
+          ?.destination,
+
+      failureCode:
+        patch
+          ?.failureCode ??
+        current
+          ?.failureCode,
+
+      failureMessage:
+        patch
+          ?.failureMessage ??
+        current
+          ?.failureMessage,
+
+      answeredAt:
+        current
+          ?.answeredAt,
+
+      completedAt:
+        current
+          ?.completedAt,
+    };
+
+  await saveHumanTransferState(
+    state
+  );
+
+  return state;
+}
+
+//--------------------------------------------------
+// Save
+//--------------------------------------------------
+
+async function saveHumanTransferState(
+  state:
+    HumanTransferLifecycleState
+): Promise<void> {
+  await redisConnection.set(
+    buildKey(
+      state.callId
+    ),
+    JSON.stringify(
+      state
+    ),
+    "EX",
+    resolveTtlSeconds()
+  );
+
+  const log =
+    createCallLogger(
+      state.callId
+    );
+
+  log.info(
+    {
+      event:
+        "human_transfer.lifecycle.changed",
+
+      status:
+        state.status,
+
+      providerPresent:
+        Boolean(
+          state.provider
+        ),
+
+      destinationPresent:
+        Boolean(
+          state.destination
+        ),
+    },
+    "Human-transfer lifecycle changed"
+  );
+}
+
+//--------------------------------------------------
+// Key
+//--------------------------------------------------
+
+function buildKey(
+  callId:
+    string
+): string {
+  return `telephony:human-transfer:${callId}`;
+}
+
+//--------------------------------------------------
+// TTL
+//--------------------------------------------------
+
+function resolveTtlSeconds():
+  number {
+  const configured =
+    Number(
+      process.env
+        .HUMAN_TRANSFER_STATE_TTL_SECONDS
+    );
+
+  if (
+    Number.isInteger(
+      configured
+    ) &&
+    configured >=
+      300 &&
+    configured <=
+      86400
+  ) {
+    return configured;
+  }
+
+  return DEFAULT_TTL_SECONDS;
+}
+===== src\providers\telephony\twilio.provider.ts =====
+import {
+  twilioClient,
+} from "@/providers/twilio/twilio.client";
+
+import {
+  getTwilioConfig,
+} from "@/providers/twilio/twilio.config";
+
+import {
+  BaseTelephonyProvider,
+} from "./base.provider";
+
+import {
+  createCallLogger,
+} from "@/lib/logger";
+
+import {
+  ProviderCallRequest,
+  CallResponse,
+} from "@/services/telephony/types";
+
+export class TwilioProvider
+  extends BaseTelephonyProvider {
+
+  //--------------------------------------------------
+  // Normalize Phone Number
+  //--------------------------------------------------
+
+  private formatPhoneNumber(
+    phone: string
+  ): string {
+    const cleaned =
+      phone
+        .trim()
+        .replace(
+          /\s+/g,
+          ""
+        )
+        .replace(
+          /-/g,
+          ""
+        )
+        .replace(
+          /\(/g,
+          ""
+        )
+        .replace(
+          /\)/g,
+          ""
+        );
+
+    //------------------------------------------------
+    // Already E.164 format
+    //------------------------------------------------
+
+    if (
+      cleaned.startsWith(
+        "+"
+      )
+    ) {
+      return cleaned;
+    }
+
+    //------------------------------------------------
+    // Indian 10-digit number
+    //------------------------------------------------
+
+    if (
+      /^\d{10}$/.test(
+        cleaned
+      )
+    ) {
+      return `+91${cleaned}`;
+    }
+
+    //------------------------------------------------
+    // Indian number beginning with 91
+    //------------------------------------------------
+
+    if (
+      /^91\d{10}$/.test(
+        cleaned
+      )
+    ) {
+      return `+${cleaned}`;
+    }
+
+    throw new Error(
+      `Invalid phone number format: ${phone}`
+    );
+  }
+
+  //--------------------------------------------------
+  // Build Provider Callback URL
+  //--------------------------------------------------
+
+  private buildCallbackUrl(
+    publicBaseUrl: string,
+    pathname: string,
+    internalCallId: string
+  ): string {
+    const url =
+      new URL(
+        pathname,
+        `${publicBaseUrl}/`
+      );
+
+    url.searchParams.set(
+      "callId",
+      internalCallId
+    );
+
+    return url.toString();
+  }
+
+  //--------------------------------------------------
+  // Make Outbound Call
+  //--------------------------------------------------
+
+  async makeCall(
+    request: ProviderCallRequest
+  ): Promise<CallResponse> {
+    const log =
+      createCallLogger(
+        request.callId
+      );
+
+    try {
+      //------------------------------------------------
+      // Validate request
+      //------------------------------------------------
+
+      if (
+        !request.callId
+      ) {
+        throw new Error(
+          "callId is required to create a Twilio call"
+        );
+      }
+
+      if (
+        !request.to
+      ) {
+        throw new Error(
+          "Destination phone number is required"
+        );
+      }
+
+      //------------------------------------------------
+      // Load validated Twilio configuration
+      //------------------------------------------------
+
+      const twilioConfig =
+        getTwilioConfig();
+
+      //------------------------------------------------
+      // Format destination number
+      //------------------------------------------------
+
+      const formattedNumber =
+        this.formatPhoneNumber(
+          request.to
+        );
+
+      //------------------------------------------------
+      // Build Twilio webhook URLs
+      //------------------------------------------------
+
+      const voiceUrl =
+        this.buildCallbackUrl(
+          twilioConfig.publicBaseUrl,
+          "/api/twilio/voice-stream",
+          request.callId
+        );
+
+      const statusCallbackUrl =
+        this.buildCallbackUrl(
+          twilioConfig.publicBaseUrl,
+          "/api/twilio/status",
+          request.callId
+        );
+
+      const recordingCallbackUrl =
+        this.buildCallbackUrl(
+          twilioConfig.publicBaseUrl,
+          "/api/twilio/recording",
+          request.callId
+        );
+
+      log.info(
+        {
+          callId:
+            request.callId,
+
+          originalNumber:
+            request.to,
+
+          formattedNumber,
+
+          voiceUrl,
+
+          statusCallbackUrl,
+
+          recordingCallbackUrl,
+        },
+
+        "Creating Twilio outbound call"
+      );
+
+      //------------------------------------------------
+      // Create Twilio call
+      //------------------------------------------------
+
+      const call =
+        await twilioClient.calls.create({
+          to:
+            formattedNumber,
+
+          from:
+            twilioConfig.phoneNumber,
+
+          url:
+            voiceUrl,
+
+          method:
+            "POST",
+
+          //------------------------------------------
+          // Call lifecycle callback
+          //------------------------------------------
+
+          statusCallback:
+            statusCallbackUrl,
+
+          statusCallbackMethod:
+            "POST",
+
+          statusCallbackEvent: [
+            "initiated",
+            "ringing",
+            "answered",
+            "completed",
+          ],
+
+          //------------------------------------------
+          // Call recording
+          //------------------------------------------
+
+          record:
+            true,
+
+          recordingChannels:
+            "dual",
+
+          trim:
+            "do-not-trim",
+
+          recordingStatusCallback:
+            recordingCallbackUrl,
+
+          recordingStatusCallbackMethod:
+            "POST",
+
+          recordingStatusCallbackEvent: [
+            "completed",
+            "absent",
+          ],
+        });
+
+      log.info(
+        {
+          callId:
+            request.callId,
+
+          providerCallId:
+            call.sid,
+
+          status:
+            call.status,
+
+          to:
+            formattedNumber,
+
+          recordingEnabled:
+            true,
+
+          recordingChannels:
+            "dual",
+        },
+
+        "Twilio call created successfully"
+      );
+
+      //------------------------------------------------
+      // Return provider response
+      //------------------------------------------------
+
+      return {
+        callId:
+          call.sid,
+
+        status:
+          call.status,
+      };
+    } catch (
+      error
+    ) {
+      log.error(
+        {
+          callId:
+            request.callId,
+
+          destination:
+            request.to,
+
+          error:
+            error instanceof Error
+              ? error.message
+              : String(
+                  error
+                ),
+        },
+
+        "Failed to create Twilio outbound call"
+      );
+
+      throw error;
+    }
+  }
+
+  //--------------------------------------------------
+  // End Call
+  //--------------------------------------------------
+
+  async endCall(
+    callId: string
+  ): Promise<void> {
+    const log =
+      createCallLogger(
+        callId
+      );
+
+    try {
+      if (
+        !callId
+      ) {
+        throw new Error(
+          "Twilio provider call ID is required"
+        );
+      }
+
+      log.info(
+        {
+          providerCallId:
+            callId,
+        },
+
+        "Ending Twilio call"
+      );
+
+      await twilioClient
+        .calls(
+          callId
+        )
+        .update({
+          status:
+            "completed",
+        });
+
+      log.info(
+        {
+          providerCallId:
+            callId,
+        },
+
+        "Twilio call ended successfully"
+      );
+    } catch (
+      error
+    ) {
+      log.error(
+        {
+          providerCallId:
+            callId,
+
+          error:
+            error instanceof Error
+              ? error.message
+              : String(
+                  error
+                ),
+        },
+
+        "Failed to end Twilio call"
+      );
+
+      throw error;
+    }
+  }
+
+  //--------------------------------------------------
+  // Handle Webhook
+  //--------------------------------------------------
+
+  async handleWebhook(
+    body: unknown
+  ): Promise<void> {
+    console.log(
+      "Twilio webhook received"
+    );
+
+    console.dir(
+      body,
+      {
+        depth:
+          null,
+      }
+    );
+  }
+}
+===== src\app\api\twilio\status\route.ts =====
+import {
+  CallStatus,
+} from "@prisma/client";
+
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
+
+import {
+  AppEvent,
+  EventPublisher,
+} from "@/core/events";
+
+import {
+  createCallLogger,
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  createTwilioAuthErrorResponse,
+  validateTwilioWebhook,
+} from "@/lib/twilio-webhook-auth";
+
+import {
+  cleanupCallRuntime,
+} from "@/services/calls/call-runtime-cleanup.service";
+
+import {
+  updateCallStatus,
+  type UpdateCallStatusResult,
+} from "@/services/calls/call.service";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const serviceLog =
+  createServerLogger(
+    "twilio-status-route"
+  );
+
+//--------------------------------------------------
+// Twilio Status Callback
+//--------------------------------------------------
+
+export async function POST(
+  request: NextRequest
+): Promise<NextResponse> {
+  try {
+    //----------------------------------------
+    // Validate Twilio Signature And Body
+    //----------------------------------------
+
+    const {
+      params,
+    } =
+      await validateTwilioWebhook(
+        request
+      );
+
+    //----------------------------------------
+    // Resolve Internal Call ID
+    //----------------------------------------
+
+    const internalCallId =
+      request.nextUrl
+        .searchParams
+        .get(
+          "callId"
+        )
+        ?.trim() ||
+      undefined;
+
+    //----------------------------------------
+    // Resolve Twilio Callback Values
+    //----------------------------------------
+
+    const providerCallId =
+      String(
+        params.CallSid ??
+          ""
+      ).trim();
+
+    const providerStatus =
+      String(
+        params.CallStatus ??
+          ""
+      ).trim();
+
+    const durationValue =
+      String(
+        params.CallDuration ??
+          ""
+      ).trim();
+
+    //----------------------------------------
+    // Validate Required Fields
+    //----------------------------------------
+
+    if (
+      !providerCallId ||
+      !providerStatus
+    ) {
+      serviceLog.warn(
+        {
+          event:
+            "twilio.status.rejected",
+
+          reason:
+            "missing_required_fields",
+
+          providerCallIdPresent:
+            Boolean(
+              providerCallId
+            ),
+
+          providerStatusPresent:
+            Boolean(
+              providerStatus
+            ),
+
+          internalCallIdPresent:
+            Boolean(
+              internalCallId
+            ),
+        },
+        "Twilio status callback rejected"
+      );
+
+      return NextResponse.json(
+        {
+          success:
+            false,
+
+          message:
+            "CallSid and CallStatus are required",
+        },
+        {
+          status:
+            400,
+        }
+      );
+    }
+
+    //----------------------------------------
+    // Parse Duration Safely
+    //----------------------------------------
+
+    const parsedDuration =
+      durationValue
+        ? Number(
+            durationValue
+          )
+        : undefined;
+
+    const duration =
+      parsedDuration !==
+        undefined &&
+      Number.isFinite(
+        parsedDuration
+      ) &&
+      parsedDuration >=
+        0
+        ? Math.floor(
+            parsedDuration
+          )
+        : undefined;
+
+    //----------------------------------------
+    // Log Incoming Callback
+    //----------------------------------------
+
+    serviceLog.info(
+      {
+        event:
+          "twilio.status.received",
+
+        internalCallIdPresent:
+          Boolean(
+            internalCallId
+          ),
+
+        providerCallIdPresent:
+          true,
+
+        providerStatusPresent:
+          true,
+
+        durationPresent:
+          duration !==
+          undefined,
+
+        durationSeconds:
+          duration ??
+          null,
+      },
+      "Twilio status callback received"
+    );
+
+    //----------------------------------------
+    // Update Internal Call Lifecycle
+    //----------------------------------------
+
+    const result =
+      await updateCallStatus({
+        callId:
+          internalCallId,
+
+        providerCallId,
+
+        status:
+          providerStatus,
+
+        duration,
+      });
+
+    //----------------------------------------
+    // Handle Unmatched Callback
+    //----------------------------------------
+
+    if (
+      result.count ===
+        0 ||
+      !result.callId
+    ) {
+      serviceLog.warn(
+        {
+          event:
+            "twilio.status.unmatched",
+
+          internalCallIdPresent:
+            Boolean(
+              internalCallId
+            ),
+
+          providerCallIdPresent:
+            true,
+
+          providerStatusPresent:
+            true,
+        },
+        "Twilio status callback did not match an internal call"
+      );
+
+      /*
+       * Return HTTP 200 so Twilio does not keep
+       * retrying an unmatched but valid callback.
+       */
+      return NextResponse.json({
+        success:
+          true,
+
+        matched:
+          false,
+
+        ignored:
+          true,
+
+        duplicate:
+          false,
+
+        terminalCleanup:
+          false,
+
+        eventPublished:
+          false,
+      });
+    }
+
+    //----------------------------------------
+    // Call Logger
+    //----------------------------------------
+
+    const log =
+      createCallLogger(
+        result.callId
+      );
+
+    //----------------------------------------
+    // Publish Lifecycle Event
+    //----------------------------------------
+
+    const eventPublished =
+      await publishLifecycleEvent(
+        result
+      );
+
+    //----------------------------------------
+    // Terminal Runtime Cleanup
+    //----------------------------------------
+
+    const terminalCleanup =
+      await handleTerminalCleanup(
+        result
+      );
+
+    //----------------------------------------
+    // Final Lifecycle Log
+    //----------------------------------------
+
+    log.info(
+      {
+        event:
+          "twilio.status.updated",
+
+        previousStatus:
+          result.previousStatus,
+
+        currentStatus:
+          result.status,
+
+        duplicate:
+          result.duplicate ??
+          false,
+
+        ignored:
+          result.ignored ??
+          false,
+
+        terminalTransition:
+          result.terminalTransition ??
+          false,
+
+        terminalCleanup,
+
+        retryScheduled:
+          result.retryScheduled ??
+          false,
+
+        eventPublished,
+      },
+      "Internal call status updated"
+    );
+
+    //----------------------------------------
+    // Response
+    //----------------------------------------
+
+    return NextResponse.json({
+      success:
+        true,
+
+      matched:
+        true,
+
+      ignored:
+        result.ignored ??
+        false,
+
+      duplicate:
+        result.duplicate ??
+        false,
+
+      terminalTransition:
+        result.terminalTransition ??
+        false,
+
+      terminalCleanup,
+
+      retryScheduled:
+        result.retryScheduled ??
+        false,
+
+      eventPublished,
+    });
+  } catch (
+    error
+  ) {
+    //----------------------------------------
+    // Twilio Authentication Error
+    //----------------------------------------
+
+    const authResponse =
+      createTwilioAuthErrorResponse(
+        error
+      );
+
+    if (
+      authResponse
+    ) {
+      return authResponse;
+    }
+
+    //----------------------------------------
+    // Generic Processing Error
+    //----------------------------------------
+
+    serviceLog.error(
+      {
+        event:
+          "twilio.status.failed",
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Twilio status callback failed"
+    );
+
+    return NextResponse.json(
+      {
+        success:
+          false,
+
+        message:
+          "Failed to process status callback",
+      },
+      {
+        status:
+          500,
+      }
+    );
+  }
+}
+
+//--------------------------------------------------
+// Terminal Runtime Cleanup
+//--------------------------------------------------
+
+async function handleTerminalCleanup(
+  result: UpdateCallStatusResult
+): Promise<boolean> {
+  const callId =
+    result.callId;
+
+  /*
+   * Cleanup only when the database lifecycle
+   * actually transitioned into a terminal state.
+   *
+   * Do NOT cleanup for:
+   * - unmatched callbacks
+   * - duplicate callbacks
+   * - ignored/out-of-order callbacks
+   * - callbacks that merely repeat terminal state
+   */
+  if (
+    !callId ||
+    !result.terminalTransition ||
+    result.ignored ||
+    result.duplicate
+  ) {
+    return false;
+  }
+
+  const log =
+    createCallLogger(
+      callId
+    );
+
+  try {
+    await cleanupCallRuntime(
+      callId
+    );
+
+    log.info(
+      {
+        event:
+          "twilio.status.runtime_cleanup_completed",
+
+        status:
+          result.status,
+      },
+      "Terminal call runtime cleanup completed"
+    );
+
+    return true;
+  } catch (
+    error
+  ) {
+    /*
+     * Runtime cleanup must never make Twilio
+     * consider an otherwise valid status callback
+     * unsuccessful.
+     *
+     * cleanupCallRuntime() already performs
+     * best-effort per-resource cleanup, but this
+     * outer guard protects the webhook itself.
+     */
+    log.error(
+      {
+        event:
+          "twilio.status.runtime_cleanup_failed",
+
+        status:
+          result.status,
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Terminal call runtime cleanup failed"
+    );
+
+    return false;
+  }
+}
+
+//--------------------------------------------------
+// Publish Internal Lifecycle Event
+//--------------------------------------------------
+
+async function publishLifecycleEvent(
+  result: UpdateCallStatusResult
+): Promise<boolean> {
+  const callId =
+    result.callId;
+
+  const status =
+    result.status;
+
+  /*
+   * Never publish for:
+   *
+   * - unmatched callbacks
+   * - duplicate callbacks
+   * - ignored/out-of-order callbacks
+   * - callbacks without a resolved status
+   */
+  if (
+    !callId ||
+    !status ||
+    result.ignored ||
+    result.duplicate
+  ) {
+    return false;
+  }
+
+  const appEvent =
+    mapStatusToAppEvent(
+      status
+    );
+
+  if (
+    !appEvent
+  ) {
+    return false;
+  }
+
+  const published =
+    await EventPublisher.publish(
+      appEvent,
+      {
+        callId,
+
+        timestamp:
+          Date.now(),
+      }
+    );
+
+  return published;
+}
+
+//--------------------------------------------------
+// Map Database Status To Application Event
+//--------------------------------------------------
+
+function mapStatusToAppEvent(
+  status: CallStatus
+): AppEvent | null {
+  switch (
+    status
+  ) {
+    //----------------------------------------
+    // Started
+    //----------------------------------------
+
+    case CallStatus.QUEUED:
+      return AppEvent.CALL_STARTED;
+
+    //----------------------------------------
+    // Ringing
+    //----------------------------------------
+
+    case CallStatus.RINGING:
+      return AppEvent.CALL_RINGING;
+
+    //----------------------------------------
+    // Answered
+    //----------------------------------------
+
+    case CallStatus.ANSWERED:
+      return AppEvent.CALL_ANSWERED;
+
+    //----------------------------------------
+    // Successfully Completed
+    //----------------------------------------
+
+    case CallStatus.COMPLETED:
+      return AppEvent.CALL_COMPLETED;
+
+    //----------------------------------------
+    // Terminal Failure
+    //----------------------------------------
+
+    case CallStatus.FAILED:
+    case CallStatus.BUSY:
+    case CallStatus.NO_ANSWER:
+    case CallStatus.CANCELED:
+      return AppEvent.CALL_FAILED;
+
+    //----------------------------------------
+    // No Realtime Dashboard Event
+    //----------------------------------------
+
+    default:
+      return null;
+  }
+}
+
+//--------------------------------------------------
+// Reject GET Requests
+//--------------------------------------------------
+
+export async function GET():
+  Promise<NextResponse> {
+  return NextResponse.json(
+    {
+      success:
+        false,
+
+      message:
+        "Method not allowed",
+    },
+    {
+      status:
+        405,
+
+      headers: {
+        Allow:
+          "POST",
+
+        "Cache-Control":
+          "no-store",
+      },
+    }
+  );
+}
+===== MISSING src\app\api\webhooks\meta-whatsapp\route.ts =====
+===== src\services\messaging\messaging.service.ts =====
+import {
+  createServerLogger,
+} from "@/lib/logger";
+
+import {
+  getMessagingProvider,
+} from "./messaging-provider-registry.service";
+
+import {
+  registerMessagingProviders,
+} from "./register-messaging-providers.service";
+
+import type {
+  MessagingProviderName,
+  MessagingSendRequest,
+  MessagingSendResult,
+} from "./messaging.types";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "messaging-service"
+  );
+
+//--------------------------------------------------
+// Send
+//--------------------------------------------------
+
+export async function sendMessage(
+  provider:
+    MessagingProviderName,
+
+  request:
+    MessagingSendRequest
+): Promise<MessagingSendResult> {
+  registerMessagingProviders();
+
+  const adapter =
+    getMessagingProvider(
+      provider
+    );
+
+  if (
+    !adapter
+  ) {
+    return {
+      success:
+        false,
+
+      provider,
+
+      channel:
+        request.channel,
+
+      code:
+        "MESSAGING_PROVIDER_NOT_REGISTERED",
+
+      message:
+        "Messaging provider is not registered.",
+    };
+  }
+
+  if (
+    !adapter.channels.includes(
+      request.channel
+    )
+  ) {
+    return {
+      success:
+        false,
+
+      provider,
+
+      channel:
+        request.channel,
+
+      code:
+        "MESSAGING_CHANNEL_NOT_SUPPORTED",
+
+      message:
+        "Messaging provider does not support this channel.",
+    };
+  }
+
+  if (
+    !adapter.isConfigured()
+  ) {
+    return {
+      success:
+        false,
+
+      provider,
+
+      channel:
+        request.channel,
+
+      code:
+        "MESSAGING_PROVIDER_NOT_CONFIGURED",
+
+      message:
+        "Messaging provider configuration is incomplete.",
+    };
+  }
+
+  log.info(
+    {
+      event:
+        "messaging.dispatch.started",
+
+      provider,
+
+      channel:
+        request.channel,
+    },
+    "Outbound message dispatch started"
+  );
+
+  return adapter.send(
+    request
+  );
+}

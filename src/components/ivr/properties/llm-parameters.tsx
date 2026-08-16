@@ -1,12 +1,13 @@
 "use client";
 
+import type { IVRNode, IVRNodeData } from "../types";
 import ParameterSlider from "./parameter-slider";
 import ParameterNumber from "./parameter-number";
 import ParameterHelp from "./parameter-help";
 
 interface Props {
-  node: any;
-  onChange: (field: string, value: any) => void;
+  node: IVRNode;
+  onChange: <K extends keyof IVRNodeData>(field: K, value: IVRNodeData[K]) => void;
 }
 
 export default function LLMParameters({

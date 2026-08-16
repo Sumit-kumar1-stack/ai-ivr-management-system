@@ -1,9 +1,10 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import type { ContactDTO } from "@/features/contacts/contact.types";
 
 interface Props {
-  contacts: any[];
+  contacts: ContactDTO[];
   selected: string[];
   toggleSelection: (id: string) => void;
 }

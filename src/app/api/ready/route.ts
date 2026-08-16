@@ -3,6 +3,11 @@ import {
 } from "next/server";
 
 import {
+  checkIntegrationConfiguration,
+  isIntegrationConfigurationReady,
+} from "@/config/readiness";
+
+import {
   prisma,
 } from "@/lib/prisma";
 
@@ -37,9 +42,7 @@ const log =
 
 interface DependencyResult {
   healthy: boolean;
-
   durationMs: number;
-
   message: string;
 }
 
@@ -51,6 +54,9 @@ export async function GET():
   Promise<NextResponse> {
   const startedAt =
     process.hrtime.bigint();
+
+  const configuration =
+    checkIntegrationConfiguration();
 
   /*
    * The web process owns only its database and Redis
@@ -68,7 +74,10 @@ export async function GET():
 
   const ready =
     database.healthy &&
-    redis.healthy;
+    redis.healthy &&
+    isIntegrationConfigurationReady(
+      configuration
+    );
 
   const durationMs =
     getDurationMs(
@@ -89,6 +98,8 @@ export async function GET():
     database,
 
     redis,
+
+    configuration,
   };
 
   if (
@@ -138,8 +149,8 @@ export async function GET():
 
       dependencies: {
         database,
-
         redis,
+        configuration,
       },
     },
     {

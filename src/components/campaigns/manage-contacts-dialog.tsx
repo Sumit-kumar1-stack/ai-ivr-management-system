@@ -7,7 +7,6 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 
 import { Button } from "@/components/ui/button";
@@ -18,6 +17,7 @@ import { useDebounce } from "@/hooks/use-debounce";
 import AvailableContactTable from "./available-contact-table";
 
 import { useContacts } from "@/features/contacts/use-contacts";
+import type { ContactDTO } from "@/features/contacts/contact.types";
 import { useAssignContacts } from "@/features/campaigns/use-assign-contacts";
 
 interface Props {
@@ -46,15 +46,14 @@ export default function ManageContactsDialog({
 
   const assign = useAssignContacts();
 
-  const contacts = data?.data ?? [];
-
   const filtered = useMemo(() => {
-    return contacts.filter((contact: any) =>
+    const contactsList = data?.data ?? [];
+    return contactsList.filter((contact: ContactDTO) =>
       contact.fullName
         .toLowerCase()
         .includes(debounced.toLowerCase())
     );
-  }, [contacts, debounced]);
+  }, [data?.data, debounced]);
 
   function toggleSelection(id: string) {
     setSelected((previous) =>

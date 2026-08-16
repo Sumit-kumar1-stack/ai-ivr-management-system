@@ -5,6 +5,27 @@ import {
 
 import twilio from "twilio";
 
+import {
+  getTwilioEnvironment,
+} from "@/config/env";
+
+import {
+  createLogger,
+} from "@/lib/logger";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createLogger({
+    component:
+      "twilio-webhook-auth",
+  });
+
+//--------------------------------------------------
+// Types
+//--------------------------------------------------
 
 export interface ValidatedTwilioWebhook {
   formData: FormData;
@@ -17,26 +38,20 @@ export interface ValidatedTwilioWebhook {
   validationUrl: string;
 }
 
-
 export class TwilioWebhookAuthenticationError
   extends Error {
-
   constructor(
     message =
       "Invalid Twilio webhook signature"
   ) {
-
     super(
       message
     );
 
     this.name =
       "TwilioWebhookAuthenticationError";
-
   }
-
 }
-
 
 //--------------------------------------------------
 // Validate Twilio Form Webhook
@@ -45,114 +60,75 @@ export class TwilioWebhookAuthenticationError
 export async function validateTwilioWebhook(
   request: NextRequest
 ): Promise<ValidatedTwilioWebhook> {
-
   const signature =
-    request.headers.get(
-      "x-twilio-signature"
-    )?.trim();
-
+    request.headers
+      .get(
+        "x-twilio-signature"
+      )
+      ?.trim();
 
   if (
     !signature
   ) {
-
     throw new TwilioWebhookAuthenticationError(
       "Missing X-Twilio-Signature header"
     );
-
   }
 
+  const environment =
+    getTwilioEnvironment();
 
   const authToken =
-    process.env
-      .TWILIO_AUTH_TOKEN
-      ?.trim();
-
-
-  if (
-    !authToken
-  ) {
-
-    throw new Error(
-      "TWILIO_AUTH_TOKEN is not configured"
-    );
-
-  }
-
+    environment.authToken;
 
   const publicOrigin =
-  normalizePublicOrigin(
-    process.env
-      .TWILIO_PUBLIC_BASE_URL
-      ?.trim() ||
-    process.env
-      .APP_URL
-      ?.trim()
-  );
-
-
-  if (
-    !publicOrigin
-  ) {
-
-    throw new Error(
-      "TWILIO_PUBLIC_BASE_URL or APP_URL is not configured"
+    normalizePublicOrigin(
+      environment.publicBaseUrl
     );
 
-  }
-
-
-  //------------------------------------------------
-  // Read body once
-  //------------------------------------------------
+  //----------------------------------------------
+  // Read request body once
+  //----------------------------------------------
 
   const formData =
     await request.formData();
 
-
   const params:
-    Record<string, string> = {};
+    Record<
+      string,
+      string
+    > = {};
 
-
-  for (
-    const [
-      key,
+  formData.forEach(
+    (
       value,
-    ] of formData.entries()
-  ) {
-
-    if (
-      typeof value ===
-      "string"
-    ) {
-
-      params[key] =
-        value;
-
+      key
+    ) => {
+      if (
+        typeof value ===
+          "string"
+      ) {
+        params[
+          key
+        ] =
+          value;
+      }
     }
+  );
 
-  }
-
-
-  //------------------------------------------------
+  //----------------------------------------------
   // Rebuild URL using trusted public origin
-  //------------------------------------------------
+  //----------------------------------------------
 
   const incomingUrl =
     new URL(
       request.url
     );
 
-
-  /*
-   * Preserve pathname and encoded query string,
-   * but do not trust the incoming Host header.
-   */
   const validationUrl =
     `${publicOrigin}` +
     `${incomingUrl.pathname}` +
     `${incomingUrl.search}`;
-
 
   const valid =
     twilio.validateRequest(
@@ -162,54 +138,57 @@ export async function validateTwilioWebhook(
       params
     );
 
-
   if (
     !valid
   ) {
-
-    console.warn(
-      "Twilio webhook signature rejected",
+    log.warn(
       {
+        event:
+          "twilio.webhook.signature_rejected",
+
+        method:
+          request.method,
+
         pathname:
           incomingUrl.pathname,
 
-        validationUrl,
+        signaturePresent:
+          true,
 
-        callSid:
-          params.CallSid,
-      }
+        providerCallIdPresent:
+          Boolean(
+            params.CallSid
+          ),
+
+        parameterCount:
+          Object.keys(
+            params
+          ).length,
+      },
+      "Twilio webhook signature rejected"
     );
 
-
     throw new TwilioWebhookAuthenticationError();
-
   }
-
 
   return {
     formData,
-
     params,
-
     validationUrl,
   };
-
 }
 
-
 //--------------------------------------------------
-// Authentication Error Response
+// Authentication error response
 //--------------------------------------------------
 
 export function createTwilioAuthErrorResponse(
   error: unknown
 ): NextResponse | null {
-
   if (
     error instanceof
     TwilioWebhookAuthenticationError
   ) {
-
     return NextResponse.json(
       {
         success:
@@ -223,48 +202,22 @@ export function createTwilioAuthErrorResponse(
           403,
       }
     );
-
   }
 
-
   return null;
-
 }
 
-
 //--------------------------------------------------
-// Trusted Public Origin
+// Trusted public origin
 //--------------------------------------------------
 
 function normalizePublicOrigin(
-  value:
-    | string
-    | undefined
-): string | null {
-
-  const normalized =
-    value
-      ?.trim()
-      .replace(
-        /\/+$/,
-        ""
-      );
-
-
-  if (
-    !normalized
-  ) {
-
-    return null;
-
-  }
-
-
+  value: string
+): string {
   const url =
     new URL(
-      normalized
+      value
     );
-
 
   if (
     url.protocol !==
@@ -272,14 +225,10 @@ function normalizePublicOrigin(
     url.protocol !==
       "http:"
   ) {
-
     throw new Error(
       "TWILIO_PUBLIC_BASE_URL must use HTTP or HTTPS"
     );
-
   }
 
-
   return url.origin;
-
 }

@@ -1,9 +1,10 @@
 "use client";
 
 import KnowledgeItem from "./knowledge-item";
+import type { KnowledgeFile } from "../types";
 
 interface Props {
-  files: any[];
+  files: KnowledgeFile[];
   onRemove: (id: string) => void;
 }
 

@@ -1,0 +1,972 @@
+import {
+  createServerLogger,
+  getDurationMs,
+} from "@/lib/logger";
+
+import {
+  retrieveKnowledge,
+} from "@/services/knowledge/retrieval.service";
+
+import {
+  rewriteQuery,
+} from "@/services/knowledge/query-rewriter.service";
+
+import {
+  ConversationService,
+} from "./conversation.service";
+
+import {
+  getConversationMemory,
+} from "./memory.service";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "prompt-builder"
+  );
+
+//--------------------------------------------------
+// Build Prompt
+//--------------------------------------------------
+
+export async function buildPrompt(
+  callId: string,
+  latestMessage: string
+): Promise<string> {
+  const startedAt =
+    process.hrtime.bigint();
+
+  //--------------------------------------------------
+  // Conversation
+  //--------------------------------------------------
+
+  const conversation =
+    await ConversationService.getConversation(
+      callId
+    );
+
+  const history =
+    conversation?.messages ??
+    [];
+
+  const transcript =
+    history
+      .map(
+        message =>
+          `${message.role}: ${message.content}`
+      )
+      .join(
+        "\n"
+      );
+
+  //--------------------------------------------------
+  // Memory
+  //--------------------------------------------------
+
+  const memory =
+    await getConversationMemory(
+      callId
+    );
+
+  //--------------------------------------------------
+  // Rewrite Query
+  //--------------------------------------------------
+
+  const rewrittenQuery =
+    await rewriteQuery(
+      transcript,
+      latestMessage
+    );
+
+  log.debug(
+    {
+      event:
+        "prompt.query_rewritten",
+
+      callId,
+
+      historyMessageCount:
+        history.length,
+
+      transcriptCharacterCount:
+        transcript.length,
+
+      originalQueryCharacterCount:
+        latestMessage.length,
+
+      rewrittenQueryCharacterCount:
+        rewrittenQuery.length,
+
+      memoryCharacterCount:
+        memory?.length ??
+        0,
+    },
+    "Conversation query rewritten"
+  );
+
+  //--------------------------------------------------
+  // Retrieve and Re-rank Knowledge
+  //--------------------------------------------------
+
+  const knowledge =
+    await retrieveKnowledge(
+      rewrittenQuery,
+      5
+    );
+
+  log.debug(
+    {
+      event:
+        "prompt.knowledge_retrieved",
+
+      callId,
+
+      retrievedChunkCount:
+        knowledge.length,
+    },
+    "Knowledge retrieved for prompt"
+  );
+
+  //--------------------------------------------------
+  // No Relevant Knowledge
+  //--------------------------------------------------
+
+  if (
+    knowledge.length ===
+    0
+  ) {
+    log.info(
+      {
+        event:
+          "prompt.no_relevant_knowledge",
+
+        callId,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+      },
+      "No relevant knowledge found for conversation"
+    );
+
+    return "NO_RELEVANT_KNOWLEDGE";
+  }
+
+  //--------------------------------------------------
+  // Build Knowledge Context
+  //--------------------------------------------------
+
+  const knowledgeContext =
+    knowledge
+      .map(
+        (
+          item,
+          index
+        ) =>
+          `Source ${index + 1}\n\n${item.content}`
+      )
+      .join(
+        "\n\n"
+      );
+
+  //--------------------------------------------------
+  // Final Prompt
+  //--------------------------------------------------
+
+  const prompt = `
+You are a professional AI Call Center Agent.
+
+Answer ONLY using the provided knowledge.
+
+Never invent information.
+
+If the answer isn't found,
+reply exactly:
+
+"I couldn't find that information in our knowledge base."
+
+--------------------------------------------------
+
+Conversation Memory
+
+${memory || "None"}
+
+--------------------------------------------------
+
+Knowledge
+
+${knowledgeContext}
+
+--------------------------------------------------
+
+Conversation
+
+${transcript}
+
+--------------------------------------------------
+
+Customer
+
+${latestMessage}
+
+--------------------------------------------------
+
+Assistant
+`;
+
+  log.debug(
+    {
+      event:
+        "prompt.build.completed",
+
+      callId,
+
+      promptCharacterCount:
+        prompt.length,
+
+      knowledgeChunkCount:
+        knowledge.length,
+
+      historyMessageCount:
+        history.length,
+
+      durationMs:
+        getDurationMs(
+          startedAt
+        ),
+    },
+    "AI conversation prompt built"
+  );
+
+  return prompt;
+}import {
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  askAI,
+} from "@/services/ai/llm.factory";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "query-rewriter"
+  );
+
+//--------------------------------------------------
+// Detect Context Dependency
+//--------------------------------------------------
+
+function isContextDependentOrAmbiguous(
+  history: string,
+  question: string
+): boolean {
+  if (
+    !history ||
+    history.trim() ===
+      ""
+  ) {
+    return false;
+  }
+
+  const words =
+    question
+      .trim()
+      .split(
+        /\s+/
+      )
+      .filter(
+        Boolean
+      );
+
+  /*
+   * Very short utterances such as "why?", "yes",
+   * or "how?" usually depend on prior context.
+   */
+  if (
+    words.length <=
+    2
+  ) {
+    return true;
+  }
+
+  /*
+   * Longer follow-up questions can benefit from
+   * conversion into a standalone retrieval query.
+   */
+  if (
+    words.length >
+    5
+  ) {
+    return true;
+  }
+
+  const contextKeywords =
+    new Set([
+      "it",
+      "its",
+      "this",
+      "that",
+      "these",
+      "those",
+      "they",
+      "them",
+      "their",
+      "he",
+      "him",
+      "his",
+      "she",
+      "her",
+      "hers",
+      "here",
+      "there",
+      "then",
+      "yes",
+      "no",
+      "ok",
+      "okay",
+      "yeah",
+      "yep",
+      "yup",
+      "nah",
+      "sure",
+      "correct",
+      "right",
+      "wrong",
+      "previous",
+      "last",
+      "above",
+      "mentioned",
+      "earlier",
+      "before",
+      "latter",
+      "former",
+      "other",
+      "another",
+      "same",
+      "one",
+      "ones",
+      "much",
+      "many",
+      "else",
+      "also",
+      "too",
+      "instead",
+      "except",
+      "about",
+      "more",
+      "so",
+    ]);
+
+  return words.some(
+    word =>
+      contextKeywords.has(
+        word
+          .toLowerCase()
+          .replace(
+            /[^a-z]/g,
+            ""
+          )
+      )
+  );
+}
+
+//--------------------------------------------------
+// Rewrite Query
+//--------------------------------------------------
+
+export async function rewriteQuery(
+  history: string,
+  question: string
+): Promise<string> {
+  const normalizedQuestion =
+    question.trim();
+
+  const normalizedHistory =
+    history.trim();
+
+  const rewriteRequired =
+    isContextDependentOrAmbiguous(
+      normalizedHistory,
+      normalizedQuestion
+    );
+
+  if (
+    !rewriteRequired
+  ) {
+    log.debug(
+      {
+        event:
+          "knowledge.query_rewrite.skipped",
+
+        reason:
+          "standalone_question",
+
+        questionCharacterCount:
+          normalizedQuestion.length,
+
+        historyCharacterCount:
+          normalizedHistory.length,
+      },
+      "Query rewriting skipped"
+    );
+
+    return normalizedQuestion;
+  }
+
+  const prompt =
+    `
+You rewrite customer questions for retrieval.
+
+Conversation:
+
+${normalizedHistory}
+
+Latest Question:
+
+${normalizedQuestion}
+
+Rewrite the latest question into a standalone search query.
+
+Only return the rewritten query.
+
+Do not answer it.
+`.trim();
+
+  log.debug(
+    {
+      event:
+        "knowledge.query_rewrite.started",
+
+      questionCharacterCount:
+        normalizedQuestion.length,
+
+      historyCharacterCount:
+        normalizedHistory.length,
+
+      promptCharacterCount:
+        prompt.length,
+    },
+    "Query rewriting started"
+  );
+
+  try {
+    const rewritten =
+      (
+        await askAI(
+          prompt
+        )
+      ).trim();
+
+    const result =
+      rewritten ||
+      normalizedQuestion;
+
+    log.info(
+      {
+        event:
+          "knowledge.query_rewrite.completed",
+
+        originalCharacterCount:
+          normalizedQuestion.length,
+
+        rewrittenCharacterCount:
+          result.length,
+
+        fallbackUsed:
+          !rewritten,
+      },
+      "Query rewriting completed"
+    );
+
+    return result;
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "knowledge.query_rewrite.failed",
+
+        questionCharacterCount:
+          normalizedQuestion.length,
+
+        historyCharacterCount:
+          normalizedHistory.length,
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Query rewriting failed"
+    );
+
+    return normalizedQuestion;
+  }
+}import {
+  createServerLogger,
+  getDurationMs,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  prisma,
+} from "@/lib/prisma";
+
+import {
+  bm25Score,
+} from "./bm25.service";
+
+import {
+  rerankKnowledge,
+} from "./reranker.service";
+
+//--------------------------------------------------
+// Types
+//--------------------------------------------------
+
+export interface RetrievedKnowledgeChunk {
+  content: string;
+  score: number;
+  documentId: string;
+  chunkIndex: number;
+}
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "knowledge-retrieval"
+  );
+
+//--------------------------------------------------
+// Retrieve Knowledge
+//--------------------------------------------------
+
+export async function retrieveKnowledge(
+  question: string,
+  limit = 5
+): Promise<
+  RetrievedKnowledgeChunk[]
+> {
+  const startedAt =
+    process.hrtime.bigint();
+
+  const normalizedQuestion =
+    question.trim();
+
+  if (
+    !normalizedQuestion
+  ) {
+    log.debug(
+      {
+        event:
+          "knowledge.retrieval.skipped",
+
+        reason:
+          "empty_question",
+      },
+      "Knowledge retrieval skipped"
+    );
+
+    return [];
+  }
+
+  const normalizedLimit =
+    Math.max(
+      1,
+      Math.min(
+        limit,
+        20
+      )
+    );
+
+  try {
+    //--------------------------------------------------
+    // Load Chunks
+    //--------------------------------------------------
+
+    const chunks =
+      await prisma.knowledgeChunk.findMany();
+
+    log.debug(
+      {
+        event:
+          "knowledge.retrieval.started",
+
+        queryCharacterCount:
+          normalizedQuestion.length,
+
+        availableChunkCount:
+          chunks.length,
+
+        requestedLimit:
+          normalizedLimit,
+      },
+      "Knowledge retrieval started"
+    );
+
+    //--------------------------------------------------
+    // BM25
+    //--------------------------------------------------
+
+    const scored =
+      chunks
+        .map(
+          chunk => ({
+            ...chunk,
+
+            score:
+              bm25Score(
+                normalizedQuestion,
+                chunk.content
+              ),
+          })
+        )
+        .filter(
+          chunk =>
+            Number.isFinite(
+              chunk.score
+            ) &&
+            chunk.score >
+              0
+        )
+        .sort(
+          (
+            first,
+            second
+          ) =>
+            second.score -
+            first.score
+        )
+        .slice(
+          0,
+          20
+        );
+
+    log.debug(
+      {
+        event:
+          "knowledge.retrieval.bm25_completed",
+
+        availableChunkCount:
+          chunks.length,
+
+        candidateCount:
+          scored.length,
+
+        highestScore:
+          scored[0]?.score ??
+          null,
+      },
+      "BM25 knowledge search completed"
+    );
+
+    //--------------------------------------------------
+    // No Candidates
+    //--------------------------------------------------
+
+    if (
+      scored.length ===
+      0
+    ) {
+      log.info(
+        {
+          event:
+            "knowledge.retrieval.no_candidates",
+
+          queryCharacterCount:
+            normalizedQuestion.length,
+
+          durationMs:
+            getDurationMs(
+              startedAt
+            ),
+        },
+        "No relevant BM25 candidates found"
+      );
+
+      return [];
+    }
+
+    //--------------------------------------------------
+    // Single Candidate
+    //--------------------------------------------------
+
+    if (
+      scored.length ===
+      1
+    ) {
+      const onlyCandidate =
+        scored[0];
+
+      log.debug(
+        {
+          event:
+            "knowledge.retrieval.rerank_skipped",
+
+          reason:
+            "single_candidate",
+
+          candidateCount:
+            1,
+
+          durationMs:
+            getDurationMs(
+              startedAt
+            ),
+        },
+        "Knowledge reranking skipped"
+      );
+
+      return [
+        {
+          content:
+            onlyCandidate.content,
+
+          score:
+            onlyCandidate.score,
+
+          documentId:
+            onlyCandidate.documentId,
+
+          chunkIndex:
+            onlyCandidate.chunkIndex,
+        },
+      ];
+    }
+
+    //--------------------------------------------------
+    // AI Re-ranking
+    //--------------------------------------------------
+
+    const reranked =
+      await rerankKnowledge(
+        normalizedQuestion,
+        scored
+      );
+
+    const results =
+      reranked
+        .slice(
+          0,
+          normalizedLimit
+        )
+        .map(
+          chunk => ({
+            content:
+              chunk.content,
+
+            score:
+              chunk.score,
+
+            documentId:
+              chunk.documentId,
+
+            chunkIndex:
+              chunk.chunkIndex,
+          })
+        );
+
+    log.info(
+      {
+        event:
+          "knowledge.retrieval.completed",
+
+        bm25CandidateCount:
+          scored.length,
+
+        rerankedCandidateCount:
+          reranked.length,
+
+        returnedChunkCount:
+          results.length,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+      },
+      "Knowledge retrieval completed"
+    );
+
+    return results;
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "knowledge.retrieval.failed",
+
+        queryCharacterCount:
+          normalizedQuestion.length,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Knowledge retrieval failed"
+    );
+
+    throw error;
+  }
+}import {
+  ConversationRepository,
+} from "./conversation.repository";
+
+export async function createConversation(
+  callId: string
+) {
+  return ConversationRepository.create(
+    callId
+  );
+}
+
+export async function getConversation(
+  callId: string
+) {
+  return ConversationRepository.findByCall(
+    callId
+  );
+}
+
+/**
+ * Loads the entire conversation history.
+ *
+ * Use this for:
+ * - post-call processing
+ * - final transcript generation
+ * - call details page
+ */
+export async function getCompleteConversation(
+  callId: string
+) {
+  return ConversationRepository
+    .findCompleteByCall(
+      callId
+    );
+}
+
+export async function addConversationMessage(
+  conversationId: string,
+  role:
+    | "SYSTEM"
+    | "USER"
+    | "ASSISTANT",
+  content: string
+) {
+  return ConversationRepository.addMessage({
+    conversationId,
+    role,
+    content,
+  });
+}
+
+export async function saveConversationSummary(
+  conversationId: string,
+  summary: string
+) {
+  return ConversationRepository.updateSummary(
+    conversationId,
+    summary
+  );
+}
+
+export const ConversationService = {
+  async addMessage(
+    data: {
+      callId: string;
+
+      role:
+        | "USER"
+        | "ASSISTANT"
+        | "SYSTEM";
+
+      content: string;
+    }
+  ) {
+    const existingConversation =
+      await ConversationRepository
+        .findByCall(
+          data.callId
+        );
+
+    const conversationId =
+      existingConversation
+        ? existingConversation.id
+        : (
+            await ConversationRepository
+              .create(
+                data.callId
+              )
+          ).id;
+
+    return ConversationRepository.addMessage({
+      conversationId,
+
+      role:
+        data.role,
+
+      content:
+        data.content,
+    });
+  },
+
+  async getConversation(
+    callId: string
+  ) {
+    return ConversationRepository
+      .findByCall(
+        callId
+      );
+  },
+
+  async getCompleteConversation(
+    callId: string
+  ) {
+    return ConversationRepository
+      .findCompleteByCall(
+        callId
+      );
+  },
+};
+
+export async function saveConversationAnalysis(
+  conversationId: string,
+  analysis: {
+    summary: string;
+
+    intent: string;
+
+    sentiment: string;
+
+    priority: string;
+
+    followUp: boolean;
+
+    actionItems: string[];
+  }
+) {
+  return ConversationRepository.updateAnalysis(
+    conversationId,
+    analysis
+  );
+}

@@ -1,0 +1,32 @@
+enum CallEventType {
+  STARTED
+  RINGING
+  ANSWERED
+  THINKING
+  SPEAKING
+  LISTENING
+  INTERRUPTED
+  COMPLETED
+  FAILED
+}
+
+model CallEvent {
+  id String @id @default(cuid())
+
+  callId String
+  type   CallEventType
+
+  message  String?
+  payload  Json?
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId])
+  @@index([type])
+  @@index([createdAt])
+  @@index([callId, createdAt])
+}
+

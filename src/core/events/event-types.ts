@@ -1,69 +1,114 @@
 export enum AppEvent {
-
   //-----------------------------------
   // Call Lifecycle
   //-----------------------------------
 
-  CALL_STARTED = "call.started",
+  CALL_STARTED =
+    "call.started",
 
-  CALL_RINGING = "call.ringing",
+  CALL_RINGING =
+    "call.ringing",
 
-  CALL_ANSWERED = "call.answered",
+  CALL_ANSWERED =
+    "call.answered",
 
-  CALL_COMPLETED = "call.completed",
+  CALL_COMPLETED =
+    "call.completed",
 
-  CALL_FAILED = "call.failed",
+  CALL_FAILED =
+    "call.failed",
 
   //-----------------------------------
   // Conversation
   //-----------------------------------
 
-  CONVERSATION_STARTED = "conversation.started",
+  CONVERSATION_STARTED =
+    "conversation.started",
 
-  CONVERSATION_MESSAGE = "conversation.message",
+  CONVERSATION_MESSAGE =
+    "conversation.message",
 
-  CONVERSATION_SUMMARY = "conversation.summary",
+  CONVERSATION_SUMMARY =
+    "conversation.summary",
 
-  CONVERSATION_ANALYSIS = "conversation.analysis",
+  CONVERSATION_ANALYSIS =
+    "conversation.analysis",
 
   //-----------------------------------
   // Voice States
   //-----------------------------------
 
-  VOICE_LISTENING = "voice.listening",
+  VOICE_LISTENING =
+    "voice.listening",
 
-  VOICE_THINKING = "voice.thinking",
+  VOICE_THINKING =
+    "voice.thinking",
 
-  VOICE_SPEAKING = "voice.speaking",
+  VOICE_SPEAKING =
+    "voice.speaking",
 
-  VOICE_INTERRUPTED = "voice.interrupted",
+  VOICE_INTERRUPTED =
+    "voice.interrupted",
 
-  VOICE_COMPLETED = "voice.completed",
+  VOICE_COMPLETED =
+    "voice.completed",
 
   //-----------------------------------
   // Dashboard
   //-----------------------------------
 
-  DASHBOARD_UPDATED = "dashboard.updated",
+  DASHBOARD_UPDATED =
+    "dashboard.updated",
 
-  DASHBOARD_METRICS = "dashboard.metrics",
+  DASHBOARD_METRICS =
+    "dashboard.metrics",
 
-  DASHBOARD_TIMELINE = "dashboard.timeline",
+  DASHBOARD_TIMELINE =
+    "dashboard.timeline",
 
-  ACTIVE_CALL_UPDATED = "dashboard.active-call",
+  ACTIVE_CALL_UPDATED =
+    "dashboard.active-call",
 
   //-----------------------------------
   // Metrics
   //-----------------------------------
 
-  METRICS_UPDATED = "metrics.updated",
+  METRICS_UPDATED =
+    "metrics.updated",
 
-  AUDIO_CONNECTED="audio.connected",
+  //-----------------------------------
+  // Audio
+  //-----------------------------------
 
-  AUDIO_DISCONNECTED="audio.disconnected",
+  AUDIO_CONNECTED =
+    "audio.connected",
 
-  AUDIO_CHUNK_RECEIVED="audio.chunk.received",
+  AUDIO_DISCONNECTED =
+    "audio.disconnected",
 
-  AUDIO_CHUNK_SENT="audio.chunk.sent",
+  AUDIO_CHUNK_RECEIVED =
+    "audio.chunk.received",
 
+  AUDIO_CHUNK_SENT =
+    "audio.chunk.sent",
+}
+
+const appEventValues =
+  new Set<string>(
+    Object.values(
+      AppEvent
+    )
+  );
+
+/**
+ * Runtime validation for values arriving from
+ * JavaScript, external adapters or unsafe casts.
+ */
+export function isAppEvent(
+  value: unknown
+): value is AppEvent {
+  return (
+    typeof value === "string" &&
+    appEventValues.has(value)
+  );
 }

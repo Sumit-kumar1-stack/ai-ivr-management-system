@@ -1,0 +1,2168 @@
+===== prisma\schema.prisma =====
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ======================================================
+// USER
+// ======================================================
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  AGENT
+}
+
+model User {
+  id        String    @id @default(cuid())
+  fullName  String
+  email     String    @unique
+  password  String
+  role      UserRole  @default(ADMIN)
+  phone     String?
+  avatar    String?
+  isActive  Boolean   @default(true)
+  lastLogin DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ======================================================
+// CONTACT
+// ======================================================
+
+enum ContactStatus {
+  PENDING
+  CALLED
+  ANSWERED
+  FAILED
+  BLOCKED
+}
+
+model Contact {
+  id       String        @id @default(cuid())
+  fullName String
+  phone    String        @unique
+  email    String?
+  company  String?
+  language String        @default("English")
+  status   ContactStatus @default(PENDING)
+  notes    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaigns CampaignContact[]
+  calls     Call[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ======================================================
+// CAMPAIGN
+// ======================================================
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  QUEUED
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum CampaignRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum OutboundCampaignPurpose {
+  GENERAL
+  REMINDER
+  CALLBACK
+  FOLLOW_UP
+}
+
+model Campaign {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+
+  systemKey String? @unique
+
+  language String  @default("English")
+  voice    String  @default("Female")
+  prompt   String?
+
+  purpose OutboundCampaignPurpose @default(GENERAL)
+
+  status CampaignStatus @default(DRAFT)
+
+  scheduledAt DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  contacts CampaignContact[]
+  calls    Call[]
+  runs     CampaignRun[]
+
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([createdAt])
+}
+
+model CampaignContact {
+  id String @id @default(cuid())
+
+  campaignId String
+  contactId  String
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([campaignId, contactId])
+  @@index([campaignId])
+  @@index([contactId])
+}
+
+model CampaignRun {
+  id         String            @id @default(cuid())
+  campaignId String
+  status     CampaignRunStatus @default(QUEUED)
+
+  total      Int @default(0)
+  processed  Int @default(0)
+  successful Int @default(0)
+  failed     Int @default(0)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  calls Call[]
+
+  @@index([campaignId])
+  @@index([campaignId, status])
+  @@index([status])
+}
+
+// ======================================================
+// IVR FLOW
+// ======================================================
+
+model IVRFlow {
+  id String @id @default(cuid())
+
+  name        String
+  description String?
+  campaignId  String?
+
+  nodes Json
+  edges Json
+
+  isPublished Boolean @default(false)
+  version     Int     @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([campaignId])
+  @@index([isPublished])
+}
+
+// ======================================================
+// KNOWLEDGE BASE
+// ======================================================
+
+model KnowledgeDocument {
+  id String @id @default(cuid())
+
+  fileName     String
+  originalName String
+  mimeType     String
+  size         Int
+  path         String
+
+  uploadedAt DateTime @default(now())
+
+  chunks KnowledgeChunk[]
+
+  @@index([uploadedAt])
+}
+
+model KnowledgeChunk {
+  id String @id @default(cuid())
+
+  documentId String
+  document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  chunkIndex Int
+  content    String
+
+  createdAt DateTime @default(now())
+
+  @@unique([documentId, chunkIndex])
+  @@index([documentId])
+}
+
+// ======================================================
+// CALL
+// ======================================================
+
+enum CallDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum CallStatus {
+  QUEUED
+  RINGING
+  ANSWERED
+  COMPLETED
+  FAILED
+  BUSY
+  NO_ANSWER
+  CANCELED
+}
+
+model Call {
+  id             String  @id @default(cuid())
+  providerCallId String? @unique
+
+  direction CallDirection @default(OUTBOUND)
+
+  callerNumber String?
+  calledNumber String?
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  campaignRunId String?
+  campaignRun   CampaignRun? @relation(fields: [campaignRunId], references: [id], onDelete: SetNull)
+
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  // ====================================================
+  // RETRY TRACKING
+  // ====================================================
+
+  retryOfCallId String?
+  retryOfCall   Call?   @relation("CallRetries", fields: [retryOfCallId], references: [id], onDelete: SetNull)
+  retryAttempts Call[]  @relation("CallRetries")
+
+  attemptNumber Int @default(1)
+  maxAttempts   Int @default(3)
+
+  nextRetryAt DateTime?
+  retryReason String?
+
+  // ====================================================
+  // DESTINATION TRACKING
+  // ====================================================
+
+  contactPhoneSnapshot      String?
+  providerDestination       String?
+  usedDevelopmentOverride   Boolean @default(false)
+  destinationOverrideSource String?
+
+  language String
+
+  status CallStatus @default(QUEUED)
+
+  duration     Int?
+  recordingUrl String?
+  transcript   String?
+  summary      String?
+
+  events CallEvent[]
+
+  // ====================================================
+  // CALL LIFECYCLE TIMESTAMPS
+  // ====================================================
+
+  requestedAt DateTime  @default(now())
+  queuedAt    DateTime?
+  ringingAt   DateTime?
+  answeredAt  DateTime?
+  completedAt DateTime?
+  failedAt    DateTime?
+
+  startedAt DateTime?
+  endedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  conversation Conversation?
+
+  @@unique([campaignRunId, contactId, attemptNumber])
+  @@index([campaignId])
+  @@index([campaignRunId])
+  @@index([campaignRunId, contactId])
+  @@index([contactId])
+  @@index([retryOfCallId])
+  @@index([nextRetryAt])
+  @@index([providerDestination])
+  @@index([direction])
+  @@index([callerNumber])
+  @@index([calledNumber])
+  @@index([status])
+  @@index([requestedAt])
+  @@index([answeredAt])
+  @@index([completedAt])
+}
+
+// ======================================================
+// CONVERSATION
+// ======================================================
+
+enum ConversationRole {
+  SYSTEM
+  USER
+  ASSISTANT
+}
+
+model Conversation {
+  id String @id @default(cuid())
+
+  callId String @unique
+  call   Call   @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  summary   String?
+  intent    String?
+  sentiment String?
+  priority  String?
+
+  followUp Boolean @default(false)
+
+  actionItems Json?
+
+  tokenUsage Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages ConversationMessage[]
+
+  @@index([createdAt])
+}
+
+model ConversationMessage {
+  id String @id @default(cuid())
+
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  role    ConversationRole
+  content String
+
+  createdAt DateTime @default(now())
+
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
+  @@index([role])
+}
+
+// ======================================================
+// CALL EVENTS
+// ======================================================
+
+enum CallEventType {
+  STARTED
+  RINGING
+  ANSWERED
+  THINKING
+  SPEAKING
+  LISTENING
+  INTERRUPTED
+  COMPLETED
+  FAILED
+}
+
+model CallEvent {
+  id String @id @default(cuid())
+
+  callId String
+  type   CallEventType
+
+  message  String?
+  payload  Json?
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId])
+  @@index([type])
+  @@index([createdAt])
+  @@index([callId, createdAt])
+}
+
+// ======================================================
+// CALLBACK REQUEST
+// ======================================================
+
+enum CallbackRequestStatus {
+  REQUESTED
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+model CallbackRequest {
+  id String @id @default(cuid())
+
+  callId String
+
+  phone String
+
+  requestedAt DateTime @default(now())
+
+  scheduledFor DateTime
+
+  timezone String
+
+  reason String?
+
+  status CallbackRequestStatus @default(REQUESTED)
+
+  idempotencyKey String @unique
+
+  requestedBy String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([callId])
+  @@index([phone])
+  @@index([scheduledFor])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ======================================================
+// BUSINESS TOOL EXECUTION
+// ======================================================
+
+enum ToolExecutionStatus {
+  STARTED
+  SUCCEEDED
+  FAILED
+  ABORTED
+  TIMED_OUT
+}
+
+model ToolExecution {
+  id String @id @default(cuid())
+
+  callId String
+
+  tool String
+
+  requestedBy String
+
+  tenantId String?
+
+  idempotencyKey String?
+
+  status ToolExecutionStatus @default(STARTED)
+
+  requiresConfirmation Boolean @default(false)
+  confirmed            Boolean @default(false)
+
+  mutating Boolean @default(false)
+
+  durationMs Int?
+
+  errorCode    String?
+  errorMessage String?
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tool, idempotencyKey])
+  @@index([callId])
+  @@index([tool])
+  @@index([status])
+  @@index([createdAt])
+  @@index([callId, createdAt])
+}
+
+// ======================================================
+// LEAD
+// ======================================================
+
+enum LeadStatus {
+  NEW
+  QUALIFIED
+  CONTACTED
+  CONVERTED
+  CLOSED
+}
+
+model Lead {
+  id String @id @default(cuid())
+
+  callId String
+
+  fullName String?
+
+  phone String?
+
+  email String?
+
+  interest String
+
+  notes String?
+
+  status LeadStatus @default(NEW)
+
+  source String @default("AI_IVR")
+
+  idempotencyKey String @unique
+
+  createdBy String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([callId])
+  @@index([status])
+  @@index([phone])
+  @@index([email])
+  @@index([createdAt])
+}
+
+// ======================================================
+// MESSAGING
+// ======================================================
+
+enum MessagingChannel {
+  SMS
+  WHATSAPP
+}
+
+enum MessageConsentStatus {
+  OPTED_IN
+  OPTED_OUT
+  UNKNOWN
+}
+
+enum OutboundMessageStatus {
+  PROCESSING
+  ACCEPTED
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  UNDELIVERED
+}
+
+model MessageConsent {
+  id String @id @default(cuid())
+
+  phone String
+
+  channel MessagingChannel
+
+  status MessageConsentStatus @default(UNKNOWN)
+
+  source String?
+
+  consentedAt DateTime?
+  revokedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([phone, channel])
+  @@index([phone])
+  @@index([channel])
+  @@index([status])
+}
+
+model OutboundMessage {
+  id String @id @default(cuid())
+
+  callId String?
+
+  channel MessagingChannel
+
+  provider String
+
+  recipient String
+
+  templateKey String
+
+  idempotencyKey String @unique
+
+  providerMessageId String? @unique
+
+  status OutboundMessageStatus @default(PROCESSING)
+
+  errorCode    String?
+  errorMessage String?
+
+  acceptedAt  DateTime?
+  sentAt      DateTime?
+  deliveredAt DateTime?
+  readAt      DateTime?
+  failedAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([callId])
+  @@index([channel])
+  @@index([recipient])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ======================================================
+// CONSENT EVIDENCE / HISTORY
+// ======================================================
+
+enum ConsentEvidenceAction {
+  OPT_IN
+  OPT_OUT
+}
+
+model ConsentEvidence {
+  id String @id @default(cuid())
+
+  phone   String
+  channel MessagingChannel
+
+  action ConsentEvidenceAction
+
+  source String
+
+  callId String?
+
+  requestedBy String?
+
+  evidenceText String?
+
+  previousStatus  MessageConsentStatus?
+  resultingStatus MessageConsentStatus
+
+  idempotencyKey String? @unique
+
+  occurredAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([phone])
+  @@index([channel])
+  @@index([action])
+  @@index([callId])
+  @@index([occurredAt])
+  @@index([phone, channel, occurredAt])
+}
+===== src\services\tools\tool-execution-audit.service.ts =====
+import {
+  Prisma,
+  ToolExecutionStatus,
+} from "@prisma/client";
+
+import {
+  prisma,
+} from "@/lib/prisma";
+
+import {
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import type {
+  BusinessToolDefinition,
+  ExecuteBusinessToolRequest,
+} from "./tool-gateway.types";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "tool-execution-audit"
+  );
+
+//--------------------------------------------------
+// Start Audit Input
+//--------------------------------------------------
+
+export interface StartToolExecutionAuditInput {
+  request:
+    ExecuteBusinessToolRequest;
+
+  definition:
+    BusinessToolDefinition;
+}
+
+//--------------------------------------------------
+// Start Audit Result
+//--------------------------------------------------
+
+export interface StartToolExecutionAuditResult {
+  executionId:
+    string;
+
+  created:
+    boolean;
+
+  status:
+    ToolExecutionStatus;
+}
+
+//--------------------------------------------------
+// Completion Input
+//--------------------------------------------------
+
+export interface CompleteToolExecutionAuditInput {
+  executionId:
+    string;
+
+  durationMs:
+    number;
+
+  status:
+    ToolExecutionStatus;
+
+  errorCode?:
+    string;
+
+  errorMessage?:
+    string;
+}
+
+//--------------------------------------------------
+// Existing Execution
+//--------------------------------------------------
+
+async function findExistingExecution(
+  tool:
+    string,
+
+  idempotencyKey:
+    string
+): Promise<{
+  id:
+    string;
+
+  callId:
+    string;
+
+  status:
+    ToolExecutionStatus;
+} | null> {
+  return prisma.toolExecution
+    .findUnique({
+      where: {
+        tool_idempotencyKey: {
+          tool,
+
+          idempotencyKey,
+        },
+      },
+
+      select: {
+        id:
+          true,
+
+        callId:
+          true,
+
+        status:
+          true,
+      },
+    });
+}
+
+//--------------------------------------------------
+// Validate Existing Ownership
+//--------------------------------------------------
+
+function assertExecutionOwnership(
+  existing: {
+    callId:
+      string;
+  },
+
+  request:
+    ExecuteBusinessToolRequest
+): void {
+  if (
+    existing.callId !==
+    request.callId
+  ) {
+    throw new Error(
+      "Tool idempotency key belongs to another call"
+    );
+  }
+}
+
+//--------------------------------------------------
+// Existing Result
+//--------------------------------------------------
+
+function existingResult(
+  existing: {
+    id:
+      string;
+
+    status:
+      ToolExecutionStatus;
+  }
+): StartToolExecutionAuditResult {
+  return {
+    executionId:
+      existing.id,
+
+    created:
+      false,
+
+    status:
+      existing.status,
+  };
+}
+
+//--------------------------------------------------
+// Start Execution Audit
+//--------------------------------------------------
+
+export async function startToolExecutionAudit(
+  input:
+    StartToolExecutionAuditInput
+): Promise<StartToolExecutionAuditResult> {
+  try {
+    const idempotencyKey =
+      input.request
+        .idempotencyKey
+        ?.trim() ||
+      null;
+
+    //------------------------------------------------
+    // Existing Idempotency Record
+    //------------------------------------------------
+
+    if (
+      idempotencyKey
+    ) {
+      const existing =
+        await findExistingExecution(
+          input.definition.name,
+          idempotencyKey
+        );
+
+      if (
+        existing
+      ) {
+        assertExecutionOwnership(
+          existing,
+          input.request
+        );
+
+        log.warn(
+          {
+            event:
+              "tool.audit.idempotency_existing",
+
+            executionId:
+              existing.id,
+
+            callId:
+              input.request.callId,
+
+            tool:
+              input.definition.name,
+
+            status:
+              existing.status,
+          },
+          "Existing tool execution audit record found"
+        );
+
+        return existingResult(
+          existing
+        );
+      }
+    }
+
+    //------------------------------------------------
+    // Create Execution Record
+    //------------------------------------------------
+
+    try {
+      const execution =
+        await prisma.toolExecution
+          .create({
+            data: {
+              callId:
+                input.request.callId,
+
+              tool:
+                input.definition.name,
+
+              requestedBy:
+                input.request.requestedBy,
+
+              tenantId:
+                input.request
+                  .tenantId
+                  ?.trim() ||
+                null,
+
+              idempotencyKey,
+
+              status:
+                ToolExecutionStatus.STARTED,
+
+              requiresConfirmation:
+                input.definition
+                  .requiresConfirmation,
+
+              confirmed:
+                input.request
+                  .confirmed ===
+                true,
+
+              mutating:
+                input.definition.mutating,
+            },
+
+            select: {
+              id:
+                true,
+
+              status:
+                true,
+            },
+          });
+
+      log.info(
+        {
+          event:
+            "tool.audit.started",
+
+          executionId:
+            execution.id,
+
+          callId:
+            input.request.callId,
+
+          tool:
+            input.definition.name,
+
+          requestedBy:
+            input.request.requestedBy,
+        },
+        "Business tool execution audit started"
+      );
+
+      return {
+        executionId:
+          execution.id,
+
+        created:
+          true,
+
+        status:
+          execution.status,
+      };
+    } catch (
+      error
+    ) {
+      //------------------------------------------------
+      // Concurrent Idempotency Creation
+      //------------------------------------------------
+
+      if (
+        error instanceof
+          Prisma.PrismaClientKnownRequestError &&
+        error.code ===
+          "P2002" &&
+        idempotencyKey
+      ) {
+        const existing =
+          await findExistingExecution(
+            input.definition.name,
+            idempotencyKey
+          );
+
+        if (
+          existing
+        ) {
+          assertExecutionOwnership(
+            existing,
+            input.request
+          );
+
+          log.warn(
+            {
+              event:
+                "tool.audit.idempotency_race_resolved",
+
+              executionId:
+                existing.id,
+
+              callId:
+                input.request.callId,
+
+              tool:
+                input.definition.name,
+
+              status:
+                existing.status,
+            },
+            "Concurrent duplicate tool execution audit resolved"
+          );
+
+          return existingResult(
+            existing
+          );
+        }
+      }
+
+      throw error;
+    }
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "tool.audit.start_failed",
+
+        callId:
+          input.request.callId,
+
+        tool:
+          input.definition.name,
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Business tool execution audit could not be started"
+    );
+
+    throw error;
+  }
+}
+
+//--------------------------------------------------
+// Complete Execution Audit
+//--------------------------------------------------
+
+export async function completeToolExecutionAudit(
+  input:
+    CompleteToolExecutionAuditInput
+): Promise<void> {
+  try {
+    /*
+     * Compare-and-set:
+     *
+     * only a STARTED execution can become terminal.
+     *
+     * This prevents late completion writes from
+     * overwriting SUCCEEDED / FAILED / ABORTED /
+     * TIMED_OUT.
+     */
+
+    const updated =
+      await prisma.toolExecution
+        .updateMany({
+          where: {
+            id:
+              input.executionId,
+
+            status:
+              ToolExecutionStatus.STARTED,
+          },
+
+          data: {
+            status:
+              input.status,
+
+            durationMs:
+              Math.max(
+                0,
+                Math.round(
+                  input.durationMs
+                )
+              ),
+
+            errorCode:
+              input.errorCode ??
+              null,
+
+            errorMessage:
+              sanitizeErrorMessage(
+                input.errorMessage
+              ),
+
+            completedAt:
+              new Date(),
+          },
+        });
+
+    //------------------------------------------------
+    // Already Terminal
+    //------------------------------------------------
+
+    if (
+      updated.count ===
+      0
+    ) {
+      const existing =
+        await prisma.toolExecution
+          .findUnique({
+            where: {
+              id:
+                input.executionId,
+            },
+
+            select: {
+              status:
+                true,
+            },
+          });
+
+      log.warn(
+        {
+          event:
+            "tool.audit.completion_skipped",
+
+          executionId:
+            input.executionId,
+
+          requestedStatus:
+            input.status,
+
+          existingStatus:
+            existing?.status,
+        },
+        "Tool execution audit was already terminal"
+      );
+
+      return;
+    }
+
+    //------------------------------------------------
+    // Completed
+    //------------------------------------------------
+
+    log.info(
+      {
+        event:
+          "tool.audit.completed",
+
+        executionId:
+          input.executionId,
+
+        status:
+          input.status,
+
+        durationMs:
+          input.durationMs,
+
+        errorCode:
+          input.errorCode,
+      },
+      "Business tool execution audit completed"
+    );
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "tool.audit.complete_failed",
+
+        executionId:
+          input.executionId,
+
+        status:
+          input.status,
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Business tool execution audit completion failed"
+    );
+
+    throw error;
+  }
+}
+
+//--------------------------------------------------
+// Error Message Sanitization
+//--------------------------------------------------
+
+function sanitizeErrorMessage(
+  value:
+    string |
+    undefined
+): string | null {
+  if (
+    !value
+  ) {
+    return null;
+  }
+
+  /*
+   * Do not persist provider payloads, stack traces,
+   * credentials or large sensitive error data.
+   */
+
+  return value
+    .trim()
+    .slice(
+      0,
+      500
+    );
+}
+===== src\services\tools\tool-gateway.service.ts =====
+import {
+  ToolExecutionStatus,
+} from "@prisma/client";
+
+import {
+  createServerLogger,
+  getDurationMs,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  getBusinessTool,
+} from "./tool-registry.service";
+
+import {
+  registerDefaultBusinessTools,
+} from "./register-default-tools.service";
+
+import {
+  completeToolExecutionAudit,
+  startToolExecutionAudit,
+} from "./tool-execution-audit.service";
+
+import type {
+  StartToolExecutionAuditResult,
+} from "./tool-execution-audit.service";
+
+import type {
+  ExecuteBusinessToolRequest,
+  ToolExecutionFailure,
+  ToolExecutionResult,
+} from "./tool-gateway.types";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "business-tool-gateway"
+  );
+
+//--------------------------------------------------
+// Execute Tool
+//--------------------------------------------------
+
+export async function executeBusinessTool(
+  request:
+    ExecuteBusinessToolRequest
+): Promise<ToolExecutionResult> {
+  const startedAt =
+    process.hrtime.bigint();
+
+  //--------------------------------------------------
+  // Ensure Default Tools Are Registered
+  //--------------------------------------------------
+
+  registerDefaultBusinessTools();
+
+  //--------------------------------------------------
+  // Resolve Tool
+  //--------------------------------------------------
+
+  const definition =
+    getBusinessTool(
+      request.tool
+    );
+
+  if (
+    !definition
+  ) {
+    return failure(
+      request,
+      startedAt,
+      "TOOL_NOT_REGISTERED",
+      `Business tool is not registered: ${request.tool}`
+    );
+  }
+
+  //--------------------------------------------------
+  // Validate Call ID
+  //--------------------------------------------------
+
+  const callId =
+    request.callId
+      .trim();
+
+  if (
+    !callId
+  ) {
+    return failure(
+      request,
+      startedAt,
+      "INVALID_CALL_ID",
+      "Call ID is required"
+    );
+  }
+
+  //--------------------------------------------------
+  // Confirmation Guard
+  //--------------------------------------------------
+
+  if (
+    definition
+      .requiresConfirmation &&
+    request.confirmed !==
+      true
+  ) {
+    return failure(
+      request,
+      startedAt,
+      "CONFIRMATION_REQUIRED",
+      `Confirmation is required before executing ${definition.name}`
+    );
+  }
+
+  //--------------------------------------------------
+  // Idempotency Guard
+  //--------------------------------------------------
+
+  const idempotencyKey =
+    request
+      .idempotencyKey
+      ?.trim();
+
+  if (
+    definition.mutating &&
+    !idempotencyKey
+  ) {
+    return failure(
+      request,
+      startedAt,
+      "IDEMPOTENCY_KEY_REQUIRED",
+      `Idempotency key is required for mutating tool ${definition.name}`
+    );
+  }
+
+  //--------------------------------------------------
+  // Validate Input
+  //--------------------------------------------------
+
+  const parsed =
+    definition
+      .inputSchema
+      .safeParse(
+        request.input
+      );
+
+  if (
+    !parsed.success
+  ) {
+    log.warn(
+      {
+        event:
+          "business_tool.validation_failed",
+
+        callId,
+
+        tool:
+          definition.name,
+
+        requestedBy:
+          request.requestedBy,
+
+        issues:
+          parsed.error.issues.map(
+            issue => ({
+              path:
+                issue.path.join(
+                  "."
+                ),
+
+              message:
+                issue.message,
+            })
+          ),
+      },
+      "Business tool input validation failed"
+    );
+
+    return failure(
+      request,
+      startedAt,
+      "VALIDATION_FAILED",
+      "Business tool input is invalid"
+    );
+  }
+
+  //--------------------------------------------------
+  // Start Durable Audit
+  //--------------------------------------------------
+
+  let audit:
+    StartToolExecutionAuditResult;
+
+  try {
+    audit =
+      await startToolExecutionAudit({
+        request: {
+          ...request,
+
+          callId,
+
+          idempotencyKey,
+        },
+
+        definition,
+      });
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "business_tool.audit_required_failed",
+
+        callId,
+
+        tool:
+          definition.name,
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Business tool blocked because durable audit could not start"
+    );
+
+    return failure(
+      request,
+      startedAt,
+      "AUDIT_PERSISTENCE_FAILED",
+      "Business action could not be safely audited"
+    );
+  }
+
+  //--------------------------------------------------
+  // Idempotent Existing Execution
+  //--------------------------------------------------
+
+  if (
+    !audit.created
+  ) {
+    return resolveExistingExecution({
+      request,
+
+      startedAt,
+
+      callId,
+
+      tool:
+        definition.name,
+
+      audit,
+    });
+  }
+
+  const executionId =
+    audit.executionId;
+
+  //--------------------------------------------------
+  // Abort Controller
+  //--------------------------------------------------
+
+  const controller =
+    new AbortController();
+
+  let timeoutTriggered =
+    false;
+
+  const timeout =
+    setTimeout(
+      () => {
+        timeoutTriggered =
+          true;
+
+        controller.abort(
+          new Error(
+            `Business tool timed out after ${definition.timeoutMs}ms`
+          )
+        );
+      },
+      definition.timeoutMs
+    );
+
+  //--------------------------------------------------
+  // Forward Parent Cancellation
+  //--------------------------------------------------
+
+  const parentSignal =
+    request.signal;
+
+  const onParentAbort =
+    () => {
+      controller.abort(
+        parentSignal
+          ?.reason
+      );
+    };
+
+  if (
+    parentSignal
+  ) {
+    if (
+      parentSignal.aborted
+    ) {
+      onParentAbort();
+    } else {
+      parentSignal.addEventListener(
+        "abort",
+        onParentAbort,
+        {
+          once:
+            true,
+        }
+      );
+    }
+  }
+
+  //--------------------------------------------------
+  // Parent Was Already Cancelled
+  //--------------------------------------------------
+
+  if (
+    controller.signal.aborted
+  ) {
+    const durationMs =
+      getDurationMs(
+        startedAt
+      );
+
+    await completeAuditBestEffort({
+      executionId,
+
+      durationMs,
+
+      status:
+        ToolExecutionStatus.ABORTED,
+
+      errorCode:
+        "TOOL_ABORTED",
+
+      errorMessage:
+        "Business tool execution was cancelled before execution.",
+
+      callId,
+
+      tool:
+        definition.name,
+    });
+
+    clearTimeout(
+      timeout
+    );
+
+    if (
+      parentSignal
+    ) {
+      parentSignal.removeEventListener(
+        "abort",
+        onParentAbort
+      );
+    }
+
+    return failure(
+      request,
+      startedAt,
+      "TOOL_ABORTED",
+      "Business tool execution was cancelled"
+    );
+  }
+
+  //--------------------------------------------------
+  // Execute
+  //--------------------------------------------------
+
+  try {
+    log.info(
+      {
+        event:
+          "business_tool.execution.started",
+
+        executionId,
+
+        callId,
+
+        tool:
+          definition.name,
+
+        risk:
+          definition.risk,
+
+        mutating:
+          definition.mutating,
+
+        requestedBy:
+          request.requestedBy,
+
+        hasTenantId:
+          Boolean(
+            request.tenantId
+          ),
+
+        hasIdempotencyKey:
+          Boolean(
+            idempotencyKey
+          ),
+
+        timeoutMs:
+          definition.timeoutMs,
+      },
+      "Business tool execution started"
+    );
+
+    //------------------------------------------------
+    // Handler
+    //------------------------------------------------
+
+    const result =
+      await definition.handler(
+        parsed.data,
+        {
+          callId,
+
+          tenantId:
+            request.tenantId
+              ?.trim() ||
+            undefined,
+
+          idempotencyKey,
+
+          requestedBy:
+            request.requestedBy,
+
+          signal:
+            controller.signal,
+        }
+      );
+
+    const durationMs =
+      getDurationMs(
+        startedAt
+      );
+
+    //------------------------------------------------
+    // Handler Finished After Cancellation
+    //------------------------------------------------
+
+    if (
+      controller.signal.aborted
+    ) {
+      const parentAborted =
+        Boolean(
+          parentSignal
+            ?.aborted
+        );
+
+      const code =
+        timeoutTriggered &&
+        !parentAborted
+          ? "TOOL_TIMEOUT"
+          : "TOOL_ABORTED";
+
+      const status =
+        code ===
+        "TOOL_TIMEOUT"
+          ? ToolExecutionStatus.TIMED_OUT
+          : ToolExecutionStatus.ABORTED;
+
+      await completeAuditBestEffort({
+        executionId,
+
+        durationMs,
+
+        status,
+
+        errorCode:
+          code,
+
+        errorMessage:
+          code ===
+          "TOOL_TIMEOUT"
+            ? "Business tool execution timed out."
+            : "Business tool execution was cancelled.",
+
+        callId,
+
+        tool:
+          definition.name,
+      });
+
+      return failure(
+        request,
+        startedAt,
+        code,
+        code ===
+          "TOOL_TIMEOUT"
+          ? "Business tool execution timed out"
+          : "Business tool execution was cancelled"
+      );
+    }
+
+    //------------------------------------------------
+    // Persist Success Audit
+    //------------------------------------------------
+
+    await completeAuditBestEffort({
+      executionId,
+
+      durationMs,
+
+      status:
+        ToolExecutionStatus.SUCCEEDED,
+
+      callId,
+
+      tool:
+        definition.name,
+    });
+
+    //------------------------------------------------
+    // Success
+    //------------------------------------------------
+
+    log.info(
+      {
+        event:
+          "business_tool.execution.completed",
+
+        executionId,
+
+        callId,
+
+        tool:
+          definition.name,
+
+        requestedBy:
+          request.requestedBy,
+
+        durationMs,
+      },
+      "Business tool execution completed"
+    );
+
+    return {
+      success:
+        true,
+
+      tool:
+        definition.name,
+
+      callId,
+
+      durationMs,
+
+      result,
+    };
+  } catch (
+    error
+  ) {
+    const normalized =
+      normalizeError(
+        error
+      );
+
+    const parentAborted =
+      Boolean(
+        parentSignal
+          ?.aborted
+      );
+
+    const gatewayAborted =
+      controller.signal
+        .aborted;
+
+    const timedOut =
+      timeoutTriggered &&
+      gatewayAborted &&
+      !parentAborted;
+
+    const code =
+      timedOut
+        ? "TOOL_TIMEOUT"
+        : gatewayAborted
+          ? "TOOL_ABORTED"
+          : "TOOL_EXECUTION_FAILED";
+
+    const auditStatus =
+      timedOut
+        ? ToolExecutionStatus.TIMED_OUT
+        : gatewayAborted
+          ? ToolExecutionStatus.ABORTED
+          : ToolExecutionStatus.FAILED;
+
+    const durationMs =
+      getDurationMs(
+        startedAt
+      );
+
+    //------------------------------------------------
+    // Persist Failure Audit
+    //------------------------------------------------
+
+    await completeAuditBestEffort({
+      executionId,
+
+      durationMs,
+
+      status:
+        auditStatus,
+
+      errorCode:
+        code,
+
+      errorMessage:
+        normalized.message,
+
+      callId,
+
+      tool:
+        definition.name,
+    });
+
+    //------------------------------------------------
+    // Failure Log
+    //------------------------------------------------
+
+    log.error(
+      {
+        event:
+          "business_tool.execution.failed",
+
+        executionId,
+
+        callId,
+
+        tool:
+          definition.name,
+
+        requestedBy:
+          request.requestedBy,
+
+        code,
+
+        durationMs,
+
+        error:
+          normalized,
+      },
+      "Business tool execution failed"
+    );
+
+    return failure(
+      request,
+      startedAt,
+      code,
+      timedOut
+        ? "Business tool execution timed out"
+        : gatewayAborted
+          ? "Business tool execution was cancelled"
+          : normalized.message
+    );
+  } finally {
+    clearTimeout(
+      timeout
+    );
+
+    if (
+      parentSignal
+    ) {
+      parentSignal.removeEventListener(
+        "abort",
+        onParentAbort
+      );
+    }
+  }
+}
+
+//--------------------------------------------------
+// Resolve Existing Idempotent Execution
+//--------------------------------------------------
+
+function resolveExistingExecution(
+  input: {
+    request:
+      ExecuteBusinessToolRequest;
+
+    startedAt:
+      bigint;
+
+    callId:
+      string;
+
+    tool:
+      ExecuteBusinessToolRequest["tool"];
+
+    audit:
+      StartToolExecutionAuditResult;
+  }
+): ToolExecutionResult {
+  //------------------------------------------------
+  // Previous Execution Succeeded
+  //------------------------------------------------
+
+  if (
+    input.audit.status ===
+    ToolExecutionStatus.SUCCEEDED
+  ) {
+    log.info(
+      {
+        event:
+          "business_tool.idempotent_replay",
+
+        executionId:
+          input.audit.executionId,
+
+        callId:
+          input.callId,
+
+        tool:
+          input.tool,
+
+        previousStatus:
+          input.audit.status,
+      },
+      "Duplicate business tool execution suppressed"
+    );
+
+    return {
+      success:
+        true,
+
+      tool:
+        input.tool,
+
+      callId:
+        input.callId,
+
+      durationMs:
+        getDurationMs(
+          input.startedAt
+        ),
+
+      result: {
+        duplicate:
+          true,
+
+        idempotentReplay:
+          true,
+
+        executionId:
+          input.audit.executionId,
+
+        previousStatus:
+          input.audit.status,
+      },
+    };
+  }
+
+  //------------------------------------------------
+  // Existing Execution Still Running
+  //------------------------------------------------
+
+  if (
+    input.audit.status ===
+    ToolExecutionStatus.STARTED
+  ) {
+    return failure(
+      input.request,
+      input.startedAt,
+      "TOOL_EXECUTION_IN_PROGRESS",
+      "An execution with this idempotency key is already in progress"
+    );
+  }
+
+  //------------------------------------------------
+  // Existing Failed / Timed Out / Aborted
+  //------------------------------------------------
+
+  return failure(
+    input.request,
+    input.startedAt,
+    "IDEMPOTENT_EXECUTION_ALREADY_FINALIZED",
+    `This idempotency key already finished with status ${input.audit.status}`
+  );
+}
+
+//--------------------------------------------------
+// Complete Audit Best Effort
+//--------------------------------------------------
+
+async function completeAuditBestEffort(
+  input: {
+    executionId:
+      string;
+
+    durationMs:
+      number;
+
+    status:
+      ToolExecutionStatus;
+
+    errorCode?:
+      string;
+
+    errorMessage?:
+      string;
+
+    callId:
+      string;
+
+    tool:
+      string;
+  }
+): Promise<void> {
+  /*
+   * The external action may already have happened.
+   *
+   * Therefore an audit completion failure must not
+   * cause the gateway to execute the mutating action
+   * again under the same request.
+   */
+
+  try {
+    await completeToolExecutionAudit({
+      executionId:
+        input.executionId,
+
+      durationMs:
+        input.durationMs,
+
+      status:
+        input.status,
+
+      errorCode:
+        input.errorCode,
+
+      errorMessage:
+        input.errorMessage,
+    });
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "business_tool.audit_completion_failed",
+
+        executionId:
+          input.executionId,
+
+        callId:
+          input.callId,
+
+        tool:
+          input.tool,
+
+        requestedStatus:
+          input.status,
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Business tool completed but audit terminal-state persistence failed"
+    );
+  }
+}
+
+//--------------------------------------------------
+// Failure Result
+//--------------------------------------------------
+
+function failure(
+  request:
+    ExecuteBusinessToolRequest,
+
+  startedAt:
+    bigint,
+
+  code:
+    string,
+
+  message:
+    string
+): ToolExecutionFailure {
+  return {
+    success:
+      false,
+
+    tool:
+      request.tool,
+
+    callId:
+      request.callId
+        .trim(),
+
+    durationMs:
+      getDurationMs(
+        startedAt
+      ),
+
+    error: {
+      code,
+
+      message,
+    },
+  };
+}

@@ -1,3 +1,11 @@
+import {
+  createCallLogger,
+} from "@/lib/logger";
+
+//--------------------------------------------------
+// Types
+//--------------------------------------------------
+
 export type ConversationState =
   | "IDLE"
   | "LISTENING"
@@ -7,35 +15,93 @@ export type ConversationState =
   | "INTERRUPTED"
   | "ENDED";
 
-const stateMap = new Map<
-  string,
-  ConversationState
->();
+//--------------------------------------------------
+// State Storage
+//--------------------------------------------------
 
-export const ConversationStateService = {
-  setState(
-    callId: string,
-    state: ConversationState
-  ) {
-    stateMap.set(callId, state);
+const stateMap =
+  new Map<
+    string,
+    ConversationState
+  >();
 
-    console.log(
-      `📍 ${callId} -> ${state}`
-    );
-  },
+//--------------------------------------------------
+// Conversation State Service
+//--------------------------------------------------
 
-  getState(
-    callId: string
-  ): ConversationState {
-    return (
-      stateMap.get(callId) ??
-      "IDLE"
-    );
-  },
+export const ConversationStateService =
+  {
+    setState(
+      callId: string,
+      state: ConversationState
+    ): void {
+      const previousState =
+        stateMap.get(
+          callId
+        ) ??
+        "IDLE";
 
-  clearState(
-    callId: string
-  ) {
-    stateMap.delete(callId);
-  },
-};
+      stateMap.set(
+        callId,
+        state
+      );
+
+      const log =
+        createCallLogger(
+          callId
+        );
+
+      log.debug(
+        {
+          event:
+            "conversation.state.changed",
+
+          previousState,
+
+          currentState:
+            state,
+        },
+        "Conversation state changed"
+      );
+    },
+
+    getState(
+      callId: string
+    ): ConversationState {
+      return (
+        stateMap.get(
+          callId
+        ) ??
+        "IDLE"
+      );
+    },
+
+    clearState(
+      callId: string
+    ): void {
+      const previousState =
+        stateMap.get(
+          callId
+        ) ??
+        "IDLE";
+
+      stateMap.delete(
+        callId
+      );
+
+      const log =
+        createCallLogger(
+          callId
+        );
+
+      log.debug(
+        {
+          event:
+            "conversation.state.cleared",
+
+          previousState,
+        },
+        "Conversation state cleared"
+      );
+    },
+  };

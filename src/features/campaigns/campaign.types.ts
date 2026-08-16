@@ -1,19 +1,40 @@
-export interface CampaignDTO{
+export type CampaignPurpose =
+  | "GENERAL"
+  | "REMINDER"
+  | "CALLBACK"
+  | "FOLLOW_UP";
 
-id:string;
+export interface CampaignDTO {
+  id:
+    string;
 
-name:string;
+  name:
+    string;
 
-description?:string;
+  description?:
+    string;
 
-language:string;
+  language:
+    string;
 
-voice:string;
+  voice:
+    string;
 
-status:string;
+  prompt?:
+    string;
 
-createdAt:string;
+  purpose:
+    CampaignPurpose;
 
-contactCount:number;
+  status:
+    string;
 
+  scheduledAt?:
+    string;
+
+  createdAt:
+    string;
+
+  contactCount:
+    number;
 }

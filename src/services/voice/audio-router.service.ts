@@ -1,4 +1,8 @@
 import {
+  createCallLogger,
+} from "@/lib/logger";
+
+import {
   AudioChunk,
 } from "./audio-stream.types";
 
@@ -6,9 +10,13 @@ import {
   AudioStreamService,
 } from "./audio-stream.service";
 
+//--------------------------------------------------
+// Audio Router
+//--------------------------------------------------
+
 export class AudioRouter {
   //--------------------------------------------
-  // Caller audio entering the system
+  // Caller Audio Entering The System
   //--------------------------------------------
 
   static async routeIncoming(
@@ -20,16 +28,16 @@ export class AudioRouter {
   }
 
   //--------------------------------------------
-  // Generated audio leaving the system
+  // Generated Audio Leaving The System
   //--------------------------------------------
 
   static async routeOutgoing(
     chunk: AudioChunk
   ): Promise<void> {
     /*
-     * This is currently only an observation hook.
+     * Observation hook only.
      *
-     * Actual Twilio playback is handled by:
+     * Actual Twilio playback:
      *
      * VoiceWorker
      * → streamToCall
@@ -37,16 +45,25 @@ export class AudioRouter {
      * → AudioSessionService
      */
 
-    console.log(
-      `🔀 Outgoing audio routed (${chunk.callId})`
+    const log =
+      createCallLogger(
+        chunk.callId
+      );
+
+    log.debug(
+      {
+        event:
+          "voice.audio.outgoing_routed",
+
+        audioByteCount:
+          chunk.data.length,
+
+        timestampPresent:
+          Number.isFinite(
+            chunk.timestamp
+          ),
+      },
+      "Outgoing audio routed"
     );
-
-    console.log({
-      bytes:
-        chunk.data.length,
-
-      timestamp:
-        chunk.timestamp,
-    });
   }
 }

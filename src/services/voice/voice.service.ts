@@ -11,17 +11,21 @@ import {
 } from "@/config/ai";
 
 import {
-  TTSAudioChunk,
-} from "./types";
-
-import {
   createCallLogger,
+  normalizeError,
 } from "@/lib/logger";
 
 import {
   AudioConverter,
 } from "./audio-converter.service";
 
+import {
+  TTSAudioChunk,
+} from "./types";
+
+//--------------------------------------------------
+// Gemini Client
+//--------------------------------------------------
 
 const ai =
   new GoogleGenAI({
@@ -29,18 +33,66 @@ const ai =
       AI_CONFIG.geminiApiKey,
   });
 
+//--------------------------------------------------
+// Helpers
+//--------------------------------------------------
+
+function delay(
+  milliseconds: number
+): Promise<void> {
+  return new Promise(
+    resolve => {
+      setTimeout(
+        resolve,
+        milliseconds
+      );
+    }
+  );
+}
+
+function getHttpStatus(
+  error: unknown
+): number | undefined {
+  if (
+    !error ||
+    typeof error !==
+      "object"
+  ) {
+    return undefined;
+  }
+
+  const candidate =
+    error as {
+      status?: number;
+
+      statusCode?: number;
+
+      response?: {
+        status?: number;
+      };
+    };
+
+  return (
+    candidate.status ??
+    candidate.statusCode ??
+    candidate.response
+      ?.status
+  );
+}
+
+//--------------------------------------------------
+// Voice Service
+//--------------------------------------------------
 
 export class VoiceService {
-
   //--------------------------------------------------
-  // Gemini text → PCM → Twilio μ-law
+  // Gemini Text → PCM → Twilio μ-law
   //--------------------------------------------------
 
   static async synthesize(
     callId: string,
     text: string
   ): Promise<TTSAudioChunk> {
-
     const log =
       createCallLogger(
         callId
@@ -66,15 +118,21 @@ export class VoiceService {
     }
 
     const model =
-      process.env.GEMINI_TTS_MODEL?.trim() ||
-"gemini-3.1-flash-tts-preview";
+      process.env
+        .GEMINI_TTS_MODEL
+        ?.trim() ||
+      "gemini-3.1-flash-tts-preview";
 
     const voice =
-      process.env.GEMINI_TTS_VOICE ||
+      process.env
+        .GEMINI_TTS_VOICE
+        ?.trim() ||
       "Kore";
 
     const style =
-      process.env.GEMINI_TTS_STYLE ||
+      process.env
+        .GEMINI_TTS_STYLE
+        ?.trim() ||
       (
         "Speak clearly and naturally in a warm, " +
         "professional customer-service tone. " +
@@ -83,114 +141,162 @@ export class VoiceService {
 
     const prompt =
       `${style}\n\n` +
-      `Read the following text exactly:\n` +
+      "Read the following text exactly:\n" +
       normalizedText;
+
+    const startedAt =
+      performance.now();
 
     log.info(
       {
-        textLength:
+        event:
+          "voice.tts.generation_started",
+
+        textCharacterCount:
           normalizedText.length,
+
+        promptCharacterCount:
+          prompt.length,
 
         model,
 
         voice,
       },
-      "Generating Gemini speech"
+      "Gemini speech generation started"
     );
-
-    console.log(
-      "\n========== GEMINI TTS =========="
-    );
-
-    console.log(
-      "Text:"
-    );
-
-    console.log(
-      normalizedText
-    );
-
-    console.log(
-      "Model:",
-      model
-    );
-
-    console.log(
-      "Voice:",
-      voice
-    );
-
-    const started =
-      performance.now();
 
     //----------------------------------------------
-    // Generate raw 24 kHz PCM audio
+    // Generate Raw 24 kHz PCM Audio
     //----------------------------------------------
 
-    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-    let response;
-    let attempt = 0;
-    while (true) {
+    let response:
+      Awaited<
+        ReturnType<
+          typeof ai.models.generateContent
+        >
+      >;
+
+    let attempt =
+      0;
+
+    while (
+      true
+    ) {
       try {
-        attempt++;
+        attempt +=
+          1;
+
         response =
-          await ai.models.generateContent({
-            model,
+          await ai.models
+            .generateContent({
+              model,
 
-            contents: [
-              {
-                role:
-                  "user",
+              contents: [
+                {
+                  role:
+                    "user",
 
-                parts: [
-                  {
-                    text:
-                      prompt,
-                  },
-                ],
-              },
-            ],
-
-            config: {
-              responseModalities: [
-                "AUDIO",
+                  parts: [
+                    {
+                      text:
+                        prompt,
+                    },
+                  ],
+                },
               ],
 
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: {
-                    voiceName:
-                      voice,
+              config: {
+                responseModalities: [
+                  "AUDIO",
+                ],
+
+                speechConfig: {
+                  voiceConfig: {
+                    prebuiltVoiceConfig: {
+                      voiceName:
+                        voice,
+                    },
                   },
                 },
               },
-            },
-          });
-        break;
-      } catch (error) {
-        const err = error as { status?: number; statusCode?: number; response?: { status?: number } };
-        const status = err.status || err.statusCode || err.response?.status;
-        log.error({ error, attempt, status }, `Gemini TTS synthesis attempt ${attempt} failed`);
+            });
 
-        if (status === 429) {
-          log.error("HTTP 429 Rate Limit Exceeded. Disabling retry. Final failure.");
+        break;
+      } catch (
+        error
+      ) {
+        const status =
+          getHttpStatus(
+            error
+          );
+
+        log.error(
+          {
+            event:
+              "voice.tts.generation_attempt_failed",
+
+            attempt,
+
+            status:
+              status ??
+              null,
+
+            error:
+              normalizeError(
+                error
+              ),
+          },
+          "Gemini TTS synthesis attempt failed"
+        );
+
+        if (
+          status ===
+          429
+        ) {
           throw error;
         }
 
-        const is5xx = typeof status === "number" && status >= 500 && status < 600;
-        if (is5xx && attempt === 1) {
-          log.warn(`Transient 5xx error encountered. Retrying in 1000ms...`);
-          await sleep(1000);
+        const retryable =
+          typeof status ===
+            "number" &&
+          status >=
+            500 &&
+          status <
+            600 &&
+          attempt ===
+            1;
+
+        if (
+          retryable
+        ) {
+          log.warn(
+            {
+              event:
+                "voice.tts.retry_scheduled",
+
+              attempt,
+
+              delayMs:
+                1_000,
+
+              status,
+            },
+            "Transient Gemini TTS failure; retry scheduled"
+          );
+
+          await delay(
+            1_000
+          );
+
           continue;
         }
 
-        log.error(`Gemini TTS synthesis failed permanently after attempt ${attempt}`);
         throw error;
       }
     }
 
     //----------------------------------------------
-    // Extract base64 PCM
+    // Extract Base64 PCM
     //----------------------------------------------
 
     const part =
@@ -201,18 +307,29 @@ export class VoiceService {
         ?.[0];
 
     const base64Audio =
-      part?.inlineData?.data;
+      part?.inlineData
+        ?.data;
 
     const mimeType =
-      part?.inlineData?.mimeType;
+      part?.inlineData
+        ?.mimeType;
 
     if (
       !base64Audio
     ) {
       log.error(
         {
-          candidates:
-            response.candidates,
+          event:
+            "voice.tts.audio_missing",
+
+          candidateCount:
+            response.candidates
+              ?.length ??
+            0,
+
+          model,
+
+          voice,
         },
         "Gemini TTS returned no audio"
       );
@@ -229,7 +346,8 @@ export class VoiceService {
       );
 
     if (
-      pcmAudio.length === 0
+      pcmAudio.length ===
+      0
     ) {
       throw new Error(
         "Gemini returned an empty PCM audio buffer"
@@ -237,7 +355,7 @@ export class VoiceService {
     }
 
     //----------------------------------------------
-    // Convert Gemini PCM to Twilio μ-law
+    // Convert PCM To Twilio μ-law
     //----------------------------------------------
 
     const mulawAudio =
@@ -247,63 +365,46 @@ export class VoiceService {
         );
 
     if (
-      mulawAudio.length === 0
+      mulawAudio.length ===
+      0
     ) {
       throw new Error(
         "μ-law conversion returned empty audio"
       );
     }
 
-    const elapsed =
-      (
+    const generationDurationMs =
+      Math.round(
         performance.now() -
-        started
-      ).toFixed(
-        0
+          startedAt
       );
-
-    console.log(
-      "Mime Type:",
-      mimeType ?? "unknown"
-    );
-
-    console.log(
-      "PCM Size:",
-      pcmAudio.length,
-      "bytes"
-    );
-
-    console.log(
-      "μ-law Size:",
-      mulawAudio.length,
-      "bytes"
-    );
-
-    console.log(
-      "Generation:",
-      `${elapsed} ms`
-    );
-
-    console.log(
-      "================================\n"
-    );
 
     log.info(
       {
+        event:
+          "voice.tts.generation_completed",
+
         model,
 
         voice,
 
-        mimeType,
+        mimeType:
+          mimeType ??
+          "unknown",
 
-        pcmBytes:
+        textCharacterCount:
+          normalizedText.length,
+
+        pcmSizeBytes:
           pcmAudio.length,
 
-        mulawBytes:
+        mulawSizeBytes:
           mulawAudio.length,
 
-        generationTime:
-          elapsed,
+        generationDurationMs,
+
+        attempts:
+          attempt,
       },
       "Gemini speech generated"
     );
@@ -325,21 +426,21 @@ export class VoiceService {
     };
   }
 
-
   //--------------------------------------------------
-  // Batch synthesis
+  // Batch Synthesis
   //--------------------------------------------------
 
   static async synthesizeBatch(
     callId: string,
     chunks: string[]
   ): Promise<TTSAudioChunk[]> {
-
     const result:
-      TTSAudioChunk[] = [];
+      TTSAudioChunk[] =
+      [];
 
     for (
-      const chunk of chunks
+      const chunk of
+      chunks
     ) {
       const normalizedChunk =
         chunk.trim();

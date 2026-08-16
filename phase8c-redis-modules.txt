@@ -1,0 +1,1338 @@
+===== Campaign queue =====
+import {
+  Queue,
+} from "bullmq";
+
+import {
+  redisConnection,
+} from "@/lib/redis";
+
+
+//--------------------------------------------------
+// Queue Constants
+//--------------------------------------------------
+
+export const CAMPAIGN_QUEUE_NAME =
+  "campaign-processing";
+
+
+export const CAMPAIGN_JOB_NAME =
+  "run-campaign";
+
+
+//--------------------------------------------------
+// Job Payload
+//--------------------------------------------------
+
+export interface CampaignJobData {
+  campaignId: string;
+
+  campaignRunId: string;
+}
+
+
+//--------------------------------------------------
+// Build Safe BullMQ Job ID
+//--------------------------------------------------
+
+function buildCampaignJobId(
+  campaignRunId: string
+): string {
+
+  return `campaign-run-${campaignRunId}`;
+
+}
+
+
+//--------------------------------------------------
+// BullMQ Queue
+//--------------------------------------------------
+
+export const campaignQueue =
+  new Queue<CampaignJobData>(
+    CAMPAIGN_QUEUE_NAME,
+    {
+      connection:
+        redisConnection,
+
+      defaultJobOptions: {
+        attempts:
+          3,
+
+        backoff: {
+          type:
+            "exponential",
+
+          delay:
+            5_000,
+        },
+
+        removeOnComplete: {
+          age:
+            24 * 60 * 60,
+
+          count:
+            1_000,
+        },
+
+        removeOnFail: {
+          age:
+            7 * 24 * 60 * 60,
+
+          count:
+            5_000,
+        },
+      },
+    }
+  );
+
+
+//--------------------------------------------------
+// Campaign Queue Service
+//--------------------------------------------------
+
+export class CampaignQueueService {
+
+  static async enqueue(
+    data: CampaignJobData
+  ) {
+
+    const jobId =
+      buildCampaignJobId(
+        data.campaignRunId
+      );
+
+
+    console.info(
+      "Adding campaign job",
+      {
+        campaignId:
+          data.campaignId,
+
+        campaignRunId:
+          data.campaignRunId,
+
+        jobId,
+      }
+    );
+
+
+    try {
+
+      const job =
+        await campaignQueue.add(
+          CAMPAIGN_JOB_NAME,
+          data,
+          {
+            /*
+             * Prevent duplicate jobs for the same
+             * campaign run.
+             */
+            jobId,
+          }
+        );
+
+
+      console.info(
+        "Campaign job added",
+        {
+          jobId:
+            job.id,
+
+          campaignId:
+            data.campaignId,
+
+          campaignRunId:
+            data.campaignRunId,
+        }
+      );
+
+
+      return job;
+
+    } catch (error) {
+
+      console.error(
+        "BullMQ campaign enqueue failed",
+        {
+          campaignId:
+            data.campaignId,
+
+          campaignRunId:
+            data.campaignRunId,
+
+          jobId,
+
+          error:
+            error instanceof Error
+              ? {
+                  name:
+                    error.name,
+
+                  message:
+                    error.message,
+
+                  stack:
+                    error.stack,
+                }
+              : error,
+        }
+      );
+
+
+      throw error;
+
+    }
+
+  }
+
+
+  static async getJob(
+    campaignRunId: string
+  ) {
+
+    const jobId =
+      buildCampaignJobId(
+        campaignRunId
+      );
+
+
+    return campaignQueue.getJob(
+      jobId
+    );
+
+  }
+
+
+  static async removeJob(
+    campaignRunId: string
+  ): Promise<boolean> {
+
+    const job =
+      await this.getJob(
+        campaignRunId
+      );
+
+
+    if (!job) {
+
+      return false;
+
+    }
+
+
+    await job.remove();
+
+
+    return true;
+
+  }
+
+
+  static async close():
+    Promise<void> {
+
+    await campaignQueue.close();
+
+  }
+
+}
+===== Voice queue =====
+import {
+  createCallLogger,
+} from "@/lib/logger";
+
+import {
+  TTSAudioChunk,
+} from "./types";
+
+//--------------------------------------------------
+// Voice Queue
+//--------------------------------------------------
+
+class VoiceQueue {
+  private queues =
+    new Map<
+      string,
+      TTSAudioChunk[]
+    >();
+
+  enqueue(
+    callId: string,
+    chunk: TTSAudioChunk
+  ): void {
+    if (
+      !this.queues.has(
+        callId
+      )
+    ) {
+      this.queues.set(
+        callId,
+        []
+      );
+    }
+
+    this.queues
+      .get(
+        callId
+      )!
+      .push(
+        chunk
+      );
+
+    const log =
+      createCallLogger(
+        callId
+      );
+
+    log.debug(
+      {
+        event:
+          "voice.queue.enqueued",
+
+        queueSize:
+          this.size(
+            callId
+          ),
+      },
+      "Voice queue item added"
+    );
+  }
+
+  flush(
+    callId: string
+  ): TTSAudioChunk[] {
+    const queue =
+      this.queues.get(
+        callId
+      );
+
+    if (
+      !queue
+    ) {
+      return [];
+    }
+
+    this.queues.delete(
+      callId
+    );
+
+    const log =
+      createCallLogger(
+        callId
+      );
+
+    log.debug(
+      {
+        event:
+          "voice.queue.flushed",
+
+        flushedItemCount:
+          queue.length,
+      },
+      "Voice queue flushed"
+    );
+
+    return queue;
+  }
+
+  isEmpty(
+    callId: string
+  ): boolean {
+    return (
+      this.size(
+        callId
+      ) ===
+      0
+    );
+  }
+
+  dequeue(
+    callId: string
+  ): TTSAudioChunk |
+    undefined {
+    const queue =
+      this.queues.get(
+        callId
+      );
+
+    if (
+      !queue
+    ) {
+      return undefined;
+    }
+
+    const chunk =
+      queue.shift();
+
+    const log =
+      createCallLogger(
+        callId
+      );
+
+    log.debug(
+      {
+        event:
+          "voice.queue.dequeued",
+
+        queueSize:
+          this.size(
+            callId
+          ),
+
+        itemReturned:
+          Boolean(
+            chunk
+          ),
+      },
+      "Voice queue item removed"
+    );
+
+    return chunk;
+  }
+
+  peek(
+    callId: string
+  ): TTSAudioChunk |
+    undefined {
+    return this
+      .queues
+      .get(
+        callId
+      )?.[0];
+  }
+
+  size(
+    callId: string
+  ): number {
+    return (
+      this.queues
+        .get(
+          callId
+        )
+        ?.length ??
+      0
+    );
+  }
+
+  clear(
+    callId: string
+  ): void {
+    const clearedItemCount =
+      this.size(
+        callId
+      );
+
+    this.queues.delete(
+      callId
+    );
+
+    const log =
+      createCallLogger(
+        callId
+      );
+
+    log.debug(
+      {
+        event:
+          "voice.queue.cleared",
+
+        clearedItemCount,
+      },
+      "Voice queue cleared"
+    );
+  }
+
+  hasItems(
+    callId: string
+  ): boolean {
+    return (
+      this.size(
+        callId
+      ) >
+      0
+    );
+  }
+}
+
+export const voiceQueue =
+  new VoiceQueue();
+===== Worker initialization =====
+import {
+  closeCampaignWorker,
+  initializeCampaignWorker,
+} from "./campaign.worker";
+
+import {
+  closeCallRetryWorker,
+  initializeCallRetryWorker,
+} from "./call-retry.worker";
+
+import {
+  closeStaleCallCleanup,
+  initializeStaleCallCleanup,
+} from "@/services/calls/stale-call-cleanup.service";
+
+import {
+  CallRetryQueueService,
+} from "@/services/calls/call-retry-queue.service";
+
+import {
+  CampaignQueueService,
+} from "@/services/campaigns/campaign-queue.service";
+
+import {
+  createWorkerLogger,
+  getDurationMs,
+  normalizeError,
+} from "@/lib/logger";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createWorkerLogger(
+    "worker-manager"
+  );
+
+//--------------------------------------------------
+// Worker State
+//--------------------------------------------------
+
+let workersInitialized =
+  false;
+
+let workersClosing:
+  Promise<void> |
+  null =
+    null;
+
+//--------------------------------------------------
+// Initialize All Workers
+//--------------------------------------------------
+
+export function initializeWorkers():
+  void {
+  if (
+    workersInitialized
+  ) {
+    log.debug(
+      {
+        event:
+          "workers.initialize.skipped",
+
+        reason:
+          "already_initialized",
+      },
+      "Background workers are already initialized"
+    );
+
+    return;
+  }
+
+  const startedAt =
+    process.hrtime.bigint();
+
+  log.info(
+    {
+      event:
+        "workers.initialize.started",
+    },
+    "Background worker initialization started"
+  );
+
+  try {
+    //----------------------------------------
+    // Campaign Processing Worker
+    //----------------------------------------
+
+    initializeCampaignWorker();
+
+    //----------------------------------------
+    // Delayed Call Retry Worker
+    //----------------------------------------
+
+    initializeCallRetryWorker();
+
+    //----------------------------------------
+    // Stale Call Cleanup Timer
+    //----------------------------------------
+
+    initializeStaleCallCleanup();
+
+    workersInitialized =
+      true;
+
+    log.info(
+      {
+        event:
+          "workers.initialize.completed",
+
+        campaignWorker:
+          true,
+
+        callRetryWorker:
+          true,
+
+        staleCallCleanup:
+          true,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+      },
+      "Background workers initialized"
+    );
+  } catch (
+    error
+  ) {
+    workersInitialized =
+      false;
+
+    log.error(
+      {
+        event:
+          "workers.initialize.failed",
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Background worker initialization failed"
+    );
+
+    throw error;
+  }
+}
+
+//--------------------------------------------------
+// Close All Workers And Queues
+//--------------------------------------------------
+
+export function closeWorkers():
+  Promise<void> {
+  if (
+    workersClosing
+  ) {
+    log.debug(
+      {
+        event:
+          "workers.close.joined",
+      },
+      "Worker shutdown is already in progress"
+    );
+
+    return workersClosing;
+  }
+
+  workersClosing =
+    closeWorkersInternal()
+      .finally(
+        () => {
+          workersClosing =
+            null;
+        }
+      );
+
+  return workersClosing;
+}
+
+//--------------------------------------------------
+// Internal Worker Shutdown
+//--------------------------------------------------
+
+async function closeWorkersInternal():
+  Promise<void> {
+  const startedAt =
+    process.hrtime.bigint();
+
+  log.info(
+    {
+      event:
+        "workers.close.started",
+
+      wereInitialized:
+        workersInitialized,
+    },
+    "Background resource shutdown started"
+  );
+
+  /*
+   * Change the state immediately so the readiness
+   * endpoint no longer reports workers as ready.
+   */
+  workersInitialized =
+    false;
+
+  const errors:
+    Array<{
+      resource: string;
+
+      error: ReturnType<
+        typeof normalizeError
+      >;
+    }> = [];
+
+  //----------------------------------------
+  // Stop Scheduled Cleanup
+  //----------------------------------------
+
+  try {
+    closeStaleCallCleanup();
+
+    log.info(
+      {
+        event:
+          "workers.stale_cleanup.closed",
+      },
+      "Stale call cleanup stopped"
+    );
+  } catch (
+    error
+  ) {
+    errors.push({
+      resource:
+        "stale-call-cleanup",
+
+      error:
+        normalizeError(
+          error
+        ),
+    });
+  }
+
+  //----------------------------------------
+  // Close Campaign Worker
+  //----------------------------------------
+
+  try {
+    await closeCampaignWorker();
+
+    log.info(
+      {
+        event:
+          "workers.campaign_worker.closed",
+      },
+      "Campaign worker closed"
+    );
+  } catch (
+    error
+  ) {
+    errors.push({
+      resource:
+        "campaign-worker",
+
+      error:
+        normalizeError(
+          error
+        ),
+    });
+  }
+
+  //----------------------------------------
+  // Close Retry Worker
+  //----------------------------------------
+
+  try {
+    await closeCallRetryWorker();
+
+    log.info(
+      {
+        event:
+          "workers.call_retry_worker.closed",
+      },
+      "Call retry worker closed"
+    );
+  } catch (
+    error
+  ) {
+    errors.push({
+      resource:
+        "call-retry-worker",
+
+      error:
+        normalizeError(
+          error
+        ),
+    });
+  }
+
+  //----------------------------------------
+  // Close Campaign Queue
+  //----------------------------------------
+
+  try {
+    await CampaignQueueService.close();
+
+    log.info(
+      {
+        event:
+          "workers.campaign_queue.closed",
+      },
+      "Campaign queue closed"
+    );
+  } catch (
+    error
+  ) {
+    errors.push({
+      resource:
+        "campaign-queue",
+
+      error:
+        normalizeError(
+          error
+        ),
+    });
+  }
+
+  //----------------------------------------
+  // Close Retry Queue
+  //----------------------------------------
+
+  try {
+    await CallRetryQueueService.close();
+
+    log.info(
+      {
+        event:
+          "workers.call_retry_queue.closed",
+      },
+      "Call retry queue closed"
+    );
+  } catch (
+    error
+  ) {
+    errors.push({
+      resource:
+        "call-retry-queue",
+
+      error:
+        normalizeError(
+          error
+        ),
+    });
+  }
+
+  //----------------------------------------
+  // Report Shutdown Result
+  //----------------------------------------
+
+  if (
+    errors.length >
+    0
+  ) {
+    log.error(
+      {
+        event:
+          "workers.close.partial_failure",
+
+        failedResources:
+          errors.map(
+            item =>
+              item.resource
+          ),
+
+        errors,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+      },
+      "One or more background resources failed to close"
+    );
+
+    throw new Error(
+      `Failed to close ${errors.length} background resource(s): ${errors
+        .map(
+          item =>
+            item.resource
+        )
+        .join(", ")}`
+    );
+  }
+
+  log.info(
+    {
+      event:
+        "workers.close.completed",
+
+      durationMs:
+        getDurationMs(
+          startedAt
+        ),
+    },
+    "Background workers and queues closed"
+  );
+}
+
+//--------------------------------------------------
+// Worker Readiness
+//--------------------------------------------------
+
+export function areWorkersInitialized():
+  boolean {
+  return (
+    workersInitialized &&
+    workersClosing ===
+      null
+  );
+}
+===== Redis realtime bridge =====
+import { randomUUID } from "crypto";
+import type IORedis from "ioredis";
+
+import {
+  redisConnection,
+} from "@/lib/redis";
+
+import {
+  createLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  getIO,
+  isSocketServerInitialized,
+} from "@/server/socket";
+
+//--------------------------------------------------
+// Configuration
+//--------------------------------------------------
+
+const REALTIME_CHANNEL =
+  "ai-ivr:realtime-events";
+
+const SOURCE_PROCESS =
+  process.env.IVR_PROCESS_NAME?.trim() ||
+  "unknown";
+
+//--------------------------------------------------
+// Types
+//--------------------------------------------------
+
+export interface RealtimeEnvelope {
+  id: string;
+  event: string;
+  payload: unknown;
+  sourceProcess: string;
+  timestamp: string;
+}
+
+type RealtimeBridgeGlobal =
+  typeof globalThis & {
+    __ivrRealtimeSubscriber?:
+      IORedis;
+
+    __ivrRealtimeSubscriberStarted?:
+      boolean;
+  };
+
+//--------------------------------------------------
+// State
+//--------------------------------------------------
+
+const realtimeGlobal =
+  globalThis as
+    RealtimeBridgeGlobal;
+
+const log =
+  createLogger({
+    component:
+      "redis-realtime-bridge",
+  });
+
+//--------------------------------------------------
+// Publish
+//--------------------------------------------------
+
+export async function publishRealtimeEvent(
+  event: string,
+  payload: unknown
+): Promise<void> {
+  const eventName =
+    event.trim();
+
+  if (
+    !eventName
+  ) {
+    throw new Error(
+      "Realtime event name is required"
+    );
+  }
+
+  const envelope:
+    RealtimeEnvelope = {
+      id:
+        randomUUID(),
+
+      event:
+        eventName,
+
+      payload,
+
+      sourceProcess:
+        SOURCE_PROCESS,
+
+      timestamp:
+        new Date()
+          .toISOString(),
+    };
+
+  try {
+    await redisConnection.publish(
+      REALTIME_CHANNEL,
+      JSON.stringify(
+        envelope
+      )
+    );
+
+    log.debug(
+      {
+        event:
+          "realtime.redis.published",
+
+        realtimeEvent:
+          eventName,
+
+        realtimeEventId:
+          envelope.id,
+
+        sourceProcess:
+          SOURCE_PROCESS,
+      },
+      "Realtime event published to Redis"
+    );
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "realtime.redis.publish_failed",
+
+        realtimeEvent:
+          eventName,
+
+        sourceProcess:
+          SOURCE_PROCESS,
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Failed to publish realtime event"
+    );
+
+    throw error;
+  }
+}
+
+//--------------------------------------------------
+// Start Web Subscriber
+//--------------------------------------------------
+
+export async function startRealtimeSubscriber():
+  Promise<void> {
+  if (
+    realtimeGlobal
+      .__ivrRealtimeSubscriberStarted
+  ) {
+    log.debug(
+      {
+        event:
+          "realtime.redis.subscriber_skipped",
+
+        reason:
+          "already_started",
+      },
+      "Redis realtime subscriber is already running"
+    );
+
+    return;
+  }
+
+  if (
+    !isSocketServerInitialized()
+  ) {
+    throw new Error(
+      "Socket.IO must be initialized before the realtime Redis subscriber"
+    );
+  }
+
+  /*
+   * Redis subscriber connections cannot be used for
+   * normal Redis commands, so a dedicated duplicate
+   * connection is required.
+   */
+  const subscriber =
+    redisConnection.duplicate();
+
+  realtimeGlobal
+    .__ivrRealtimeSubscriber =
+    subscriber;
+
+  realtimeGlobal
+    .__ivrRealtimeSubscriberStarted =
+    true;
+
+  subscriber.on(
+    "error",
+    error => {
+      log.error(
+        {
+          event:
+            "realtime.redis.subscriber_error",
+
+          error:
+            normalizeError(
+              error
+            ),
+        },
+        "Redis realtime subscriber error"
+      );
+    }
+  );
+
+  subscriber.on(
+    "reconnecting",
+    (delay: number) => {
+      log.warn(
+        {
+          event:
+            "realtime.redis.subscriber_reconnecting",
+
+          delay,
+        },
+        "Redis realtime subscriber reconnecting"
+      );
+    }
+  );
+
+  subscriber.on(
+    "message",
+    (
+      channel,
+      rawMessage
+    ) => {
+      if (
+        channel !==
+        REALTIME_CHANNEL
+      ) {
+        return;
+      }
+
+      handleRealtimeMessage(
+        rawMessage
+      );
+    }
+  );
+
+  await subscriber.subscribe(
+    REALTIME_CHANNEL
+  );
+
+  log.info(
+    {
+      event:
+        "realtime.redis.subscriber_started",
+
+      channel:
+        REALTIME_CHANNEL,
+    },
+    "Redis realtime subscriber started"
+  );
+}
+
+//--------------------------------------------------
+// Handle Redis Message
+//--------------------------------------------------
+
+function handleRealtimeMessage(
+  rawMessage: string
+): void {
+  try {
+    const parsed:
+      unknown =
+      JSON.parse(
+        rawMessage
+      );
+
+    if (
+      !isRealtimeEnvelope(
+        parsed
+      )
+    ) {
+      log.warn(
+        {
+          event:
+            "realtime.redis.invalid_message",
+        },
+        "Invalid realtime Redis message ignored"
+      );
+
+      return;
+    }
+
+    if (
+      !isSocketServerInitialized()
+    ) {
+      log.warn(
+        {
+          event:
+            "realtime.socket.unavailable",
+
+          realtimeEvent:
+            parsed.event,
+
+          realtimeEventId:
+            parsed.id,
+        },
+        "Socket.IO unavailable for realtime event"
+      );
+
+      return;
+    }
+
+    getIO().emit(
+      parsed.event,
+      parsed.payload
+    );
+
+    log.debug(
+      {
+        event:
+          "realtime.socket.broadcast",
+
+        realtimeEvent:
+          parsed.event,
+
+        realtimeEventId:
+          parsed.id,
+
+        sourceProcess:
+          parsed.sourceProcess,
+      },
+      "Realtime event broadcast to dashboard"
+    );
+  } catch (
+    error
+  ) {
+    log.warn(
+      {
+        event:
+          "realtime.redis.message_failed",
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Failed to process realtime Redis message"
+    );
+  }
+}
+
+//--------------------------------------------------
+// Validation
+//--------------------------------------------------
+
+function isRealtimeEnvelope(
+  value: unknown
+): value is RealtimeEnvelope {
+  if (
+    !value ||
+    typeof value !==
+      "object"
+  ) {
+    return false;
+  }
+
+  const envelope =
+    value as
+      Partial<RealtimeEnvelope>;
+
+  return (
+    typeof envelope.id ===
+      "string" &&
+    envelope.id.length >
+      0 &&
+    typeof envelope.event ===
+      "string" &&
+    envelope.event.length >
+      0 &&
+    typeof envelope.sourceProcess ===
+      "string" &&
+    typeof envelope.timestamp ===
+      "string"
+  );
+}
+
+//--------------------------------------------------
+// Shutdown
+//--------------------------------------------------
+
+export async function closeRealtimeSubscriber():
+  Promise<void> {
+  const subscriber =
+    realtimeGlobal
+      .__ivrRealtimeSubscriber;
+
+  realtimeGlobal
+    .__ivrRealtimeSubscriber =
+    undefined;
+
+  realtimeGlobal
+    .__ivrRealtimeSubscriberStarted =
+    false;
+
+  if (
+    !subscriber ||
+    subscriber.status ===
+      "end"
+  ) {
+    return;
+  }
+
+  try {
+    await subscriber.unsubscribe(
+      REALTIME_CHANNEL
+    );
+
+    await subscriber.quit();
+
+    log.info(
+      {
+        event:
+          "realtime.redis.subscriber_closed",
+      },
+      "Redis realtime subscriber closed"
+    );
+  } catch (
+    error
+  ) {
+    log.warn(
+      {
+        event:
+          "realtime.redis.subscriber_close_failed",
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Redis realtime subscriber shutdown failed"
+    );
+
+    subscriber.disconnect();
+  }
+}

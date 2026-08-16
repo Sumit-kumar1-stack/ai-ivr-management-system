@@ -38,6 +38,10 @@ import {
   finalizeCampaignRunIfReady,
 } from "@/services/campaigns/campaign-finalizer.service";
 
+import {
+  resolveOutboundWorkflow,
+} from "@/services/campaigns/outbound-workflow.service";
+
 //--------------------------------------------------
 // Logger
 //--------------------------------------------------
@@ -704,11 +708,13 @@ async function processCallRetry(
       ?.trim();
 
   if (
-    !contactPhone
+    !isCallablePhoneNumber(
+      contactPhone
+    )
   ) {
     return completeSkippedRetry(
       job.data,
-      "Contact phone number is missing"
+      "Contact phone number is missing or invalid"
     );
   }
 
@@ -767,10 +773,17 @@ async function processCallRetry(
   if (
     existingAttempt
   ) {
-    await prisma.call.updateMany({
+ const retryScheduleCleared =
+  await prisma.call
+    .updateMany({
       where: {
         id:
           originalCallId,
+
+        nextRetryAt: {
+          not:
+            null,
+        },
       },
 
       data: {
@@ -778,6 +791,23 @@ async function processCallRetry(
           null,
       },
     });
+
+retryLog.debug(
+  {
+    event:
+      "call_retry.existing_attempt.schedule_clear",
+
+    updatedCount:
+      retryScheduleCleared.count,
+
+    retryCallId:
+      existingAttempt.id,
+  },
+  retryScheduleCleared.count >
+    0
+    ? "Original retry schedule cleared"
+    : "Original retry schedule was already cleared"
+);
 
     try {
       await finalizeCampaignRunIfReady(
@@ -855,35 +885,191 @@ async function processCallRetry(
     );
 
   //------------------------------------------------
-  // Place Retry Call
+  // Restore Outbound Workflow Context
   //------------------------------------------------
 
-  const dispatchStartedAt =
-    process.hrtime.bigint();
+  const workflow =
+    resolveOutboundWorkflow({
+      purpose:
+        originalCall.campaign.purpose,
 
-  retryLog.info(
-    {
-      event:
-        "call_retry.dispatch.started",
+      campaignName:
+        originalCall.campaign.name,
 
-      contactPhone:
-        maskPhoneNumber(
-          contactPhone
-        ),
+      description:
+        originalCall.campaign.description,
 
-      providerDestination:
-        maskPhoneNumber(
-          providerDestination
-        ),
+      prompt:
+        originalCall.campaign.prompt,
 
-      retryReason,
+      contactName:
+        originalCall.contact.fullName,
+    });
 
-      usedDevelopmentOverride:
-        originalCall
-          .usedDevelopmentOverride,
-    },
-    "Retry call dispatch started"
+
+//------------------------------------------------
+// Final Execution Ownership Check
+//------------------------------------------------
+
+const [
+  currentCampaign,
+  currentCampaignRun,
+  currentContact,
+  currentOriginalCall,
+] =
+  await Promise.all([
+    prisma.campaign.findUnique({
+      where: {
+        id:
+          campaignId,
+      },
+
+      select: {
+        status:
+          true,
+      },
+    }),
+
+    prisma.campaignRun.findUnique({
+      where: {
+        id:
+          campaignRunId,
+      },
+
+      select: {
+        status:
+          true,
+
+        campaignId:
+          true,
+      },
+    }),
+
+    prisma.contact.findUnique({
+      where: {
+        id:
+          contactId,
+      },
+
+      select: {
+        status:
+          true,
+      },
+    }),
+
+    prisma.call.findUnique({
+      where: {
+        id:
+          originalCallId,
+      },
+
+      select: {
+        nextRetryAt:
+          true,
+      },
+    }),
+  ]);
+
+//------------------------------------------------
+// Campaign Must Still Be Active
+//------------------------------------------------
+
+if (
+  !currentCampaign ||
+  currentCampaign.status !==
+    CampaignStatus.RUNNING
+) {
+  return completeSkippedRetry(
+    job.data,
+    currentCampaign
+      ? `Campaign is no longer running (${currentCampaign.status})`
+      : "Campaign no longer exists"
   );
+}
+
+//------------------------------------------------
+// Run Must Still Be Active
+//------------------------------------------------
+
+if (
+  !currentCampaignRun ||
+  currentCampaignRun.campaignId !==
+    campaignId ||
+  currentCampaignRun.status !==
+    CampaignRunStatus.RUNNING
+) {
+  return completeSkippedRetry(
+    job.data,
+    currentCampaignRun
+      ? `Campaign run is no longer running (${currentCampaignRun.status})`
+      : "Campaign run no longer exists"
+  );
+}
+
+//------------------------------------------------
+// Contact Must Still Be Callable
+//------------------------------------------------
+
+if (
+  !currentContact ||
+  currentContact.status ===
+    ContactStatus.BLOCKED
+) {
+  return completeSkippedRetry(
+    job.data,
+    currentContact
+      ? "Contact became blocked before retry dispatch"
+      : "Contact no longer exists"
+  );
+}
+
+//------------------------------------------------
+// Retry Must Still Be Scheduled
+//------------------------------------------------
+
+if (
+  !currentOriginalCall
+    ?.nextRetryAt
+) {
+  return completeSkippedRetry(
+    job.data,
+    "Retry is no longer scheduled"
+  );
+}
+
+//------------------------------------------------
+// Place Retry Call
+//------------------------------------------------
+
+const dispatchStartedAt =
+  process.hrtime.bigint();
+
+retryLog.info(
+  {
+    event:
+      "call_retry.dispatch.started",
+
+    contactPhone:
+      maskPhoneNumber(
+        contactPhone
+      ),
+
+    providerDestination:
+      maskPhoneNumber(
+        providerDestination
+      ),
+
+    retryReason,
+
+    workflowPurpose:
+      workflow.purpose,
+
+    usedDevelopmentOverride:
+      originalCall
+        .usedDevelopmentOverride,
+  },
+  "Retry call dispatch started"
+);
 
   const result =
     await startCall({
@@ -905,11 +1091,13 @@ async function processCallRetry(
         originalCall.language,
 
       script:
-        originalCall
-          .campaign
-          .description
-          ?.trim() ||
-        "Hello from the AI IVR management system.",
+        workflow.openingMessage,
+
+      workflowPurpose:
+        workflow.purpose,
+
+      workflowInstruction:
+        workflow.systemInstruction,
 
       usedDevelopmentOverride:
         originalCall
@@ -952,21 +1140,48 @@ async function processCallRetry(
     "Retry call dispatched"
   );
 
-  //------------------------------------------------
-  // Clear Original Retry Schedule
-  //------------------------------------------------
+//------------------------------------------------
+// Clear Original Retry Schedule Safely
+//------------------------------------------------
 
-  await prisma.call.update({
-    where: {
-      id:
-        originalCall.id,
-    },
+const clearedSchedule =
+  await prisma.call
+    .updateMany({
+      where: {
+        id:
+          originalCall.id,
 
-    data: {
-      nextRetryAt:
-        null,
-    },
-  });
+        nextRetryAt: {
+          not:
+            null,
+        },
+      },
+
+      data: {
+        nextRetryAt:
+          null,
+      },
+    });
+
+retryLog.info(
+  {
+    event:
+      "call_retry.dispatch.schedule_cleared",
+
+    originalCallId:
+      originalCall.id,
+
+    retryCallId:
+      result.callId,
+
+    updatedCount:
+      clearedSchedule.count,
+  },
+  clearedSchedule.count >
+    0
+    ? "Original retry schedule cleared after retry dispatch"
+    : "Original retry schedule had already been cleared"
+);
 
   /*
    * The original pending retry is replaced by the
@@ -1017,6 +1232,35 @@ async function processCallRetry(
     skipped:
       false,
   };
+}
+
+//--------------------------------------------------
+// Validate Callable Phone Number
+//--------------------------------------------------
+
+function isCallablePhoneNumber(
+  phone:
+    | string
+    | null
+    | undefined
+): phone is string {
+  if (
+    !phone
+  ) {
+    return false;
+  }
+
+  const normalized =
+    phone
+      .trim()
+      .replace(
+        /[\s()-]/g,
+        ""
+      );
+
+  return /^\+?[1-9]\d{9,14}$/.test(
+    normalized
+  );
 }
 
 //--------------------------------------------------
@@ -1110,34 +1354,46 @@ async function completeSkippedRetry(
   //------------------------------------------------
 
   try {
-    const result =
-      await prisma.call.updateMany({
-        where: {
-          id:
-            data.originalCallId,
-        },
+const result =
+  await prisma.call
+    .updateMany({
+      where: {
+        id:
+          data.originalCallId,
 
-        data: {
-          nextRetryAt:
+        nextRetryAt: {
+          not:
             null,
-
-          retryReason:
-            reason,
         },
-      });
-
-    skipLog.info(
-      {
-        event:
-          "call_retry.skipped.metadata_cleared",
-
-        updatedCount:
-          result.count,
-
-        reason,
       },
-      "Skipped retry metadata cleared"
-    );
+
+      data: {
+        nextRetryAt:
+          null,
+
+        retryReason:
+          reason,
+      },
+    });
+
+skipLog.info(
+  {
+    event:
+      result.count >
+        0
+        ? "call_retry.skipped.metadata_cleared"
+        : "call_retry.skipped.metadata_already_clear",
+
+    updatedCount:
+      result.count,
+
+    reason,
+  },
+  result.count >
+    0
+    ? "Skipped retry metadata cleared"
+    : "Skipped retry metadata required no change"
+);
   } catch (
     error
   ) {

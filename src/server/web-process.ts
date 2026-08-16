@@ -20,6 +20,9 @@ loadEnvConfig(
   process.cwd()
 );
 
+process.env.IVR_PROCESS_NAME =
+  "web";
+
 //--------------------------------------------------
 // Logger
 //--------------------------------------------------
@@ -87,6 +90,27 @@ async function startWebProcess():
   await startServer();
 
   //----------------------------------------
+  // Start Cross-Process Realtime Bridge
+  //----------------------------------------
+
+  const {
+    startRealtimeSubscriber,
+    closeRealtimeSubscriber,
+  } = await import(
+    "@/services/realtime/redis-realtime-bridge.service"
+  );
+
+  await startRealtimeSubscriber();
+
+  log.info(
+    {
+      event:
+        "web.process.realtime_subscriber.initialized",
+    },
+    "Cross-process realtime subscriber initialized"
+  );
+
+  //----------------------------------------
   // Load Process-Owned Connections
   //----------------------------------------
 
@@ -114,6 +138,14 @@ async function startWebProcess():
       "web-process-lifecycle",
 
     resources: [
+      {
+        name:
+          "realtime-redis-subscriber",
+
+        close:
+          closeRealtimeSubscriber,
+      },
+
       {
         name:
           "socket-server",

@@ -3,6 +3,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/axios";
 import { toast } from "sonner";
+import type { UpdateContactInput } from "./contact.schema";
 
 export function useUpdateContact() {
   const queryClient = useQueryClient();
@@ -11,7 +12,9 @@ export function useUpdateContact() {
     mutationFn: async ({
       id,
       ...contact
-    }: any) => {
+    }: {
+      id: string;
+    } & UpdateContactInput) => {
       const { data } = await api.put(
         `/contacts/${id}`,
         contact

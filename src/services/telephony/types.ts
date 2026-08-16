@@ -1,55 +1,90 @@
+//--------------------------------------------------
+// Outbound Workflow Purpose
+//--------------------------------------------------
+
+export type CallWorkflowPurpose =
+  | "GENERAL"
+  | "REMINDER"
+  | "CALLBACK"
+  | "FOLLOW_UP";
+
+//--------------------------------------------------
+// Call Request
+//--------------------------------------------------
+
 export interface CallRequest {
-  campaignId: string;
+  campaignId:
+    string;
 
-  campaignRunId?: string;
+  campaignRunId?:
+    string;
 
-  contactId: string;
+  contactId:
+    string;
 
   /*
    * Phone number stored against the contact.
    */
-  contactPhone: string;
+  contactPhone:
+    string;
 
   /*
-   * Actual destination sent to the provider.
+   * Actual destination submitted to provider.
    */
-  to: string;
+  to:
+    string;
 
-  from: string;
+  from:
+    string;
 
-  language: string;
-
-  script: string;
-
-  usedDevelopmentOverride?: boolean;
-
-  destinationOverrideSource?: string;
+  language:
+    string;
 
   /*
-   * Retry metadata.
-   *
-   * Initial calls use attemptNumber 1.
-   * Retried calls use attemptNumber 2 or 3.
+   * Initial spoken content / campaign opening.
    */
-  attemptNumber?: number;
-
-  maxAttempts?: number;
+  script:
+    string;
 
   /*
-   * ID of the call that caused this retry attempt.
+   * Semantic reason for the outbound call.
    */
-  retryOfCallId?: string;
+  workflowPurpose?:
+    CallWorkflowPurpose;
 
   /*
-   * Human-readable reason for retrying.
-   *
-   * Examples:
-   * - Contact line was busy
-   * - Contact did not answer
-   * - Temporary provider failure
+   * Provider-neutral AI instruction associated
+   * with this outbound workflow.
    */
-  retryReason?: string;
+  workflowInstruction?:
+    string;
+
+  usedDevelopmentOverride?:
+    boolean;
+
+  destinationOverrideSource?:
+    string;
+
+  //------------------------------------------------
+  // Retry Metadata
+  //------------------------------------------------
+
+  attemptNumber?:
+    number;
+
+  maxAttempts?:
+    number;
+
+  retryOfCallId?:
+    string;
+
+  retryReason?:
+    string;
 }
+
+//--------------------------------------------------
+// Provider Call Request
+//--------------------------------------------------
 
 export interface ProviderCallRequest
   extends CallRequest {
@@ -59,29 +94,39 @@ export interface ProviderCallRequest
    * Providers use this ID in webhook URLs so
    * callbacks can locate the correct Call record.
    */
-  callId: string;
+  callId:
+    string;
 }
+
+//--------------------------------------------------
+// Call Response
+//--------------------------------------------------
 
 export interface CallResponse {
   /*
    * Internal database Call ID.
    */
-  callId: string;
+  callId:
+    string;
 
   /*
-   * Provider-side call identifier, such as
+   * Provider-side identifier such as
    * a Twilio Call SID.
    */
-  providerCallId?: string;
+  providerCallId?:
+    string;
 
-  status: string;
+  status:
+    string;
 
   /*
-   * True when the same campaign-run/contact/attempt
-   * already existed and no second provider request
-   * was made.
+   * True when the same
+   * campaign-run/contact/attempt already existed
+   * and no second provider request was made.
    */
-  duplicate?: boolean;
+  duplicate?:
+    boolean;
 
-  attemptNumber?: number;
+  attemptNumber?:
+    number;
 }

@@ -1,101 +1,190 @@
 import {
+  createCallLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
   TranscriptBuffer,
 } from "@/services/speech/transcript-buffer.service";
 
+//--------------------------------------------------
+// Types
+//--------------------------------------------------
 
-type SilenceCallback = () => Promise<void> | void;
+type SilenceCallback =
+  () =>
+    Promise<void> |
+    void;
 
-const timers = new Map<
-  string,
-  NodeJS.Timeout
->();
+//--------------------------------------------------
+// Timer Storage
+//--------------------------------------------------
 
-const DEFAULT_TIMEOUT = 2000;
+const timers =
+  new Map<
+    string,
+    NodeJS.Timeout
+  >();
 
-export const SilenceDetector = {
+const DEFAULT_TIMEOUT =
+  2000;
 
-  start(
-    callId: string,
-    callback: SilenceCallback,
-    timeout = DEFAULT_TIMEOUT
-  ) {
+//--------------------------------------------------
+// Silence Detector
+//--------------------------------------------------
 
-    this.stop(callId);
+export const SilenceDetector =
+  {
+    start(
+      callId: string,
+      callback: SilenceCallback,
+      timeout =
+        DEFAULT_TIMEOUT
+    ): void {
+      this.stop(
+        callId
+      );
 
-    console.log(
-      `⏳ Silence timer started (${callId})`
-    );
+      const log =
+        createCallLogger(
+          callId
+        );
 
-    const timer = setTimeout(async () => {
+      log.debug(
+        {
+          event:
+            "silence.timer.started",
 
-  console.log(
-    `🔇 Silence detected (${callId})`
-  );
+          timeoutMilliseconds:
+            timeout,
+        },
+        "Silence timer started"
+      );
 
-  timers.delete(callId);
+      const timer =
+        setTimeout(
+          async () => {
+            timers.delete(
+              callId
+            );
 
-  //----------------------------------
-  // Flush transcript first
-  //----------------------------------
+            log.debug(
+              {
+                event:
+                  "silence.detected",
 
-  TranscriptBuffer.flush(callId);
+                timeoutMilliseconds:
+                  timeout,
+              },
+              "Silence detected"
+            );
 
-  try {
+            //----------------------------------
+            // Flush Transcript First
+            //----------------------------------
 
-    await callback();
+            TranscriptBuffer.flush(
+              callId
+            );
 
-  } catch (error) {
+            try {
+              await callback();
+            } catch (
+              error
+            ) {
+              log.error(
+                {
+                  event:
+                    "silence.callback.failed",
 
-    console.error(
-      "Silence callback failed:",
-      error
-    );
+                  error:
+                    normalizeError(
+                      error
+                    ),
+                },
+                "Silence callback failed"
+              );
+            }
+          },
+          timeout
+        );
 
-  }
+      timers.set(
+        callId,
+        timer
+      );
+    },
 
-}, timeout);
+    reset(
+      callId: string,
+      callback: SilenceCallback,
+      timeout =
+        DEFAULT_TIMEOUT
+    ): void {
+      const log =
+        createCallLogger(
+          callId
+        );
 
-    timers.set(callId, timer);
+      log.debug(
+        {
+          event:
+            "silence.timer.reset",
 
-  },
+          timeoutMilliseconds:
+            timeout,
+        },
+        "Silence timer reset"
+      );
 
-  reset(
-    callId: string,
-    callback: SilenceCallback,
-    timeout = DEFAULT_TIMEOUT
-  ) {
+      this.start(
+        callId,
+        callback,
+        timeout
+      );
+    },
 
-    console.log(
-      `🔄 Reset silence timer (${callId})`
-    );
+    stop(
+      callId: string
+    ): void {
+      const timer =
+        timers.get(
+          callId
+        );
 
-    this.start(
-      callId,
-      callback,
-      timeout
-    );
+      if (
+        !timer
+      ) {
+        return;
+      }
 
-  },
+      clearTimeout(
+        timer
+      );
 
-  stop(callId: string) {
+      timers.delete(
+        callId
+      );
 
-    const timer =
-      timers.get(callId);
+      const log =
+        createCallLogger(
+          callId
+        );
 
-    if (timer) {
+      log.debug(
+        {
+          event:
+            "silence.timer.stopped",
+        },
+        "Silence timer stopped"
+      );
+    },
 
-      clearTimeout(timer);
-
-      timers.delete(callId);
-
-    }
-
-  },
-
-  hasTimer(callId: string) {
-
-    return timers.has(callId);
-
-  },
-
-};
+    hasTimer(
+      callId: string
+    ): boolean {
+      return timers.has(
+        callId
+      );
+    },
+  };

@@ -1,8 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import {
+  useState,
+} from "react";
 
-import { Button } from "@/components/ui/button";
+import {
+  Button,
+} from "@/components/ui/button";
 
 import {
   Dialog,
@@ -11,121 +15,245 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-import { Input } from "@/components/ui/input";
+import {
+  Input,
+} from "@/components/ui/input";
 
-import { Textarea } from "@/components/ui/textarea";
+import {
+  Textarea,
+} from "@/components/ui/textarea";
 
-import { useCreateCampaign } from "@/features/campaigns/use-create-campaign";
+import {
+  useCreateCampaign,
+} from "@/features/campaigns/use-create-campaign";
 
 export default function CreateCampaignDialog() {
-  const [open, setOpen] = useState(false);
+  const [
+    open,
+    setOpen,
+  ] =
+    useState(
+      false
+    );
 
-  const [name, setName] = useState("");
+  const [
+    name,
+    setName,
+  ] =
+    useState(
+      ""
+    );
 
-  const [description, setDescription] = useState("");
+  const [
+    description,
+    setDescription,
+  ] =
+    useState(
+      ""
+    );
 
-  const [language, setLanguage] =
-    useState("English");
+  const [
+    language,
+    setLanguage,
+  ] =
+    useState(
+      "English"
+    );
 
-  const [voice, setVoice] =
-    useState("Female");
+  const [
+    voice,
+    setVoice,
+  ] =
+    useState(
+      "Female"
+    );
 
   const createCampaign =
     useCreateCampaign();
 
+  //----------------------------------------------
+  // Create Campaign
+  //----------------------------------------------
+
   function handleCreate() {
+    const normalizedName =
+      name.trim();
+
+    if (
+      !normalizedName ||
+      createCampaign.isPending
+    ) {
+      return;
+    }
+
     createCampaign.mutate(
       {
-        name,
-        description,
-        language,
-        voice,
+        name:
+          normalizedName,
+
+        description:
+          description.trim(),
+
+        language:
+          language.trim() ||
+          "English",
+
+        voice:
+          voice.trim() ||
+          "Female",
+
+        purpose:
+          "GENERAL",
+
+        scheduledAt:
+          null,
       },
       {
-        onSuccess() {
-          setOpen(false);
+        onSuccess: () => {
+          setName(
+            ""
+          );
 
-          setName("");
+          setDescription(
+            ""
+          );
 
-          setDescription("");
+          setLanguage(
+            "English"
+          );
 
-          setLanguage("English");
+          setVoice(
+            "Female"
+          );
 
-          setVoice("Female");
+          setOpen(
+            false
+          );
         },
       }
     );
   }
 
+  //----------------------------------------------
+  // Dialog State
+  //----------------------------------------------
+
+  function handleOpenChange(
+    nextOpen:
+      boolean
+  ) {
+    if (
+      createCampaign.isPending
+    ) {
+      return;
+    }
+
+    setOpen(
+      nextOpen
+    );
+  }
+
+  //----------------------------------------------
+  // UI
+  //----------------------------------------------
+
   return (
     <>
       <Button
-        onClick={() => setOpen(true)}
+        onClick={() =>
+          setOpen(
+            true
+          )
+        }
       >
         Create Campaign
       </Button>
 
       <Dialog
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={
+          handleOpenChange
+        }
       >
         <DialogContent>
-
           <DialogHeader>
-
             <DialogTitle>
               Create Campaign
             </DialogTitle>
-
           </DialogHeader>
 
-          <div className="space-y-4">
-
+          <div
+            className="space-y-4"
+          >
             <Input
               placeholder="Campaign Name"
               value={name}
-              onChange={(e) =>
-                setName(e.target.value)
+              disabled={
+                createCampaign.isPending
+              }
+              onChange={event =>
+                setName(
+                  event.target.value
+                )
               }
             />
 
             <Textarea
               placeholder="Description"
-              value={description}
-              onChange={(e) =>
+              value={
+                description
+              }
+              disabled={
+                createCampaign.isPending
+              }
+              onChange={event =>
                 setDescription(
-                  e.target.value
+                  event.target.value
                 )
               }
             />
 
             <Input
               placeholder="Language"
-              value={language}
-              onChange={(e) =>
+              value={
+                language
+              }
+              disabled={
+                createCampaign.isPending
+              }
+              onChange={event =>
                 setLanguage(
-                  e.target.value
+                  event.target.value
                 )
               }
             />
 
             <Input
               placeholder="Voice"
-              value={voice}
-              onChange={(e) =>
+              value={
+                voice
+              }
+              disabled={
+                createCampaign.isPending
+              }
+              onChange={event =>
                 setVoice(
-                  e.target.value
+                  event.target.value
                 )
               }
             />
 
-            <div className="flex gap-2">
-
+            <div
+              className="flex gap-2"
+            >
               <Button
                 className="flex-1"
-                onClick={handleCreate}
+                onClick={
+                  handleCreate
+                }
                 disabled={
-                  createCampaign.isPending
+                  createCampaign.isPending ||
+                  !name.trim()
                 }
               >
                 {createCampaign.isPending
@@ -136,19 +264,20 @@ export default function CreateCampaignDialog() {
               <Button
                 variant="outline"
                 className="flex-1"
+                disabled={
+                  createCampaign.isPending
+                }
                 onClick={() =>
-                  setOpen(false)
+                  setOpen(
+                    false
+                  )
                 }
               >
                 Cancel
               </Button>
-
             </div>
-
           </div>
-
         </DialogContent>
-
       </Dialog>
     </>
   );

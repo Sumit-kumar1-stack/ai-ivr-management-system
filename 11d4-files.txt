@@ -1,0 +1,1163 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ======================================================
+// USER
+// ======================================================
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  AGENT
+}
+
+model User {
+  id        String    @id @default(cuid())
+  fullName  String
+  email     String    @unique
+  password  String
+  role      UserRole  @default(ADMIN)
+  phone     String?
+  avatar    String?
+  isActive  Boolean   @default(true)
+  lastLogin DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ======================================================
+// CONTACT
+// ======================================================
+
+enum ContactStatus {
+  PENDING
+  CALLED
+  ANSWERED
+  FAILED
+  BLOCKED
+}
+
+model Contact {
+  id       String        @id @default(cuid())
+  fullName String
+  phone    String        @unique
+  email    String?
+  company  String?
+  language String        @default("English")
+  status   ContactStatus @default(PENDING)
+  notes    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaigns CampaignContact[]
+  calls     Call[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ======================================================
+// CAMPAIGN
+// ======================================================
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  QUEUED
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum CampaignRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model Campaign {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+
+  systemKey String? @unique
+
+  language String  @default("English")
+  voice    String  @default("Female")
+  prompt   String?
+
+  status CampaignStatus @default(DRAFT)
+
+  scheduledAt DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  contacts CampaignContact[]
+  calls    Call[]
+  runs     CampaignRun[]
+
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([createdAt])
+}
+
+model CampaignContact {
+  id String @id @default(cuid())
+
+  campaignId String
+  contactId  String
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([campaignId, contactId])
+  @@index([campaignId])
+  @@index([contactId])
+}
+
+model CampaignRun {
+  id         String            @id @default(cuid())
+  campaignId String
+  status     CampaignRunStatus @default(QUEUED)
+
+  total      Int @default(0)
+  processed  Int @default(0)
+  successful Int @default(0)
+  failed     Int @default(0)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  calls Call[]
+
+  @@index([campaignId])
+  @@index([campaignId, status])
+  @@index([status])
+}
+
+// ======================================================
+// IVR FLOW
+// ======================================================
+
+model IVRFlow {
+  id String @id @default(cuid())
+
+  name        String
+  description String?
+  campaignId  String?
+
+  nodes Json
+  edges Json
+
+  isPublished Boolean @default(false)
+  version     Int     @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([campaignId])
+  @@index([isPublished])
+}
+
+// ======================================================
+// KNOWLEDGE BASE
+// ======================================================
+
+model KnowledgeDocument {
+  id String @id @default(cuid())
+
+  fileName     String
+  originalName String
+  mimeType     String
+  size         Int
+  path         String
+
+  uploadedAt DateTime @default(now())
+
+  chunks KnowledgeChunk[]
+
+  @@index([uploadedAt])
+}
+
+model KnowledgeChunk {
+  id String @id @default(cuid())
+
+  documentId String
+  document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  chunkIndex Int
+  content    String
+
+  createdAt DateTime @default(now())
+
+  @@unique([documentId, chunkIndex])
+  @@index([documentId])
+}
+
+// ======================================================
+// CALL
+// ======================================================
+
+enum CallDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum CallStatus {
+  QUEUED
+  RINGING
+  ANSWERED
+  COMPLETED
+  FAILED
+  BUSY
+  NO_ANSWER
+  CANCELED
+}
+
+model Call {
+  id             String  @id @default(cuid())
+  providerCallId String? @unique
+
+  direction CallDirection @default(OUTBOUND)
+
+  callerNumber String?
+  calledNumber String?
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  campaignRunId String?
+  campaignRun   CampaignRun? @relation(fields: [campaignRunId], references: [id], onDelete: SetNull)
+
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  // ====================================================
+  // RETRY TRACKING
+  // ====================================================
+
+  retryOfCallId String?
+  retryOfCall   Call?   @relation("CallRetries", fields: [retryOfCallId], references: [id], onDelete: SetNull)
+  retryAttempts Call[]  @relation("CallRetries")
+
+  attemptNumber Int @default(1)
+  maxAttempts   Int @default(3)
+
+  nextRetryAt DateTime?
+  retryReason String?
+
+  // ====================================================
+  // DESTINATION TRACKING
+  // ====================================================
+
+  contactPhoneSnapshot      String?
+  providerDestination       String?
+  usedDevelopmentOverride   Boolean @default(false)
+  destinationOverrideSource String?
+
+  language String
+
+  status CallStatus @default(QUEUED)
+
+  duration     Int?
+  recordingUrl String?
+  transcript   String?
+  summary      String?
+
+  events CallEvent[]
+
+  // ====================================================
+  // CALL LIFECYCLE TIMESTAMPS
+  // ====================================================
+
+  requestedAt DateTime  @default(now())
+  queuedAt    DateTime?
+  ringingAt   DateTime?
+  answeredAt  DateTime?
+  completedAt DateTime?
+  failedAt    DateTime?
+
+  startedAt DateTime?
+  endedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  conversation Conversation?
+
+  @@unique([campaignRunId, contactId, attemptNumber])
+  @@index([campaignId])
+  @@index([campaignRunId])
+  @@index([campaignRunId, contactId])
+  @@index([contactId])
+  @@index([retryOfCallId])
+  @@index([nextRetryAt])
+  @@index([providerDestination])
+  @@index([direction])
+  @@index([callerNumber])
+  @@index([calledNumber])
+  @@index([status])
+  @@index([requestedAt])
+  @@index([answeredAt])
+  @@index([completedAt])
+}
+
+// ======================================================
+// CONVERSATION
+// ======================================================
+
+enum ConversationRole {
+  SYSTEM
+  USER
+  ASSISTANT
+}
+
+model Conversation {
+  id String @id @default(cuid())
+
+  callId String @unique
+  call   Call   @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  summary   String?
+  intent    String?
+  sentiment String?
+  priority  String?
+
+  followUp Boolean @default(false)
+
+  actionItems Json?
+
+  tokenUsage Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages ConversationMessage[]
+
+  @@index([createdAt])
+}
+
+model ConversationMessage {
+  id String @id @default(cuid())
+
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  role    ConversationRole
+  content String
+
+  createdAt DateTime @default(now())
+
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
+  @@index([role])
+}
+
+// ======================================================
+// CALL EVENTS
+// ======================================================
+
+enum CallEventType {
+  STARTED
+  RINGING
+  ANSWERED
+  THINKING
+  SPEAKING
+  LISTENING
+  INTERRUPTED
+  COMPLETED
+  FAILED
+}
+
+model CallEvent {
+  id String @id @default(cuid())
+
+  callId String
+  type   CallEventType
+
+  message  String?
+  payload  Json?
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId])
+  @@index([type])
+  @@index([createdAt])
+  @@index([callId, createdAt])
+}
+import {
+  createServerLogger,
+  getDurationMs,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  prisma,
+} from "@/lib/prisma";
+
+import {
+  bm25Score,
+} from "./bm25.service";
+
+import {
+  rerankKnowledge,
+} from "./reranker.service";
+
+//--------------------------------------------------
+// Types
+//--------------------------------------------------
+
+export interface RetrievedKnowledgeChunk {
+  content: string;
+
+  score: number;
+
+  documentId: string;
+
+  chunkIndex: number;
+}
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "knowledge-retrieval"
+  );
+
+//--------------------------------------------------
+// Configuration
+//--------------------------------------------------
+
+const DEFAULT_RERANK_CANDIDATE_LIMIT =
+  8;
+
+const configuredRerankCandidateLimit =
+  Number(
+    process.env
+      .KNOWLEDGE_RERANK_CANDIDATE_LIMIT
+  );
+
+const RERANK_CANDIDATE_LIMIT =
+  Number.isInteger(
+    configuredRerankCandidateLimit
+  ) &&
+  configuredRerankCandidateLimit >=
+    3 &&
+  configuredRerankCandidateLimit <=
+    20
+    ? configuredRerankCandidateLimit
+    : DEFAULT_RERANK_CANDIDATE_LIMIT;
+
+/*
+ * Conservative default:
+ *
+ * Keep AI reranking enabled until we have enough
+ * production/test evidence that deterministic BM25
+ * dominance is safe for the bank's knowledge base.
+ */
+const ENABLE_CONFIDENCE_SKIP =
+  process.env
+    .KNOWLEDGE_CONFIDENCE_SKIP_RERANK ===
+  "true";
+
+const DEFAULT_DOMINANCE_RATIO =
+  2.25;
+
+const configuredDominanceRatio =
+  Number(
+    process.env
+      .KNOWLEDGE_BM25_DOMINANCE_RATIO
+  );
+
+const BM25_DOMINANCE_RATIO =
+  Number.isFinite(
+    configuredDominanceRatio
+  ) &&
+  configuredDominanceRatio >=
+    1.2 &&
+  configuredDominanceRatio <=
+    10
+    ? configuredDominanceRatio
+    : DEFAULT_DOMINANCE_RATIO;
+
+//--------------------------------------------------
+// Confidence Gate
+//--------------------------------------------------
+
+function canSkipReranking(
+  candidates: Array<{
+    score: number;
+  }>
+): boolean {
+  if (
+    !ENABLE_CONFIDENCE_SKIP
+  ) {
+    return false;
+  }
+
+  if (
+    candidates.length <
+    2
+  ) {
+    return true;
+  }
+
+  const first =
+    candidates[0];
+
+  const second =
+    candidates[1];
+
+  if (
+    !first ||
+    !second
+  ) {
+    return false;
+  }
+
+  if (
+    !Number.isFinite(
+      first.score
+    ) ||
+    !Number.isFinite(
+      second.score
+    ) ||
+    first.score <=
+      0 ||
+    second.score <=
+      0
+  ) {
+    return false;
+  }
+
+  const dominanceRatio =
+    first.score /
+    second.score;
+
+  return (
+    dominanceRatio >=
+    BM25_DOMINANCE_RATIO
+  );
+}
+
+//--------------------------------------------------
+// Retrieve Knowledge
+//--------------------------------------------------
+
+export async function retrieveKnowledge(
+  question: string,
+  limit = 5
+): Promise<
+  RetrievedKnowledgeChunk[]
+> {
+  const startedAt =
+    process.hrtime.bigint();
+
+  const normalizedQuestion =
+    question.trim();
+
+  //--------------------------------------------------
+  // Empty Query
+  //--------------------------------------------------
+
+  if (
+    !normalizedQuestion
+  ) {
+    log.debug(
+      {
+        event:
+          "knowledge.retrieval.skipped",
+
+        reason:
+          "empty_question",
+      },
+      "Knowledge retrieval skipped"
+    );
+
+    return [];
+  }
+
+  //--------------------------------------------------
+  // Normalize Requested Result Count
+  //--------------------------------------------------
+
+  const normalizedLimit =
+    Math.max(
+      1,
+      Math.min(
+        limit,
+        20
+      )
+    );
+
+  try {
+    //--------------------------------------------------
+    // Load Knowledge Chunks
+    //--------------------------------------------------
+
+    const chunks =
+      await prisma
+        .knowledgeChunk
+        .findMany();
+
+    log.debug(
+      {
+        event:
+          "knowledge.retrieval.started",
+
+        queryCharacterCount:
+          normalizedQuestion.length,
+
+        availableChunkCount:
+          chunks.length,
+
+        requestedLimit:
+          normalizedLimit,
+
+        rerankCandidateLimit:
+          RERANK_CANDIDATE_LIMIT,
+
+        confidenceSkipEnabled:
+          ENABLE_CONFIDENCE_SKIP,
+      },
+      "Knowledge retrieval started"
+    );
+
+    //--------------------------------------------------
+    // BM25
+    //--------------------------------------------------
+
+    const bm25StartedAt =
+      process.hrtime.bigint();
+
+    const scored =
+      chunks
+        .map(
+          chunk => ({
+            ...chunk,
+
+            score:
+              bm25Score(
+                normalizedQuestion,
+                chunk.content
+              ),
+          })
+        )
+        .filter(
+          chunk =>
+            Number.isFinite(
+              chunk.score
+            ) &&
+            chunk.score >
+              0
+        )
+        .sort(
+          (
+            first,
+            second
+          ) =>
+            second.score -
+            first.score
+        );
+
+    const bm25Ms =
+      getDurationMs(
+        bm25StartedAt
+      );
+
+    log.debug(
+      {
+        event:
+          "knowledge.retrieval.bm25_completed",
+
+        availableChunkCount:
+          chunks.length,
+
+        candidateCount:
+          scored.length,
+
+        highestScore:
+          scored[0]?.score ??
+          null,
+
+        secondHighestScore:
+          scored[1]?.score ??
+          null,
+
+        bm25Ms,
+      },
+      "BM25 knowledge search completed"
+    );
+
+    //--------------------------------------------------
+    // No Candidates
+    //--------------------------------------------------
+
+    if (
+      scored.length ===
+      0
+    ) {
+      log.info(
+        {
+          event:
+            "knowledge.retrieval.no_candidates",
+
+          queryCharacterCount:
+            normalizedQuestion.length,
+
+          bm25Ms,
+
+          durationMs:
+            getDurationMs(
+              startedAt
+            ),
+        },
+        "No relevant BM25 candidates found"
+      );
+
+      return [];
+    }
+
+    //--------------------------------------------------
+    // Single Candidate
+    //--------------------------------------------------
+
+    if (
+      scored.length ===
+      1
+    ) {
+      const onlyCandidate =
+        scored[0];
+
+      log.info(
+        {
+          event:
+            "knowledge.retrieval.rerank_skipped",
+
+          reason:
+            "single_candidate",
+
+          candidateCount:
+            1,
+
+          bm25Ms,
+
+          durationMs:
+            getDurationMs(
+              startedAt
+            ),
+        },
+        "Knowledge reranking skipped"
+      );
+
+      return [
+        {
+          content:
+            onlyCandidate.content,
+
+          score:
+            onlyCandidate.score,
+
+          documentId:
+            onlyCandidate.documentId,
+
+          chunkIndex:
+            onlyCandidate.chunkIndex,
+        },
+      ];
+    }
+
+    //--------------------------------------------------
+    // Bound AI Reranking Candidates
+    //--------------------------------------------------
+
+    /*
+     * Previously up to 20 BM25 matches could be sent
+     * to the AI reranker.
+     *
+     * Keep only the strongest candidates before the
+     * expensive reranking stage.
+     */
+    const rerankCandidates =
+      scored.slice(
+        0,
+        RERANK_CANDIDATE_LIMIT
+      );
+
+    //--------------------------------------------------
+    // Optional High-Confidence BM25 Fast Path
+    //--------------------------------------------------
+
+    if (
+      canSkipReranking(
+        rerankCandidates
+      )
+    ) {
+      const topResults =
+        rerankCandidates
+          .slice(
+            0,
+            normalizedLimit
+          )
+          .map(
+            chunk => ({
+              content:
+                chunk.content,
+
+              score:
+                chunk.score,
+
+              documentId:
+                chunk.documentId,
+
+              chunkIndex:
+                chunk.chunkIndex,
+            })
+          );
+
+      const first =
+        rerankCandidates[0];
+
+      const second =
+        rerankCandidates[1];
+
+      const dominanceRatio =
+        first &&
+        second &&
+        second.score >
+          0
+          ? first.score /
+            second.score
+          : null;
+
+      log.info(
+        {
+          event:
+            "knowledge.retrieval.rerank_skipped",
+
+          reason:
+            "high_bm25_confidence",
+
+          originalCandidateCount:
+            scored.length,
+
+          boundedCandidateCount:
+            rerankCandidates.length,
+
+          returnedChunkCount:
+            topResults.length,
+
+          highestScore:
+            first?.score ??
+            null,
+
+          secondHighestScore:
+            second?.score ??
+            null,
+
+          dominanceRatio,
+
+          configuredDominanceRatio:
+            BM25_DOMINANCE_RATIO,
+
+          bm25Ms,
+
+          durationMs:
+            getDurationMs(
+              startedAt
+            ),
+        },
+        "High-confidence BM25 result used without AI reranking"
+      );
+
+      return topResults;
+    }
+
+    //--------------------------------------------------
+    // AI Re-ranking
+    //--------------------------------------------------
+
+    const rerankStartedAt =
+      process.hrtime.bigint();
+
+    const reranked =
+      await rerankKnowledge(
+        normalizedQuestion,
+        rerankCandidates
+      );
+
+    const rerankMs =
+      getDurationMs(
+        rerankStartedAt
+      );
+
+    //--------------------------------------------------
+    // Final Results
+    //--------------------------------------------------
+
+    const results =
+      reranked
+        .slice(
+          0,
+          normalizedLimit
+        )
+        .map(
+          chunk => ({
+            content:
+              chunk.content,
+
+            score:
+              chunk.score,
+
+            documentId:
+              chunk.documentId,
+
+            chunkIndex:
+              chunk.chunkIndex,
+          })
+        );
+
+    //--------------------------------------------------
+    // Metrics
+    //--------------------------------------------------
+
+    log.info(
+      {
+        event:
+          "knowledge.retrieval.completed",
+
+        bm25CandidateCount:
+          scored.length,
+
+        rerankCandidateCount:
+          rerankCandidates.length,
+
+        rerankedCandidateCount:
+          reranked.length,
+
+        returnedChunkCount:
+          results.length,
+
+        highestBm25Score:
+          scored[0]?.score ??
+          null,
+
+        bm25Ms,
+
+        rerankMs,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+      },
+      "Knowledge retrieval completed"
+    );
+
+    return results;
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "knowledge.retrieval.failed",
+
+        queryCharacterCount:
+          normalizedQuestion.length,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Knowledge retrieval failed"
+    );
+
+    throw error;
+  }
+}import {
+  createServerLogger,
+  getDurationMs,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  prisma,
+} from "@/lib/prisma";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "knowledge-indexer"
+  );
+
+//--------------------------------------------------
+// Index Knowledge Chunks
+//--------------------------------------------------
+
+export async function indexDocuments(
+  documentId: string,
+  chunks: string[]
+): Promise<void> {
+  const startedAt =
+    process.hrtime.bigint();
+
+  if (
+    chunks.length ===
+    0
+  ) {
+    log.debug(
+      {
+        event:
+          "knowledge.indexing.skipped",
+
+        documentId,
+
+        reason:
+          "no_chunks",
+      },
+      "Knowledge indexing skipped"
+    );
+
+    return;
+  }
+
+  log.info(
+    {
+      event:
+        "knowledge.indexing.started",
+
+      documentId,
+
+      chunkCount:
+        chunks.length,
+
+      totalCharacterCount:
+        chunks.reduce(
+          (
+            total,
+            chunk
+          ) =>
+            total +
+            chunk.length,
+          0
+        ),
+    },
+    "Knowledge chunk indexing started"
+  );
+
+  try {
+    await prisma.$transaction(
+      chunks.map(
+        (
+          chunk,
+          index
+        ) =>
+          prisma.knowledgeChunk.create({
+            data: {
+              documentId,
+
+              chunkIndex:
+                index,
+
+              content:
+                chunk,
+            },
+          })
+      )
+    );
+
+    log.info(
+      {
+        event:
+          "knowledge.indexing.completed",
+
+        documentId,
+
+        chunkCount:
+          chunks.length,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+      },
+      "Knowledge chunk indexing completed"
+    );
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "knowledge.indexing.failed",
+
+        documentId,
+
+        chunkCount:
+          chunks.length,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Knowledge chunk indexing failed"
+    );
+
+    throw error;
+  }
+}import { prisma } from "@/lib/prisma";
+
+export async function saveKnowledgeDocument(data: {
+  fileName: string;
+  originalName: string;
+  mimeType: string;
+  size: number;
+  path: string;
+}) {
+  return prisma.knowledgeDocument.create({
+    data,
+  });
+}

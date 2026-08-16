@@ -1,0 +1,870 @@
+===== Realtime service =====
+import {
+  publishRealtimeEvent,
+} from "./redis-realtime-bridge.service";
+
+export class RealtimeService {
+  static emit(
+    event: string,
+    payload: unknown
+  ): void {
+    void publishRealtimeEvent(
+      event,
+      payload
+    ).catch(
+      () => {
+        /*
+         * The Redis bridge records the error.
+         * Voice processing must continue even when
+         * dashboard realtime delivery is unavailable.
+         */
+      }
+    );
+  }
+
+  static transcript(
+    callId: string,
+    text: string
+  ): void {
+    this.emit(
+      "transcript",
+      {
+        callId,
+        text,
+      }
+    );
+  }
+
+  static state(
+    callId: string,
+    state: string
+  ): void {
+    this.emit(
+      "state",
+      {
+        callId,
+        state,
+      }
+    );
+  }
+
+  static assistant(
+    callId: string,
+    text: string
+  ): void {
+    this.emit(
+      "assistant",
+      {
+        callId,
+        text,
+      }
+    );
+  }
+
+  static completed(
+    callId: string
+  ): void {
+    this.emit(
+      "completed",
+      {
+        callId,
+      }
+    );
+  }
+}
+===== Services realtime subscriber =====
+import {
+  TranscriptEvents,
+  TranscriptEvent,
+} from "@/services/speech/transcript.events";
+
+import {
+  ConversationEvents,
+} from "@/services/conversations/conversation-events.service";
+
+import {
+  RealtimeService,
+} from "./realtime.service";
+
+export class RealtimeSubscriber {
+
+  static register() {
+
+    //----------------------------------
+    // Partial transcript
+    //----------------------------------
+
+    TranscriptEvents.on(
+
+      TranscriptEvent.PARTIAL,
+
+      (payload) => {
+
+        RealtimeService.transcript(
+
+          payload.callId,
+
+          payload.text
+
+        );
+
+      }
+
+    );
+
+    //----------------------------------
+    // Listening
+    //----------------------------------
+
+    ConversationEvents.on(
+
+      "listening",
+
+      (callId) => {
+
+        RealtimeService.state(
+
+          callId,
+
+          "LISTENING"
+
+        );
+
+      }
+
+    );
+
+    //----------------------------------
+    // Thinking
+    //----------------------------------
+
+    ConversationEvents.on(
+
+      "thinking",
+
+      (callId) => {
+
+        RealtimeService.state(
+
+          callId,
+
+          "THINKING"
+
+        );
+
+      }
+
+    );
+
+    //----------------------------------
+    // Speaking
+    //----------------------------------
+
+    ConversationEvents.on(
+
+      "speaking",
+
+      (callId) => {
+
+        RealtimeService.state(
+
+          callId,
+
+          "SPEAKING"
+
+        );
+
+      }
+
+    );
+
+  }
+
+}
+===== Core realtime subscriber =====
+import {
+  AppEvent,
+  EventSubscriber,
+} from "@/core/events";
+
+import {
+  publishRealtimeEvent,
+} from "@/services/realtime/redis-realtime-bridge.service";
+
+export class RealtimeSubscriber {
+  private static registered =
+    false;
+
+  static register():
+    void {
+    if (
+      this.registered
+    ) {
+      return;
+    }
+
+    this.registered =
+      true;
+
+    for (
+      const event of
+      EventSubscriber.events()
+    ) {
+      EventSubscriber.on(
+        event,
+        payload => {
+          void publishRealtimeEvent(
+            event,
+            payload
+          ).catch(
+            () => {
+              /*
+               * Publishing failure is already logged by
+               * the Redis bridge. Business processing
+               * must not fail only because the dashboard
+               * realtime channel is unavailable.
+               */
+            }
+          );
+        }
+      );
+    }
+  }
+}
+===== Call timeline service =====
+import { createCallLogger } from "@/lib/logger";
+import { CallEventType } from "@prisma/client";
+import { CallEventService } from "@/features/call-events";
+import { RealtimeService } from "@/services/realtime";
+
+export class CallTimelineService {
+
+  static async started(callId: string) {
+
+    const log = createCallLogger(callId);
+
+    log.info("Call Started");
+
+    await CallEventService.create(
+      callId,
+      CallEventType.STARTED,
+      "Call Started"
+    );
+
+    RealtimeService.emit("call.started", {
+      callId,
+      timestamp: new Date(),
+    });
+
+  }
+
+  static async ringing(callId: string) {
+
+    const log = createCallLogger(callId);
+
+    log.info("Call Ringing");
+
+    await CallEventService.create(
+      callId,
+      CallEventType.RINGING,
+      "Call Ringing"
+    );
+
+    RealtimeService.emit("call.ringing", {
+      callId,
+      timestamp: new Date(),
+    });
+
+  }
+
+  static async answered(callId: string) {
+
+    const log = createCallLogger(callId);
+
+    log.info("Call Answered");
+
+    await CallEventService.create(
+      callId,
+      CallEventType.ANSWERED,
+      "Call Answered"
+    );
+
+    RealtimeService.emit("call.answered", {
+      callId,
+      timestamp: new Date(),
+    });
+
+  }
+
+  static async thinking(callId: string) {
+
+    const log = createCallLogger(callId);
+
+    log.info("AI Thinking");
+
+    await CallEventService.create(
+      callId,
+      CallEventType.THINKING,
+      "AI Thinking"
+    );
+
+    RealtimeService.emit("call.thinking", {
+      callId,
+      timestamp: new Date(),
+    });
+
+  }
+
+  static async speaking(callId: string) {
+
+    const log = createCallLogger(callId);
+
+    log.info("AI Speaking");
+
+    await CallEventService.create(
+      callId,
+      CallEventType.SPEAKING,
+      "AI Speaking"
+    );
+
+    RealtimeService.emit("call.speaking", {
+      callId,
+      timestamp: new Date(),
+    });
+
+  }
+
+  static async listening(callId: string) {
+
+    const log = createCallLogger(callId);
+
+    log.info("Listening");
+
+    await CallEventService.create(
+      callId,
+      CallEventType.LISTENING,
+      "Listening"
+    );
+
+    RealtimeService.emit("call.listening", {
+      callId,
+      timestamp: new Date(),
+    });
+
+  }
+
+  static async interrupted(callId: string) {
+
+    const log = createCallLogger(callId);
+
+    log.info("Barge-In Detected");
+
+    await CallEventService.create(
+      callId,
+      CallEventType.INTERRUPTED,
+      "Barge-In Detected"
+    );
+
+    RealtimeService.emit("call.interrupted", {
+      callId,
+      timestamp: new Date(),
+    });
+
+  }
+
+  static async completed(callId: string) {
+
+    const log = createCallLogger(callId);
+
+    log.info("Call Completed");
+
+    await CallEventService.create(
+      callId,
+      CallEventType.COMPLETED,
+      "Call Completed"
+    );
+
+    RealtimeService.emit("call.completed", {
+      callId,
+      timestamp: new Date(),
+    });
+
+  }
+
+  static async failed(
+    callId: string,
+    error: unknown
+  ) {
+
+    const log = createCallLogger(callId);
+
+    log.error(
+      { error },
+      "Call Failed"
+    );
+
+await CallEventService.create(
+  callId,
+  CallEventType.FAILED,
+  "Call Failed",
+  undefined,
+  {
+    error:
+      error instanceof Error
+        ? error.message
+        : String(error),
+  }
+);
+
+    RealtimeService.emit("call.failed", {
+      callId,
+      error,
+      timestamp: new Date(),
+    });
+
+  }
+
+}
+===== Dashboard store addEvent =====
+"use client";
+
+import {
+  create,
+} from "zustand";
+
+export interface TimelineEvent {
+  id?: string;
+  callId?: string;
+  event: string;
+  payload: unknown;
+  timestamp: number;
+}
+
+export interface DashboardMetrics {
+  activeCalls: number;
+  queuedCalls: number;
+  thinkingCalls: number;
+  speakingCalls: number;
+  completedCalls: number;
+  failedCalls: number;
+}
+
+export interface ActiveCall {
+  id: string;
+  phone: string;
+  status: string;
+  startedAt: number;
+  language?: string;
+  duration?: number;
+  customerName?: string;
+  campaignName?: string;
+  providerCallId?:
+    | string
+    | null;
+}
+
+export interface ConversationMessage {
+  id: string;
+  role:
+    | "user"
+    | "assistant";
+  content: string;
+}
+
+export interface LiveConversation {
+  callId: string;
+  messages:
+    ConversationMessage[];
+}
+
+interface DashboardState {
+  metrics:
+    DashboardMetrics;
+
+  timeline:
+    TimelineEvent[];
+
+  activeCalls:
+    ActiveCall[];
+
+  conversations:
+    Record<
+      string,
+      LiveConversation
+    >;
+
+  setMetrics: (
+    metrics:
+      Partial<DashboardMetrics>
+  ) => void;
+
+  setTimeline: (
+    events:
+      TimelineEvent[]
+  ) => void;
+
+  addEvent: (
+    event: string,
+    payload: unknown
+  ) => void;
+
+  clearTimeline:
+    () => void;
+
+  setActiveCalls: (
+    calls:
+      ActiveCall[]
+  ) => void;
+
+  upsertActiveCall: (
+    call:
+      ActiveCall
+  ) => void;
+
+  updateActiveCallStatus: (
+    id: string,
+    status: string,
+    fallback?:
+      Partial<ActiveCall>
+  ) => void;
+
+  removeActiveCall: (
+    id: string
+  ) => void;
+
+  appendMessage: (
+    callId: string,
+    role:
+      | "user"
+      | "assistant",
+    content: string
+  ) => void;
+}
+
+const initialMetrics:
+  DashboardMetrics = {
+    activeCalls:
+      0,
+
+    queuedCalls:
+      0,
+
+    thinkingCalls:
+      0,
+
+    speakingCalls:
+      0,
+
+    completedCalls:
+      0,
+
+    failedCalls:
+      0,
+  };
+
+export const useDashboardStore =
+  create<DashboardState>(
+    (
+      set
+    ) => ({
+      metrics: {
+        ...initialMetrics,
+      },
+
+      timeline:
+        [],
+
+      activeCalls:
+        [],
+
+      conversations:
+        {},
+
+      setMetrics:
+        (
+          metrics
+        ) =>
+          set(
+            (
+              state
+            ) => ({
+              metrics: {
+                ...state.metrics,
+                ...metrics,
+              },
+            })
+          ),
+
+      setTimeline:
+        (
+          events
+        ) =>
+          set({
+            timeline:
+              events.slice(
+                0,
+                100
+              ),
+          }),
+
+      addEvent:
+        (
+          event,
+          payload
+        ) =>
+          set(
+            (
+              state
+            ) => ({
+              timeline: [
+                {
+                  event,
+                  payload,
+                  timestamp:
+                    Date.now(),
+                },
+                ...state.timeline,
+              ].slice(
+                0,
+                100
+              ),
+            })
+          ),
+
+      clearTimeline:
+        () =>
+          set({
+            timeline:
+              [],
+          }),
+
+      setActiveCalls:
+        (
+          calls
+        ) =>
+          set({
+            activeCalls:
+              calls,
+          }),
+
+      upsertActiveCall:
+        (
+          call
+        ) =>
+          set(
+            (
+              state
+            ) => {
+              const existing =
+                state.activeCalls.find(
+                  (
+                    currentCall
+                  ) =>
+                    currentCall.id ===
+                    call.id
+                );
+
+              if (
+                !existing
+              ) {
+                return {
+                  activeCalls: [
+                    call,
+                    ...state.activeCalls,
+                  ],
+                };
+              }
+
+              return {
+                activeCalls:
+                  state.activeCalls.map(
+                    (
+                      currentCall
+                    ) =>
+                      currentCall.id ===
+                      call.id
+                        ? {
+                            ...currentCall,
+                            ...call,
+
+                            startedAt:
+                              currentCall.startedAt ??
+                              call.startedAt,
+                          }
+                        : currentCall
+                  ),
+              };
+            }
+          ),
+
+      updateActiveCallStatus:
+        (
+          id,
+          status,
+          fallback
+        ) =>
+          set(
+            (
+              state
+            ) => {
+              const existing =
+                state.activeCalls.find(
+                  (
+                    call
+                  ) =>
+                    call.id ===
+                    id
+                );
+
+              if (
+                existing
+              ) {
+                return {
+                  activeCalls:
+                    state.activeCalls.map(
+                      (
+                        call
+                      ) =>
+                        call.id ===
+                        id
+                          ? {
+                              ...call,
+                              ...fallback,
+                              status,
+                            }
+                          : call
+                    ),
+                };
+              }
+
+              return {
+                activeCalls: [
+                  {
+                    id,
+
+                    phone:
+                      fallback
+                        ?.phone ??
+                      "Unknown",
+
+                    status,
+
+                    startedAt:
+                      fallback
+                        ?.startedAt ??
+                      Date.now(),
+
+                    language:
+                      fallback
+                        ?.language,
+
+                    duration:
+                      fallback
+                        ?.duration,
+
+                    customerName:
+                      fallback
+                        ?.customerName,
+
+                    campaignName:
+                      fallback
+                        ?.campaignName,
+
+                    providerCallId:
+                      fallback
+                        ?.providerCallId,
+                  },
+                  ...state.activeCalls,
+                ],
+              };
+            }
+          ),
+
+      removeActiveCall:
+        (
+          id
+        ) =>
+          set(
+            (
+              state
+            ) => ({
+              activeCalls:
+                state.activeCalls.filter(
+                  (
+                    call
+                  ) =>
+                    call.id !==
+                    id
+                ),
+            })
+          ),
+
+      appendMessage:
+        (
+          callId,
+          role,
+          content
+        ) =>
+          set(
+            (
+              state
+            ) => {
+              if (
+                !content.trim()
+              ) {
+                return state;
+              }
+
+              const conversation =
+                state.conversations[
+                  callId
+                ] ?? {
+                  callId,
+                  messages:
+                    [],
+                };
+
+              const previousMessage =
+                conversation.messages[
+                  conversation
+                    .messages
+                    .length -
+                    1
+                ];
+
+              if (
+                previousMessage &&
+                previousMessage.role ===
+                  role &&
+                previousMessage.content ===
+                  content
+              ) {
+                return state;
+              }
+
+              return {
+                conversations: {
+                  ...state.conversations,
+
+                  [callId]: {
+                    ...conversation,
+
+                    messages: [
+                      ...conversation.messages,
+
+                      {
+                        id:
+                          crypto.randomUUID(),
+
+                        role,
+
+                        content,
+                      },
+                    ],
+                  },
+                },
+              };
+            }
+          ),
+    })
+  );

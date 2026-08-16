@@ -1,25 +1,53 @@
 import {
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
   generateAIResponse,
 } from "./ai-response.service";
 
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "conversation-analysis-service"
+  );
+
+//--------------------------------------------------
+// Types
+//--------------------------------------------------
+
 export interface ConversationAnalysis {
-  intent: string;
+  intent:
+    string;
 
-  sentiment: string;
+  sentiment:
+    string;
 
-  priority: string;
+  priority:
+    string;
 
-  followUp: boolean;
+  followUp:
+    boolean;
 
-  actionItems: string[];
+  actionItems:
+    string[];
 
-  summary: string;
+  summary:
+    string;
 }
 
 type UnknownAnalysis =
   Partial<
     ConversationAnalysis
   >;
+
+//--------------------------------------------------
+// Normalization
+//--------------------------------------------------
 
 function normalizeString(
   value: unknown,
@@ -68,7 +96,8 @@ function normalizeAnalysis(
       Array.isArray(
         value.actionItems
       )
-        ? value.actionItems
+        ? value
+            .actionItems
             .filter(
               (
                 item
@@ -80,7 +109,7 @@ function normalizeAnalysis(
                 )
             )
             .map(
-              (item) =>
+              item =>
                 item.trim()
             )
         : [],
@@ -93,10 +122,18 @@ function normalizeAnalysis(
   };
 }
 
+//--------------------------------------------------
+// Generate Conversation Analysis
+//--------------------------------------------------
+
 export async function generateConversationAnalysis(
   transcript: string
 ): Promise<ConversationAnalysis> {
-  const prompt = `
+  const normalizedTranscript =
+    transcript.trim();
+
+  const prompt =
+    `
 You are an AI Call Center Analyst.
 
 Analyze the following conversation.
@@ -123,7 +160,7 @@ Rules:
 
 Conversation:
 
-${transcript}
+${normalizedTranscript}
 `;
 
   const result =
@@ -136,10 +173,24 @@ ${transcript}
       /\{[\s\S]*\}/
     );
 
-  if (!match) {
-    console.error(
-      "AI analysis response:",
-      result
+  if (
+    !match
+  ) {
+    log.warn(
+      {
+        event:
+          "conversation.analysis.invalid_response",
+
+        reason:
+          "json_object_not_found",
+
+        transcriptCharacterCount:
+          normalizedTranscript.length,
+
+        responseCharacterCount:
+          result.length,
+      },
+      "AI analysis response did not contain a JSON object"
     );
 
     throw new Error(
@@ -153,13 +204,52 @@ ${transcript}
         match[0]
       ) as UnknownAnalysis;
 
-    return normalizeAnalysis(
-      parsed
+    const analysis =
+      normalizeAnalysis(
+        parsed
+      );
+
+    log.info(
+      {
+        event:
+          "conversation.analysis.completed",
+
+        transcriptCharacterCount:
+          normalizedTranscript.length,
+
+        responseCharacterCount:
+          result.length,
+
+        actionItemCount:
+          analysis.actionItems.length,
+
+        followUp:
+          analysis.followUp,
+      },
+      "Conversation analysis completed"
     );
-  } catch (error) {
-    console.error(
-      "Failed analysis response:",
-      result
+
+    return analysis;
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "conversation.analysis.parse_failed",
+
+        transcriptCharacterCount:
+          normalizedTranscript.length,
+
+        responseCharacterCount:
+          result.length,
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Failed to parse conversation analysis"
     );
 
     throw error;

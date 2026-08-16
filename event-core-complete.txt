@@ -1,0 +1,278 @@
+ 
+===== "src\core\events\event-bus.ts" ===== 
+import { EventEmitter2 } from "eventemitter2";
+
+export const eventBus = new EventEmitter2({
+
+  wildcard: true,
+
+  delimiter: ".",
+
+  maxListeners: 100,
+
+  verboseMemoryLeak: true,
+
+}); 
+===== "src\core\events\event-types.ts" ===== 
+export enum AppEvent {
+
+  //-----------------------------------
+  // Call Lifecycle
+  //-----------------------------------
+
+  CALL_STARTED = "call.started",
+
+  CALL_RINGING = "call.ringing",
+
+  CALL_ANSWERED = "call.answered",
+
+  CALL_COMPLETED = "call.completed",
+
+  CALL_FAILED = "call.failed",
+
+  //-----------------------------------
+  // Conversation
+  //-----------------------------------
+
+  CONVERSATION_STARTED = "conversation.started",
+
+  CONVERSATION_MESSAGE = "conversation.message",
+
+  CONVERSATION_SUMMARY = "conversation.summary",
+
+  CONVERSATION_ANALYSIS = "conversation.analysis",
+
+  //-----------------------------------
+  // Voice States
+  //-----------------------------------
+
+  VOICE_LISTENING = "voice.listening",
+
+  VOICE_THINKING = "voice.thinking",
+
+  VOICE_SPEAKING = "voice.speaking",
+
+  VOICE_INTERRUPTED = "voice.interrupted",
+
+  VOICE_COMPLETED = "voice.completed",
+
+  //-----------------------------------
+  // Dashboard
+  //-----------------------------------
+
+  DASHBOARD_UPDATED = "dashboard.updated",
+
+  DASHBOARD_METRICS = "dashboard.metrics",
+
+  DASHBOARD_TIMELINE = "dashboard.timeline",
+
+  ACTIVE_CALL_UPDATED = "dashboard.active-call",
+
+  //-----------------------------------
+  // Metrics
+  //-----------------------------------
+
+  METRICS_UPDATED = "metrics.updated",
+
+  AUDIO_CONNECTED="audio.connected",
+
+  AUDIO_DISCONNECTED="audio.disconnected",
+
+  AUDIO_CHUNK_RECEIVED="audio.chunk.received",
+
+  AUDIO_CHUNK_SENT="audio.chunk.sent",
+
+} 
+===== "src\core\events\event-monitor.service.ts" ===== 
+import { AppEvent } from "./event-types";
+
+export interface EventRecord {
+
+  id: string;
+
+  event: AppEvent;
+
+  payload: unknown;
+
+  timestamp: Date;
+
+}
+
+export class EventMonitor {
+
+  private static events: EventRecord[] = [];
+
+  private static readonly MAX_EVENTS = 500;
+
+  static add(
+    event: AppEvent,
+    payload: unknown
+  ) {
+
+    this.events.unshift({
+
+      id: crypto.randomUUID(),
+
+      event,
+
+      payload,
+
+      timestamp: new Date(),
+
+    });
+
+    if (
+      this.events.length >
+      this.MAX_EVENTS
+    ) {
+
+      this.events.pop();
+
+    }
+
+  }
+
+  static getAll() {
+
+    return this.events;
+
+  }
+
+  static clear() {
+
+    this.events = [];
+
+  }
+
+} 
+===== "src\features\call-events\call-event.service.ts" ===== 
+import { Prisma, CallEventType } from "@prisma/client";
+import { CallEventRepository } from "./call-event.repository";
+
+export class CallEventService {
+  static async create(
+    callId: string,
+    type: CallEventType,
+    message?: string,
+    payload?: Prisma.InputJsonValue,
+    metadata?: Prisma.InputJsonValue
+  ) {
+    return CallEventRepository.create({
+      call: {
+        connect: {
+          id: callId,
+        },
+      },
+      type,
+      message,
+      payload,
+      metadata,
+    });
+  }
+} 
+===== "src\features\call-events\call-event.repository.ts" ===== 
+import { prisma } from "@/lib/prisma";
+
+import {
+    Prisma,
+    CallEventType,
+} from "@prisma/client";
+
+export class CallEventRepository {
+
+    static async create(
+
+        data: Prisma.CallEventCreateInput
+
+    ) {
+
+        return prisma.callEvent.create({
+
+            data,
+
+        });
+
+    }
+
+    static async getByCall(
+
+        callId: string
+
+    ) {
+
+        return prisma.callEvent.findMany({
+
+            where: {
+
+                callId,
+
+            },
+
+            orderBy: {
+
+                createdAt: "asc",
+
+            },
+
+        });
+
+    }
+
+    static async getLatest(
+  limit = 100
+) {
+
+  return prisma.callEvent.findMany({
+
+    orderBy: {
+
+      createdAt: "desc",
+
+    },
+
+    take: limit,
+
+  });
+
+}
+
+} 
+===== "src\features\call-events\call-event.schema.ts" ===== 
+import { z } from "zod";
+
+export const CreateCallEventSchema = z.object({
+  callId: z.string(),
+
+  message: z.string().optional(),
+
+  metadata: z
+    .record(
+      z.string(),
+      z.unknown()
+    )
+    .optional(),
+}); 
+===== "src\features\call-events\call-event.mapper.ts" ===== 
+import { CallEvent } from "@prisma/client";
+
+export interface CallEventDto {
+  id: string;
+  callId: string;
+  type: string;
+  message: string | null;
+  metadata: unknown;
+  createdAt: Date;
+}
+
+export function toCallEventDto(
+  event: CallEvent
+): CallEventDto {
+  return {
+    id: event.id,
+    callId: event.callId,
+    type: event.type,
+    message: event.message,
+    metadata: event.metadata,
+    createdAt: event.createdAt,
+  };
+}

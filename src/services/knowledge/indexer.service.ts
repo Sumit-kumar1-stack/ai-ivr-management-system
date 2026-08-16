@@ -1,32 +1,141 @@
-import { prisma } from "@/lib/prisma";
+import {
+  createServerLogger,
+  getDurationMs,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  prisma,
+} from "@/lib/prisma";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "knowledge-indexer"
+  );
+
+//--------------------------------------------------
+// Index Knowledge Chunks
+//--------------------------------------------------
 
 export async function indexDocuments(
   documentId: string,
   chunks: string[]
-) {
-  console.log("\n========== INDEXING ==========");
+): Promise<void> {
+  const startedAt =
+    process.hrtime.bigint();
 
-  for (
-    let i = 0;
-    i < chunks.length;
-    i++
+  if (
+    chunks.length ===
+    0
   ) {
-    console.log(
-      `Saving Chunk ${i + 1}`
-    );
+    log.debug(
+      {
+        event:
+          "knowledge.indexing.skipped",
 
-    await prisma.knowledgeChunk.create({
-      data: {
         documentId,
-        chunkIndex: i,
-        content: chunks[i],
-      },
-    });
 
-    console.log(
-      `Saved Chunk ${i + 1}`
+        reason:
+          "no_chunks",
+      },
+      "Knowledge indexing skipped"
     );
+
+    return;
   }
 
-  console.log("==============================\n");
+  log.info(
+    {
+      event:
+        "knowledge.indexing.started",
+
+      documentId,
+
+      chunkCount:
+        chunks.length,
+
+      totalCharacterCount:
+        chunks.reduce(
+          (
+            total,
+            chunk
+          ) =>
+            total +
+            chunk.length,
+          0
+        ),
+    },
+    "Knowledge chunk indexing started"
+  );
+
+  try {
+    await prisma.$transaction(
+      chunks.map(
+        (
+          chunk,
+          index
+        ) =>
+          prisma.knowledgeChunk.create({
+            data: {
+              documentId,
+
+              chunkIndex:
+                index,
+
+              content:
+                chunk,
+            },
+          })
+      )
+    );
+
+    log.info(
+      {
+        event:
+          "knowledge.indexing.completed",
+
+        documentId,
+
+        chunkCount:
+          chunks.length,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+      },
+      "Knowledge chunk indexing completed"
+    );
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "knowledge.indexing.failed",
+
+        documentId,
+
+        chunkCount:
+          chunks.length,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Knowledge chunk indexing failed"
+    );
+
+    throw error;
+  }
 }

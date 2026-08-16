@@ -1,7 +1,14 @@
 import WebSocket from "ws";
 
 import {
+  createCallLogger,
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
   DeepgramEvents,
+  DeepgramPayload,
 } from "./deepgram.events";
 
 //--------------------------------------------------
@@ -28,6 +35,15 @@ interface DeepgramSession {
 
   waitingLogWritten: boolean;
 }
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const serviceLog =
+  createServerLogger(
+    "deepgram-socket"
+  );
 
 //--------------------------------------------------
 // Session Store
@@ -72,6 +88,11 @@ export class DeepgramSocket {
   static async connect(
     callId: string
   ): Promise<void> {
+    const log =
+      createCallLogger(
+        callId
+      );
+
     const existingSession =
       sessions.get(
         callId
@@ -90,6 +111,18 @@ export class DeepgramSocket {
         existingSession
       );
 
+      log.debug(
+        {
+          event:
+            "deepgram.connection.reused",
+
+          readyState:
+            existingSession.socket
+              .readyState,
+        },
+        "Existing Deepgram connection reused"
+      );
+
       return;
     }
 
@@ -102,6 +135,17 @@ export class DeepgramSocket {
         .readyState ===
       WebSocket.CONNECTING
     ) {
+      log.debug(
+        {
+          event:
+            "deepgram.connection.waiting",
+
+          timeoutMs:
+            10_000,
+        },
+        "Waiting for existing Deepgram connection"
+      );
+
       await this.waitUntilOpen(
         callId,
         existingSession.socket
@@ -136,18 +180,19 @@ export class DeepgramSocket {
     //-------------------------------------
 
     const socket =
-      new WebSocket(
-        [
-          "wss://api.deepgram.com/v1/listen",
-          "?model=nova-3",
-          "&encoding=mulaw",
-          "&sample_rate=8000",
-          "&channels=1",
-          "&interim_results=true",
-          "&endpointing=300",
-        ].join(
-          ""
-        ),
+  new WebSocket(
+    [
+      "wss://api.deepgram.com/v1/listen",
+      "?model=nova-3",
+      "&encoding=mulaw",
+      "&sample_rate=8000",
+      "&channels=1",
+      "&interim_results=true",
+      "&endpointing=700",
+      "&utterance_end_ms=1200",
+    ].join(
+      ""
+    ),
         {
           headers: {
             Authorization:
@@ -180,6 +225,17 @@ export class DeepgramSocket {
       session
     );
 
+    log.info(
+      {
+        event:
+          "deepgram.connection.started",
+
+        maximumBufferBytes:
+          MAX_BUFFER_BYTES,
+      },
+      "Deepgram connection started"
+    );
+
     //---------------------------------------
     // Open
     //---------------------------------------
@@ -200,8 +256,21 @@ export class DeepgramSocket {
           return;
         }
 
-        console.log(
-          `✅ Deepgram Connected (${callId})`
+        log.info(
+          {
+            event:
+              "deepgram.connection.opened",
+
+            bufferedPackets:
+              currentSession
+                .pendingAudio
+                .length,
+
+            bufferedBytes:
+              currentSession
+                .pendingAudioBytes,
+          },
+          "Deepgram connection opened"
         );
 
         this.flushPendingAudio(
@@ -216,14 +285,18 @@ export class DeepgramSocket {
 
     socket.on(
       "message",
-      async (
-        message
-      ) => {
+      async message => {
+        const messageSizeBytes =
+          Buffer.byteLength(
+            message.toString(),
+            "utf8"
+          );
+
         try {
           const data =
-            JSON.parse(
-              message.toString()
-            );
+  JSON.parse(
+    message.toString()
+  ) as DeepgramPayload;
 
           await DeepgramEvents.handle(
             callId,
@@ -232,11 +305,23 @@ export class DeepgramSocket {
         } catch (
           error
         ) {
-          console.error(
-            `Deepgram message processing failed (${callId})`,
-            normalizeError(
-              error
-            )
+          /*
+           * Never log the message payload because it
+           * may contain speech transcripts.
+           */
+          log.error(
+            {
+              event:
+                "deepgram.message.processing_failed",
+
+              messageSizeBytes,
+
+              error:
+                normalizeError(
+                  error
+                ),
+            },
+            "Deepgram message processing failed"
           );
         }
       }
@@ -252,14 +337,17 @@ export class DeepgramSocket {
         code,
         reason
       ) => {
-        console.log(
-          `❌ Deepgram Closed (${callId})`,
+        log.info(
           {
+            event:
+              "deepgram.connection.closed",
+
             code,
 
-            reason:
-              reason.toString(),
-          }
+            reasonLength:
+              reason.length,
+          },
+          "Deepgram connection closed"
         );
 
         const currentSession =
@@ -272,12 +360,33 @@ export class DeepgramSocket {
             ?.socket ===
           socket
         ) {
+          const removedPackets =
+            currentSession
+              .pendingAudio
+              .length;
+
+          const removedBytes =
+            currentSession
+              .pendingAudioBytes;
+
           this.clearPendingAudio(
             currentSession
           );
 
           sessions.delete(
             callId
+          );
+
+          log.debug(
+            {
+              event:
+                "deepgram.session.removed",
+
+              removedPackets,
+
+              removedBytes,
+            },
+            "Deepgram session removed"
           );
         }
       }
@@ -289,14 +398,18 @@ export class DeepgramSocket {
 
     socket.on(
       "error",
-      (
-        error
-      ) => {
-        console.error(
-          `Deepgram Error (${callId})`,
-          normalizeError(
-            error
-          )
+      error => {
+        log.error(
+          {
+            event:
+              "deepgram.connection.error",
+
+            error:
+              normalizeError(
+                error
+              ),
+          },
+          "Deepgram connection error"
         );
       }
     );
@@ -362,6 +475,19 @@ export class DeepgramSocket {
         );
       }
 
+      log.error(
+        {
+          event:
+            "deepgram.connection.failed",
+
+          error:
+            normalizeError(
+              error
+            ),
+        },
+        "Deepgram connection failed"
+      );
+
       throw error;
     }
   }
@@ -398,7 +524,7 @@ export class DeepgramSocket {
         ) {
           reject(
             new Error(
-              `Deepgram socket is already closing or closed for call ${callId}`
+              "Deepgram socket is already closing or closed"
             )
           );
 
@@ -412,7 +538,7 @@ export class DeepgramSocket {
 
               reject(
                 new Error(
-                  `Deepgram connection timed out for call ${callId}`
+                  `Deepgram connection timed out after ${timeoutMs}ms`
                 )
               );
             },
@@ -447,9 +573,9 @@ export class DeepgramSocket {
             reject(
               new Error(
                 [
-                  `Deepgram closed before opening for call ${callId}.`,
-                  `Code: ${code},`,
-                  `reason: ${reason.toString()}`,
+                  "Deepgram closed before opening.",
+                  `Code: ${code}.`,
+                  `Reason length: ${reason.length}.`,
                 ].join(
                   " "
                 )
@@ -505,6 +631,11 @@ export class DeepgramSocket {
     callId: string,
     audio: Buffer
   ): Promise<boolean> {
+    const log =
+      createCallLogger(
+        callId
+      );
+
     //-------------------------------------
     // Validate Audio
     //-------------------------------------
@@ -531,8 +662,18 @@ export class DeepgramSocket {
     if (
       !session
     ) {
-      console.warn(
-        `No Deepgram session for call ${callId}`
+      log.warn(
+        {
+          event:
+            "deepgram.audio.rejected",
+
+          reason:
+            "session_not_found",
+
+          audioSizeBytes:
+            audio.length,
+        },
+        "Deepgram audio rejected because session was not found"
       );
 
       return false;
@@ -558,17 +699,24 @@ export class DeepgramSocket {
         session.waitingLogWritten =
           true;
 
-        console.log(
-          "Waiting for Deepgram; buffering incoming audio",
+        log.debug(
           {
-            callId,
+            event:
+              "deepgram.audio.buffering_started",
+
+            bufferedPackets:
+              session
+                .pendingAudio
+                .length,
 
             bufferedBytes:
-              session.pendingAudioBytes,
+              session
+                .pendingAudioBytes,
 
             maximumBufferBytes:
               MAX_BUFFER_BYTES,
-          }
+          },
+          "Incoming audio buffered while Deepgram connects"
         );
       }
 
@@ -589,15 +737,22 @@ export class DeepgramSocket {
         .readyState !==
       WebSocket.OPEN
     ) {
-      console.warn(
-        "Deepgram audio rejected because socket is unavailable",
+      log.warn(
         {
-          callId,
+          event:
+            "deepgram.audio.rejected",
+
+          reason:
+            "socket_unavailable",
 
           readyState:
             session.socket
               .readyState,
-        }
+
+          audioSizeBytes:
+            audio.length,
+        },
+        "Deepgram audio rejected because socket is unavailable"
       );
 
       return false;
@@ -642,11 +797,20 @@ export class DeepgramSocket {
     } catch (
       error
     ) {
-      console.error(
-        `Failed to send audio to Deepgram (${callId})`,
-        normalizeError(
-          error
-        )
+      log.error(
+        {
+          event:
+            "deepgram.audio.send_failed",
+
+          audioSizeBytes:
+            audio.length,
+
+          error:
+            normalizeError(
+              error
+            ),
+        },
+        "Failed to send audio to Deepgram"
       );
 
       return false;
@@ -663,6 +827,11 @@ export class DeepgramSocket {
     audio:
       Buffer
   ): void {
+    const log =
+      createCallLogger(
+        session.callId
+      );
+
     /*
      * Copy the buffer because the caller may reuse or
      * mutate its original Buffer after this function.
@@ -723,22 +892,28 @@ export class DeepgramSocket {
       droppedPackets >
       0
     ) {
-      console.warn(
-        "Deepgram audio buffer limit reached; oldest packets dropped",
+      log.warn(
         {
-          callId:
-            session.callId,
+          event:
+            "deepgram.audio.buffer_limit_reached",
 
           droppedPackets,
 
           droppedBytes,
 
+          bufferedPackets:
+            session
+              .pendingAudio
+              .length,
+
           bufferedBytes:
-            session.pendingAudioBytes,
+            session
+              .pendingAudioBytes,
 
           maximumBufferBytes:
             MAX_BUFFER_BYTES,
-        }
+        },
+        "Deepgram audio buffer limit reached; oldest packets dropped"
       );
     }
   }
@@ -751,6 +926,11 @@ export class DeepgramSocket {
     session:
       DeepgramSession
   ): void {
+    const log =
+      createCallLogger(
+        session.callId
+      );
+
     if (
       session.flushingAudio
     ) {
@@ -821,34 +1001,59 @@ export class DeepgramSocket {
         );
       }
 
-      console.log(
-        "Buffered audio flushed to Deepgram",
+      log.debug(
         {
-          callId:
-            session.callId,
+          event:
+            "deepgram.audio.buffer_flushed",
 
-          packets:
-            initialPackets,
+          flushedPackets:
+            initialPackets -
+            session
+              .pendingAudio
+              .length,
 
-          bytes:
-            initialBytes,
+          initialPackets,
+
+          initialBytes,
 
           remainingPackets:
-            session.pendingAudio
+            session
+              .pendingAudio
               .length,
 
           remainingBytes:
-            session.pendingAudioBytes,
-        }
+            session
+              .pendingAudioBytes,
+        },
+        "Buffered audio flushed to Deepgram"
       );
     } catch (
       error
     ) {
-      console.error(
-        `Failed to flush buffered Deepgram audio (${session.callId})`,
-        normalizeError(
-          error
-        )
+      log.error(
+        {
+          event:
+            "deepgram.audio.buffer_flush_failed",
+
+          initialPackets,
+
+          initialBytes,
+
+          remainingPackets:
+            session
+              .pendingAudio
+              .length,
+
+          remainingBytes:
+            session
+              .pendingAudioBytes,
+
+          error:
+            normalizeError(
+              error
+            ),
+        },
+        "Failed to flush buffered Deepgram audio"
       );
     } finally {
       session.flushingAudio =
@@ -889,6 +1094,11 @@ export class DeepgramSocket {
   static async close(
     callId: string
   ): Promise<void> {
+    const log =
+      createCallLogger(
+        callId
+      );
+
     const session =
       sessions.get(
         callId
@@ -899,6 +1109,13 @@ export class DeepgramSocket {
     ) {
       return;
     }
+
+    const removedPackets =
+      session.pendingAudio
+        .length;
+
+    const removedBytes =
+      session.pendingAudioBytes;
 
     sessions.delete(
       callId
@@ -921,6 +1138,22 @@ export class DeepgramSocket {
         "Call completed"
       );
     }
+
+    log.info(
+      {
+        event:
+          "deepgram.session.closed",
+
+        previousReadyState:
+          session.socket
+            .readyState,
+
+        removedPackets,
+
+        removedBytes,
+      },
+      "Deepgram session closed"
+    );
   }
 
   //---------------------------------------
@@ -1003,49 +1236,24 @@ function getPositiveIntegerEnvironmentValue(
     parsedValue <=
       0
   ) {
-    console.warn(
-      `Invalid ${name}; using default`,
+    serviceLog.warn(
       {
-        configuredValue:
-          rawValue,
+        event:
+          "deepgram.configuration.invalid_integer",
+
+        environmentVariable:
+          name,
+
+        configuredValuePresent:
+          true,
 
         fallback,
-      }
+      },
+      "Invalid Deepgram integer configuration; default used"
     );
 
     return fallback;
   }
 
   return parsedValue;
-}
-
-//--------------------------------------------------
-// Normalize Error
-//--------------------------------------------------
-
-function normalizeError(
-  error: unknown
-) {
-  if (
-    error instanceof
-    Error
-  ) {
-    return {
-      name:
-        error.name,
-
-      message:
-        error.message,
-
-      stack:
-        error.stack,
-    };
-  }
-
-  return {
-    message:
-      String(
-        error
-      ),
-  };
 }

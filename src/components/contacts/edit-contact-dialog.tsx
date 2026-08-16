@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import {
   Dialog,
@@ -32,19 +32,42 @@ export default function EditContactDialog({
   onOpenChange,
   contact,
 }: Props) {
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>
+            Edit Contact
+          </DialogTitle>
+        </DialogHeader>
+
+        {open && contact && (
+          <EditContactForm
+            key={contact.id}
+            contact={contact}
+            onOpenChange={onOpenChange}
+          />
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+interface FormProps {
+  contact: Props["contact"];
+  onOpenChange: (open: boolean) => void;
+}
+
+function EditContactForm({ contact, onOpenChange }: FormProps) {
   const update = useUpdateContact();
 
   const [fullName, setFullName] = useState(contact.fullName);
   const [phone, setPhone] = useState(contact.phone);
   const [email, setEmail] = useState(contact.email);
   const [language, setLanguage] = useState(contact.language);
-
-  useEffect(() => {
-    setFullName(contact.fullName);
-    setPhone(contact.phone);
-    setEmail(contact.email);
-    setLanguage(contact.language);
-  }, [contact]);
 
   function save() {
     update.mutate(
@@ -64,65 +87,34 @@ export default function EditContactDialog({
   }
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={onOpenChange}
-    >
-      <DialogContent>
+    <div className="space-y-4">
+      <Input
+        value={fullName}
+        onChange={(e) => setFullName(e.target.value)}
+      />
 
-        <DialogHeader>
+      <Input
+        value={phone}
+        onChange={(e) => setPhone(e.target.value)}
+      />
 
-          <DialogTitle>
+      <Input
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+      />
 
-            Edit Contact
+      <Input
+        value={language}
+        onChange={(e) => setLanguage(e.target.value)}
+      />
 
-          </DialogTitle>
-
-        </DialogHeader>
-
-        <div className="space-y-4">
-
-          <Input
-            value={fullName}
-            onChange={(e) =>
-              setFullName(e.target.value)
-            }
-          />
-
-          <Input
-            value={phone}
-            onChange={(e) =>
-              setPhone(e.target.value)
-            }
-          />
-
-          <Input
-            value={email}
-            onChange={(e) =>
-              setEmail(e.target.value)
-            }
-          />
-
-          <Input
-            value={language}
-            onChange={(e) =>
-              setLanguage(e.target.value)
-            }
-          />
-
-<Button
-className="w-full"
-disabled={update.isPending}
-onClick={save}
->
-        {update.isPending
-  ? "Saving..."
-  : "Save Changes"}
-          </Button>
-
-        </div>
-
-      </DialogContent>
-    </Dialog>
+      <Button
+        className="w-full"
+        disabled={update.isPending}
+        onClick={save}
+      >
+        {update.isPending ? "Saving..." : "Save Changes"}
+      </Button>
+    </div>
   );
 }

@@ -22,7 +22,7 @@ className="mt-2 list-disc pl-5 text-sm text-gray-600"
 
 <li>Be polite.</li>
 
-<li>Don't invent information.</li>
+<li>Don&apos;t invent information.</li>
 
 <li>Confirm before ending.</li>
 

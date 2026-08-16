@@ -6,10 +6,6 @@ import {
   TranscriptSubscriber,
 } from "@/services/speech/transcript.subscriber";
 
-import {
-  RealtimeSubscriber,
-} from "@/services/realtime/realtime-subscriber";
-
 //--------------------------------------------------
 // Process-Global Bootstrap State
 //--------------------------------------------------
@@ -53,8 +49,6 @@ export function bootstrap():
     EventRegistry.initialize();
 
     TranscriptSubscriber.register();
-
-    RealtimeSubscriber.register();
 
     console.log(
       "Application bootstrapped"

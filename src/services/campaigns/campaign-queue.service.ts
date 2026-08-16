@@ -3,9 +3,13 @@ import {
 } from "bullmq";
 
 import {
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
   redisConnection,
 } from "@/lib/redis";
-
 
 //--------------------------------------------------
 // Queue Constants
@@ -14,34 +18,88 @@ import {
 export const CAMPAIGN_QUEUE_NAME =
   "campaign-processing";
 
-
 export const CAMPAIGN_JOB_NAME =
   "run-campaign";
 
+//--------------------------------------------------
+// Limits
+//--------------------------------------------------
+
+const MAX_DELAY_MS =
+  30 *
+  24 *
+  60 *
+  60 *
+  1000;
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "campaign-queue"
+  );
 
 //--------------------------------------------------
 // Job Payload
 //--------------------------------------------------
 
 export interface CampaignJobData {
-  campaignId: string;
+  campaignId:
+    string;
 
-  campaignRunId: string;
+  campaignRunId:
+    string;
 }
 
+//--------------------------------------------------
+// Enqueue Options
+//--------------------------------------------------
+
+export interface CampaignEnqueueOptions {
+  delayMs?:
+    number;
+}
 
 //--------------------------------------------------
 // Build Safe BullMQ Job ID
 //--------------------------------------------------
 
 function buildCampaignJobId(
-  campaignRunId: string
+  campaignRunId:
+    string
 ): string {
-
   return `campaign-run-${campaignRunId}`;
-
 }
 
+//--------------------------------------------------
+// Normalize Delay
+//--------------------------------------------------
+
+function normalizeDelay(
+  delayMs:
+    number | undefined
+): number {
+  if (
+    delayMs ===
+      undefined ||
+    !Number.isFinite(
+      delayMs
+    ) ||
+    delayMs <=
+      0
+  ) {
+    return 0;
+  }
+
+  return Math.min(
+    Math.floor(
+      delayMs
+    ),
+    MAX_DELAY_MS
+  );
+}
 
 //--------------------------------------------------
 // BullMQ Queue
@@ -68,7 +126,9 @@ export const campaignQueue =
 
         removeOnComplete: {
           age:
-            24 * 60 * 60,
+            24 *
+            60 *
+            60,
 
           count:
             1_000,
@@ -76,7 +136,10 @@ export const campaignQueue =
 
         removeOnFail: {
           age:
-            7 * 24 * 60 * 60,
+            7 *
+            24 *
+            60 *
+            60,
 
           count:
             5_000,
@@ -85,26 +148,38 @@ export const campaignQueue =
     }
   );
 
-
 //--------------------------------------------------
 // Campaign Queue Service
 //--------------------------------------------------
 
 export class CampaignQueueService {
+  //------------------------------------------------
+  // Enqueue
+  //------------------------------------------------
 
   static async enqueue(
-    data: CampaignJobData
-  ) {
+    data:
+      CampaignJobData,
 
+    options:
+      CampaignEnqueueOptions =
+      {}
+  ) {
     const jobId =
       buildCampaignJobId(
         data.campaignRunId
       );
 
+    const delayMs =
+      normalizeDelay(
+        options.delayMs
+      );
 
-    console.info(
-      "Adding campaign job",
+    log.info(
       {
+        event:
+          "campaign.queue.enqueue_started",
+
         campaignId:
           data.campaignId,
 
@@ -112,29 +187,38 @@ export class CampaignQueueService {
           data.campaignRunId,
 
         jobId,
-      }
+
+        delayed:
+          delayMs >
+          0,
+
+        delayMs,
+      },
+      "Adding campaign job"
     );
 
-
     try {
-
       const job =
         await campaignQueue.add(
           CAMPAIGN_JOB_NAME,
           data,
           {
             /*
-             * Prevent duplicate jobs for the same
-             * campaign run.
+             * Prevent duplicate BullMQ jobs for
+             * the same database campaign run.
              */
             jobId,
+
+            delay:
+              delayMs,
           }
         );
 
-
-      console.info(
-        "Campaign job added",
+      log.info(
         {
+          event:
+            "campaign.queue.enqueued",
+
           jobId:
             job.id,
 
@@ -143,17 +227,25 @@ export class CampaignQueueService {
 
           campaignRunId:
             data.campaignRunId,
-        }
+
+          delayed:
+            delayMs >
+            0,
+
+          delayMs,
+        },
+        "Campaign job added"
       );
 
-
       return job;
-
-    } catch (error) {
-
-      console.error(
-        "BullMQ campaign enqueue failed",
+    } catch (
+      error
+    ) {
+      log.error(
         {
+          event:
+            "campaign.queue.enqueue_failed",
+
           campaignId:
             data.campaignId,
 
@@ -162,77 +254,68 @@ export class CampaignQueueService {
 
           jobId,
 
+          delayMs,
+
           error:
-            error instanceof Error
-              ? {
-                  name:
-                    error.name,
-
-                  message:
-                    error.message,
-
-                  stack:
-                    error.stack,
-                }
-              : error,
-        }
+            normalizeError(
+              error
+            ),
+        },
+        "BullMQ campaign enqueue failed"
       );
 
-
       throw error;
-
     }
-
   }
 
+  //------------------------------------------------
+  // Get Job
+  //------------------------------------------------
 
   static async getJob(
-    campaignRunId: string
+    campaignRunId:
+      string
   ) {
-
     const jobId =
       buildCampaignJobId(
         campaignRunId
       );
 
-
     return campaignQueue.getJob(
       jobId
     );
-
   }
 
+  //------------------------------------------------
+  // Remove Job
+  //------------------------------------------------
 
   static async removeJob(
-    campaignRunId: string
+    campaignRunId:
+      string
   ): Promise<boolean> {
-
     const job =
       await this.getJob(
         campaignRunId
       );
 
-
-    if (!job) {
-
+    if (
+      !job
+    ) {
       return false;
-
     }
-
 
     await job.remove();
 
-
     return true;
-
   }
 
+  //------------------------------------------------
+  // Close
+  //------------------------------------------------
 
   static async close():
     Promise<void> {
-
     await campaignQueue.close();
-
   }
-
 }

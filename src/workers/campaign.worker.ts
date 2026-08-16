@@ -17,55 +17,36 @@ import {
 } from "@/lib/redis";
 
 import {
-  createWorkerLogger,
-  getDurationMs,
-  normalizeError,
-} from "@/lib/logger";
-
-import {
   CAMPAIGN_JOB_NAME,
   CAMPAIGN_QUEUE_NAME,
-  CampaignJobData,
+  type CampaignJobData,
 } from "@/services/campaigns/campaign-queue.service";
 
 import {
   runCampaign,
-  RunCampaignResult,
+  type RunCampaignResult,
 } from "@/services/campaigns/campaign-runner.service";
 
 //--------------------------------------------------
-// Logger
+// Constants
 //--------------------------------------------------
 
-const log =
-  createWorkerLogger(
-    "campaign-worker",
-    {
-      queue:
-        CAMPAIGN_QUEUE_NAME,
-    }
-  );
+const DEFAULT_CONCURRENCY =
+  3;
 
-//--------------------------------------------------
-// Job Timing
-//--------------------------------------------------
-
-const jobStartedTimes =
-  new Map<
-    string,
-    bigint
-  >();
+const MAX_CONCURRENCY =
+  20;
 
 //--------------------------------------------------
 // Worker State
 //--------------------------------------------------
 
 let campaignWorker:
-  | Worker<
-      CampaignJobData,
-      RunCampaignResult
-    >
-  | null =
+  Worker<
+    CampaignJobData,
+    RunCampaignResult
+  > |
+  null =
     null;
 
 //--------------------------------------------------
@@ -77,25 +58,26 @@ export function initializeCampaignWorker():
     CampaignJobData,
     RunCampaignResult
   > {
+  //------------------------------------------------
+  // Reuse Existing Worker
+  //------------------------------------------------
+
   if (
     campaignWorker
   ) {
-    log.debug(
-      {
-        event:
-          "campaign.worker.initialize.skipped",
-
-        reason:
-          "already_initialized",
-      },
-      "Campaign worker is already initialized"
-    );
-
     return campaignWorker;
   }
 
+  //------------------------------------------------
+  // Resolve Concurrency
+  //------------------------------------------------
+
   const concurrency =
     getWorkerConcurrency();
+
+  //------------------------------------------------
+  // Create BullMQ Worker
+  //------------------------------------------------
 
   campaignWorker =
     new Worker<
@@ -111,56 +93,9 @@ export function initializeCampaignWorker():
             RunCampaignResult
           >
       ): Promise<RunCampaignResult> => {
-        const {
-          campaignId,
-          campaignRunId,
-        } =
-          job.data;
-
-        const startedAt =
-          process.hrtime.bigint();
-
-        if (
-          job.id
-        ) {
-          jobStartedTimes.set(
-            String(
-              job.id
-            ),
-            startedAt
-          );
-        }
-
-        const jobLog =
-          createWorkerLogger(
-            "campaign-worker",
-            {
-              queue:
-                CAMPAIGN_QUEUE_NAME,
-
-              jobId:
-                job.id,
-
-              jobName:
-                job.name,
-
-              campaignId,
-
-              campaignRunId,
-
-              bullAttempt:
-                job.attemptsMade +
-                1,
-            }
-          );
-
-        jobLog.info(
-          {
-            event:
-              "campaign.job.processing.started",
-          },
-          "Campaign worker started processing job"
-        );
+        //------------------------------------------
+        // Validate Job Type
+        //------------------------------------------
 
         if (
           job.name !==
@@ -171,69 +106,107 @@ export function initializeCampaignWorker():
           );
         }
 
-        try {
-          const result =
-            await runCampaign(
-              campaignId,
-              campaignRunId
-            );
+        //------------------------------------------
+        // Resolve Job Data
+        //------------------------------------------
 
-          await job.updateProgress(
-            100
-          );
+        const {
+          campaignId,
+          campaignRunId,
+        } =
+          job.data;
 
-          jobLog.info(
-            {
-              event:
-                "campaign.job.processing.completed",
+        //------------------------------------------
+        // Validate Job Payload
+        //------------------------------------------
 
-              durationMs:
-                getDurationMs(
-                  startedAt
-                ),
-
-              total:
-                result.total,
-
-              processed:
-                result.processed,
-
-              successful:
-                result.successful,
-
-              failed:
-                result.failed,
-
-              status:
-                result.status,
-            },
-            "Campaign job processing completed"
-          );
-
-          return result;
-        } catch (
-          error
+        if (
+          !campaignId
+            ?.trim()
         ) {
-          jobLog.error(
-            {
-              event:
-                "campaign.job.processing.failed",
+          throw new Error(
+            "Campaign job is missing campaignId"
+          );
+        }
 
-              durationMs:
-                getDurationMs(
-                  startedAt
-                ),
+        if (
+          !campaignRunId
+            ?.trim()
+        ) {
+          throw new Error(
+            "Campaign job is missing campaignRunId"
+          );
+        }
 
-              error:
-                normalizeError(
-                  error
-                ),
-            },
-            "Campaign job processing failed"
+        //------------------------------------------
+        // Diagnostics
+        //------------------------------------------
+
+        console.log(
+          "Campaign worker processing job",
+          {
+            jobId:
+              job.id,
+
+            jobName:
+              job.name,
+
+            campaignId,
+
+            campaignRunId,
+
+            attempt:
+              job.attemptsMade +
+              1,
+          }
+        );
+
+        //------------------------------------------
+        // Initial Progress
+        //------------------------------------------
+
+        await job.updateProgress(
+          0
+        );
+
+        //------------------------------------------
+        // Run Campaign
+        //------------------------------------------
+
+        /*
+         * campaign-runner.service.ts owns:
+         *
+         * - CampaignRun claiming
+         * - Campaign RUNNING transition
+         * - contact validation
+         * - provider destination resolution
+         * - outbound workflow resolution
+         * - startCall()
+         * - per-contact progress persistence
+         * - campaign finalization
+         *
+         * The worker should not duplicate those
+         * business rules.
+         */
+        const result =
+          await runCampaign(
+            campaignId,
+            campaignRunId
           );
 
-          throw error;
-        }
+        //------------------------------------------
+        // Final Progress
+        //------------------------------------------
+
+        await job.updateProgress(
+          100
+        );
+
+        //------------------------------------------
+        // Result
+        //------------------------------------------
+
+        return result;
       },
 
       {
@@ -251,14 +224,14 @@ export function initializeCampaignWorker():
   campaignWorker.on(
     "ready",
     () => {
-      log.info(
+      console.log(
+        "Campaign worker ready",
         {
-          event:
-            "campaign.worker.ready",
+          queue:
+            CAMPAIGN_QUEUE_NAME,
 
           concurrency,
-        },
-        "Campaign worker is ready"
+        }
       );
     }
   );
@@ -270,43 +243,27 @@ export function initializeCampaignWorker():
   campaignWorker.on(
     "active",
     job => {
-      const jobId =
-        String(
-          job.id ??
-          ""
-        );
-
-      if (
-        jobId &&
-        !jobStartedTimes.has(
-          jobId
-        )
-      ) {
-        jobStartedTimes.set(
-          jobId,
-          process.hrtime.bigint()
-        );
-      }
-
-      log.info(
+      console.log(
+        "Campaign job started",
         {
-          event:
-            "campaign.job.active",
-
           jobId:
             job.id,
 
+          jobName:
+            job.name,
+
           campaignId:
-            job.data.campaignId,
+            job.data
+              .campaignId,
 
           campaignRunId:
-            job.data.campaignRunId,
+            job.data
+              .campaignRunId,
 
-          bullAttempt:
+          attempt:
             job.attemptsMade +
             1,
-        },
-        "Campaign job became active"
+        }
       );
     }
   );
@@ -321,23 +278,22 @@ export function initializeCampaignWorker():
       job,
       progress
     ) => {
-      log.debug(
+      console.log(
+        "Campaign job progress updated",
         {
-          event:
-            "campaign.job.progress",
-
           jobId:
             job.id,
 
           campaignId:
-            job.data.campaignId,
+            job.data
+              .campaignId,
 
           campaignRunId:
-            job.data.campaignRunId,
+            job.data
+              .campaignRunId,
 
           progress,
-        },
-        "Campaign job progress updated"
+        }
       );
     }
   );
@@ -352,40 +308,19 @@ export function initializeCampaignWorker():
       job,
       result
     ) => {
-      const jobId =
-        String(
-          job.id ??
-          ""
-        );
-
-      const startedAt =
-        jobId
-          ? jobStartedTimes.get(
-              jobId
-            )
-          : undefined;
-
-      if (
-        jobId
-      ) {
-        jobStartedTimes.delete(
-          jobId
-        );
-      }
-
-      log.info(
+      console.log(
+        "Campaign job completed",
         {
-          event:
-            "campaign.job.completed",
-
           jobId:
             job.id,
 
           campaignId:
-            result.campaignId,
+            result
+              .campaignId,
 
           campaignRunId:
-            result.campaignRunId,
+            result
+              .campaignRunId,
 
           total:
             result.total,
@@ -401,15 +336,7 @@ export function initializeCampaignWorker():
 
           status:
             result.status,
-
-          durationMs:
-            startedAt
-              ? getDurationMs(
-                  startedAt
-                )
-              : undefined,
-        },
-        "Campaign job completed"
+        }
       );
     }
   );
@@ -424,62 +351,44 @@ export function initializeCampaignWorker():
       job,
       error
     ) => {
-      const jobId =
-        String(
-          job?.id ??
-          ""
-        );
+      //------------------------------------------
+      // Failure Log
+      //------------------------------------------
 
-      const startedAt =
-        jobId
-          ? jobStartedTimes.get(
-              jobId
-            )
-          : undefined;
-
-      if (
-        jobId
-      ) {
-        jobStartedTimes.delete(
-          jobId
-        );
-      }
-
-      log.error(
+      console.error(
+        "Campaign job failed",
         {
-          event:
-            "campaign.job.failed",
-
           jobId:
             job?.id,
 
           campaignId:
-            job?.data.campaignId,
+            job?.data
+              .campaignId,
 
           campaignRunId:
-            job?.data.campaignRunId,
+            job?.data
+              .campaignRunId,
 
           attemptsMade:
-            job?.attemptsMade,
+            job
+              ?.attemptsMade,
 
           attemptsAllowed:
-            job?.opts.attempts ??
+            job
+              ?.opts
+              .attempts ??
             1,
-
-          durationMs:
-            startedAt
-              ? getDurationMs(
-                  startedAt
-                )
-              : undefined,
 
           error:
             normalizeError(
               error
             ),
-        },
-        "Campaign job failed"
+        }
       );
+
+      //------------------------------------------
+      // No Job Information
+      //------------------------------------------
 
       if (
         !job
@@ -487,148 +396,57 @@ export function initializeCampaignWorker():
         return;
       }
 
+      //------------------------------------------
+      // BullMQ Retry Check
+      //------------------------------------------
+
       const attemptsAllowed =
-        job.opts.attempts ??
+        job.opts
+          .attempts ??
         1;
 
       /*
-       * BullMQ may retry the job. Do not mark the
-       * campaign permanently failed until all worker
-       * attempts have been exhausted.
+       * BullMQ may retry the campaign job.
+       *
+       * Do not mark the database campaign/run
+       * permanently FAILED while another BullMQ
+       * execution attempt is still pending.
        */
       if (
         job.attemptsMade <
         attemptsAllowed
       ) {
-        log.warn(
+        console.warn(
+          "Campaign job will be retried",
           {
-            event:
-              "campaign.job.retry_pending",
-
             jobId:
               job.id,
 
             campaignId:
-              job.data.campaignId,
+              job.data
+                .campaignId,
 
             campaignRunId:
-              job.data.campaignRunId,
+              job.data
+                .campaignRunId,
 
             attemptsMade:
               job.attemptsMade,
 
             attemptsAllowed,
-          },
-          "Campaign worker retry is still available"
+          }
         );
 
         return;
       }
 
-      const completedAt =
-        new Date();
+      //------------------------------------------
+      // Final BullMQ Failure
+      //------------------------------------------
 
-      try {
-        const [
-          campaignRunResult,
-          campaignResult,
-        ] =
-          await prisma.$transaction([
-            prisma.campaignRun.updateMany({
-              where: {
-                id:
-                  job.data
-                    .campaignRunId,
-
-                status: {
-                  in: [
-                    CampaignRunStatus.QUEUED,
-                    CampaignRunStatus.RUNNING,
-                  ],
-                },
-              },
-
-              data: {
-                status:
-                  CampaignRunStatus.FAILED,
-
-                completedAt,
-              },
-            }),
-
-            prisma.campaign.updateMany({
-              where: {
-                id:
-                  job.data
-                    .campaignId,
-
-                status: {
-                  in: [
-                    CampaignStatus.QUEUED,
-                    CampaignStatus.RUNNING,
-                  ],
-                },
-              },
-
-              data: {
-                status:
-                  CampaignStatus.FAILED,
-
-                completedAt,
-              },
-            }),
-          ]);
-
-        log.warn(
-          {
-            event:
-              "campaign.job.terminal_failure_persisted",
-
-            jobId:
-              job.id,
-
-            campaignId:
-              job.data.campaignId,
-
-            campaignRunId:
-              job.data.campaignRunId,
-
-            campaignRunUpdated:
-              campaignRunResult.count,
-
-            campaignUpdated:
-              campaignResult.count,
-
-            completedAt:
-              completedAt.toISOString(),
-          },
-          "Terminal campaign worker failure persisted"
-        );
-      } catch (
-        persistenceError
-      ) {
-        log.error(
-          {
-            event:
-              "campaign.job.terminal_failure_persistence_failed",
-
-            jobId:
-              job.id,
-
-            campaignId:
-              job.data.campaignId,
-
-            campaignRunId:
-              job.data.campaignRunId,
-
-            error:
-              normalizeError(
-                persistenceError
-              ),
-          },
-          "Failed to persist terminal campaign worker failure"
-        );
-      }
+      await persistTerminalWorkerFailure(
+        job.data
+      );
     }
   );
 
@@ -639,32 +457,161 @@ export function initializeCampaignWorker():
   campaignWorker.on(
     "error",
     error => {
-      log.error(
-        {
-          event:
-            "campaign.worker.error",
-
-          error:
-            normalizeError(
-              error
-            ),
-        },
-        "Campaign worker error"
+      /*
+       * Worker-level error does not necessarily
+       * correspond to a specific campaign job.
+       * Therefore no campaign database state is
+       * changed from this event.
+       */
+      console.error(
+        "Campaign worker error",
+        normalizeError(
+          error
+        )
       );
     }
   );
 
-  log.info(
+  //------------------------------------------------
+  // Worker Initialized
+  //------------------------------------------------
+
+  console.log(
+    "Campaign worker initialized",
     {
-      event:
-        "campaign.worker.initialized",
+      queue:
+        CAMPAIGN_QUEUE_NAME,
 
       concurrency,
-    },
-    "Campaign worker initialized"
+    }
   );
 
   return campaignWorker;
+}
+
+//--------------------------------------------------
+// Persist Terminal Worker Failure
+//--------------------------------------------------
+
+async function persistTerminalWorkerFailure(
+  data:
+    CampaignJobData
+): Promise<void> {
+  const completedAt =
+    new Date();
+
+  try {
+    await prisma.$transaction([
+      //--------------------------------------------
+      // Campaign Run
+      //--------------------------------------------
+
+      prisma
+        .campaignRun
+        .updateMany({
+          where: {
+            id:
+              data
+                .campaignRunId,
+
+            campaignId:
+              data
+                .campaignId,
+
+            status: {
+              in: [
+                CampaignRunStatus.QUEUED,
+                CampaignRunStatus.RUNNING,
+              ],
+            },
+          },
+
+          data: {
+            status:
+              CampaignRunStatus.FAILED,
+
+            completedAt,
+          },
+        }),
+
+      //--------------------------------------------
+      // Campaign
+      //--------------------------------------------
+
+      prisma
+        .campaign
+        .updateMany({
+          where: {
+            id:
+              data
+                .campaignId,
+
+            /*
+             * SCHEDULED is included because Phase 14
+             * supports delayed BullMQ campaign jobs.
+             *
+             * Normally the runner moves the campaign
+             * to RUNNING before execution; this also
+             * protects failures that occur before that
+             * transition can complete.
+             */
+            status: {
+              in: [
+                CampaignStatus.SCHEDULED,
+                CampaignStatus.QUEUED,
+                CampaignStatus.RUNNING,
+              ],
+            },
+          },
+
+          data: {
+            status:
+              CampaignStatus.FAILED,
+
+            completedAt,
+          },
+        }),
+    ]);
+
+    console.error(
+      "Terminal campaign worker failure persisted",
+      {
+        campaignId:
+          data.campaignId,
+
+        campaignRunId:
+          data.campaignRunId,
+
+        completedAt:
+          completedAt
+            .toISOString(),
+      }
+    );
+  } catch (
+    persistenceError
+  ) {
+    /*
+     * Do not throw from a BullMQ event listener.
+     * The job is already terminally failed.
+     */
+    console.error(
+      "Failed to persist terminal campaign worker failure",
+      {
+        campaignId:
+          data
+            .campaignId,
+
+        campaignRunId:
+          data
+            .campaignRunId,
+
+        error:
+          normalizeError(
+            persistenceError
+          ),
+      }
+    );
+  }
 }
 
 //--------------------------------------------------
@@ -672,11 +619,11 @@ export function initializeCampaignWorker():
 //--------------------------------------------------
 
 export function getCampaignWorker():
-  | Worker<
-      CampaignJobData,
-      RunCampaignResult
-    >
-  | null {
+  Worker<
+    CampaignJobData,
+    RunCampaignResult
+  > |
+  null {
   return campaignWorker;
 }
 
@@ -689,48 +636,19 @@ export async function closeCampaignWorker():
   if (
     !campaignWorker
   ) {
-    log.debug(
-      {
-        event:
-          "campaign.worker.close.skipped",
-
-        reason:
-          "not_initialized",
-      },
-      "Campaign worker is not initialized"
-    );
-
     return;
   }
 
-  const startedAt =
-    process.hrtime.bigint();
-
-  log.info(
-    {
-      event:
-        "campaign.worker.close.started",
-    },
-    "Campaign worker shutdown started"
-  );
+  //------------------------------------------------
+  // Graceful BullMQ Shutdown
+  //------------------------------------------------
 
   await campaignWorker.close();
 
   campaignWorker =
     null;
 
-  jobStartedTimes.clear();
-
-  log.info(
-    {
-      event:
-        "campaign.worker.close.completed",
-
-      durationMs:
-        getDurationMs(
-          startedAt
-        ),
-    },
+  console.log(
     "Campaign worker closed"
   );
 }
@@ -751,7 +669,11 @@ function getWorkerConcurrency():
       ? Number(
           rawValue
         )
-      : 3;
+      : DEFAULT_CONCURRENCY;
+
+  //------------------------------------------------
+  // Invalid Value
+  //------------------------------------------------
 
   if (
     !Number.isInteger(
@@ -760,25 +682,108 @@ function getWorkerConcurrency():
     parsedValue <
       1
   ) {
-    log.warn(
+    console.warn(
+      `Invalid CAMPAIGN_CALL_CONCURRENCY; using ${DEFAULT_CONCURRENCY}`,
       {
-        event:
-          "campaign.worker.invalid_concurrency",
-
         configuredValue:
           rawValue,
-
-        fallbackValue:
-          3,
-      },
-      "Invalid CAMPAIGN_CALL_CONCURRENCY; using default"
+      }
     );
 
-    return 3;
+    return DEFAULT_CONCURRENCY;
   }
+
+  //------------------------------------------------
+  // Safety Cap
+  //------------------------------------------------
 
   return Math.min(
     parsedValue,
-    20
+    MAX_CONCURRENCY
   );
+}
+
+//--------------------------------------------------
+// Normalize Error
+//--------------------------------------------------
+
+function normalizeError(
+  error:
+    unknown
+): {
+  name:
+    string;
+
+  message:
+    string;
+
+  code?:
+    string |
+    number;
+
+  stack?:
+    string;
+} {
+  if (
+    error instanceof
+    Error
+  ) {
+    const errorWithCode =
+      error as
+        Error & {
+          code?:
+            string |
+            number;
+        };
+
+    return {
+      name:
+        error.name,
+
+      message:
+        error.message,
+
+      code:
+        errorWithCode
+          .code,
+
+      stack:
+        error.stack,
+    };
+  }
+
+  if (
+    typeof error ===
+    "string"
+  ) {
+    return {
+      name:
+        "Error",
+
+      message:
+        error,
+    };
+  }
+
+  try {
+    return {
+      name:
+        "UnknownError",
+
+      message:
+        JSON.stringify(
+          error
+        ),
+    };
+  } catch {
+    return {
+      name:
+        "UnknownError",
+
+      message:
+        String(
+          error
+        ),
+    };
+  }
 }

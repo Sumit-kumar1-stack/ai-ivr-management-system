@@ -3,12 +3,13 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/axios";
 import { toast } from "sonner";
+import type { CreateCampaignInput } from "./campaign.schema";
 
 export function useCreateCampaign() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (campaign: any) => {
+    mutationFn: async (campaign: CreateCampaignInput) => {
       const { data } = await api.post(
         "/campaigns",
         campaign

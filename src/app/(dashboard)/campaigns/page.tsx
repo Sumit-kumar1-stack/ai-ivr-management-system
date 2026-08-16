@@ -4,6 +4,7 @@ import Link from "next/link";
 
 import CreateCampaignDialog from "@/components/campaigns/create-campaign-dialog";
 import { useCampaigns } from "@/features/campaigns/use-campaigns";
+import type { CampaignDTO } from "@/features/campaigns/campaign.types";
 
 export default function CampaignsPage() {
   const { data: campaigns, isLoading } =
@@ -30,7 +31,7 @@ export default function CampaignsPage() {
           </div>
         )}
 
-      {campaigns?.map((campaign: any) => (
+      {campaigns?.map((campaign: CampaignDTO) => (
         <div
           key={campaign.id}
           className="rounded-lg border p-6 shadow-sm"

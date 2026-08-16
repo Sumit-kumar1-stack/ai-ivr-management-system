@@ -459,8 +459,10 @@ export async function updateCall(
         status:
           call.status,
 
-        providerCallId:
-          call.providerCallId,
+        providerCallIdPresent:
+          Boolean(
+            call.providerCallId
+          ),
 
         durationMs:
           getDurationMs(
@@ -508,7 +510,7 @@ export async function updateCall(
 export async function getCallByProviderId(
   providerCallId: string
 ) {
-  return prisma.call.findFirst({
+  return prisma.call.findUnique({
     where: {
       providerCallId,
     },
@@ -609,147 +611,156 @@ async function findCallForStatusUpdate(
     providerCallId: string;
   }
 ) {
-  if (
+  const callSelect = {
+    id:
+      true,
+
+    campaignId:
+      true,
+
+    campaignRunId:
+      true,
+
+    contactId:
+      true,
+
+    status:
+      true,
+
+    providerCallId:
+      true,
+
+    duration:
+      true,
+
+    attemptNumber:
+      true,
+
+    maxAttempts:
+      true,
+
+    retryOfCallId:
+      true,
+
+    nextRetryAt:
+      true,
+
+    retryReason:
+      true,
+
+    queuedAt:
+      true,
+
+    ringingAt:
+      true,
+
+    answeredAt:
+      true,
+
+    completedAt:
+      true,
+
+    failedAt:
+      true,
+
+    startedAt:
+      true,
+
+    endedAt:
+      true,
+  } satisfies Prisma.CallSelect;
+
+  const internalCallId =
     data.callId
+      ?.trim();
+
+  const providerCallId =
+    data.providerCallId
+      .trim();
+
+  if (
+    !providerCallId
+  ) {
+    return null;
+  }
+
+  //----------------------------------------------
+  // Resolve Using Internal Call ID
+  //----------------------------------------------
+
+  if (
+    internalCallId
   ) {
     const callByInternalId =
       await prisma.call.findUnique({
         where: {
           id:
-            data.callId,
+            internalCallId,
         },
 
-        select: {
-          id:
-            true,
-
-          campaignId:
-            true,
-
-          campaignRunId:
-            true,
-
-          contactId:
-            true,
-
-          status:
-            true,
-
-          providerCallId:
-            true,
-
-          duration:
-            true,
-
-          attemptNumber:
-            true,
-
-          maxAttempts:
-            true,
-
-          retryOfCallId:
-            true,
-
-          nextRetryAt:
-            true,
-
-          retryReason:
-            true,
-
-          queuedAt:
-            true,
-
-          ringingAt:
-            true,
-
-          answeredAt:
-            true,
-
-          completedAt:
-            true,
-
-          failedAt:
-            true,
-
-          startedAt:
-            true,
-
-          endedAt:
-            true,
-        },
+        select:
+          callSelect,
       });
 
     if (
-      callByInternalId
+      !callByInternalId
     ) {
-      return callByInternalId;
+      /*
+       * An explicit internal ID was supplied but
+       * did not match any call. Do not silently
+       * update another record using only CallSid.
+       */
+      return null;
     }
+
+    /*
+     * For a newly created outbound call, the
+     * providerCallId may still be null.
+     *
+     * Once it has been stored, it must match the
+     * signed provider callback.
+     */
+    if (
+      callByInternalId
+        .providerCallId &&
+      callByInternalId
+        .providerCallId !==
+        providerCallId
+    ) {
+      serviceLog.warn(
+        {
+          event:
+            "call.status.callback.provider_mismatch",
+
+          internalCallIdPresent:
+            true,
+
+          storedProviderCallIdPresent:
+            true,
+
+          incomingProviderCallIdPresent:
+            true,
+        },
+        "Provider callback identifiers did not match"
+      );
+
+      return null;
+    }
+
+    return callByInternalId;
   }
 
-  return prisma.call.findFirst({
+  //----------------------------------------------
+  // Resolve Using Provider Call ID
+  //----------------------------------------------
+
+  return prisma.call.findUnique({
     where: {
-      providerCallId:
-        data.providerCallId,
+      providerCallId,
     },
 
-    select: {
-      id:
-        true,
-
-      campaignId:
-        true,
-
-      campaignRunId:
-        true,
-
-      contactId:
-        true,
-
-      status:
-        true,
-
-      providerCallId:
-        true,
-
-      duration:
-        true,
-
-      attemptNumber:
-        true,
-
-      maxAttempts:
-        true,
-
-      retryOfCallId:
-        true,
-
-      nextRetryAt:
-        true,
-
-      retryReason:
-        true,
-
-      queuedAt:
-        true,
-
-      ringingAt:
-        true,
-
-      answeredAt:
-        true,
-
-      completedAt:
-        true,
-
-      failedAt:
-        true,
-
-      startedAt:
-        true,
-
-      endedAt:
-        true,
-    },
+    select:
+      callSelect,
   });
 }
 
@@ -803,8 +814,10 @@ export async function updateCallStatus(
         internalCallId:
           data.callId,
 
-        providerCallId:
-          data.providerCallId,
+        providerCallIdPresent:
+          Boolean(
+            data.providerCallId
+          ),
 
         providerStatus:
           data.status,
@@ -844,8 +857,10 @@ export async function updateCallStatus(
         contactId:
           existingCall.contactId,
 
-        providerCallId:
-          data.providerCallId,
+        providerCallIdPresent:
+          Boolean(
+            data.providerCallId
+          ),
 
         attemptNumber:
           existingCall.attemptNumber,

@@ -1,7 +1,11 @@
 import {
-  TranscriptEvents,
-  TranscriptEvent,
-} from "./transcript.events";
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  ConversationStateService,
+} from "@/services/conversations/conversation-state.service";
 
 import {
   PlaybackState,
@@ -12,11 +16,31 @@ import {
 } from "@/services/voice/voice-worker.service";
 
 import {
-  ConversationStateService,
-} from "@/services/conversations/conversation-state.service";
+  TranscriptEvent,
+  TranscriptEvents,
+} from "./transcript.events";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "transcript-buffer"
+  );
+
+//--------------------------------------------------
+// Configuration
+//--------------------------------------------------
+
+const MAX_BUFFER_CHARACTER_COUNT =
+  2_000;
+
+//--------------------------------------------------
+// Transcript Buffer
+//--------------------------------------------------
 
 class TranscriptBufferService {
-
   private buffers =
     new Map<string, string>();
 
@@ -27,68 +51,80 @@ class TranscriptBufferService {
   async addPartial(
     callId: string,
     text: string
-  ) {
-
+  ): Promise<void> {
     const normalizedText =
-      text.trim();
+      this.normalizeFragment(
+        text
+      );
 
-    if (!normalizedText) {
-
+    if (
+      !normalizedText
+    ) {
       return;
-
     }
 
     const current =
-      this.buffers.get(callId) ?? "";
+      this.buffers.get(
+        callId
+      ) ??
+      "";
 
+    /*
+     * Add a space between fragments. The previous
+     * implementation directly concatenated strings,
+     * which could produce text such as:
+     *
+     * "helloi needinformation"
+     */
     const updated =
-      current + normalizedText;
+      this.combineText(
+        current,
+        normalizedText
+      ).slice(
+        0,
+        MAX_BUFFER_CHARACTER_COUNT
+      );
 
     this.buffers.set(
       callId,
       updated
     );
 
-    console.log(
-      `📝 Partial Updated (${callId})`
+    log.debug(
+      {
+        event:
+          "transcript.buffer.partial_added",
+
+        callId,
+
+        addedCharacterCount:
+          normalizedText.length,
+
+        totalCharacterCount:
+          updated.length,
+      },
+      "Partial transcript added to buffer"
     );
-
-    console.log(updated);
-
-    //----------------------------------
-    // Emit Partial Event
-    //----------------------------------
 
     TranscriptEvents.emit(
       TranscriptEvent.PARTIAL,
       {
         callId,
-        text: updated,
-        isFinal: false,
-        timestamp: Date.now(),
+
+        text:
+          updated,
+
+        isFinal:
+          false,
+
+        timestamp:
+          Date.now(),
       }
     );
 
-    //----------------------------------
-    // Instant Barge-In Detection
-    //----------------------------------
-
-    if (
-      PlaybackState.isPlaying(callId) &&
-      ConversationStateService.getState(callId) !==
-        "INTERRUPTING"
-    ) {
-
-      console.log(
-        `🛑 Barge-In detected (${callId})`
-      );
-
-      await VoiceWorker.interrupt(
-        callId
-      );
-
-    }
-
+    await this.handleBargeIn(
+      callId
+    );
   }
 
   //----------------------------------
@@ -98,62 +134,61 @@ class TranscriptBufferService {
   async setPartial(
     callId: string,
     text: string
-  ) {
-
+  ): Promise<void> {
     const normalizedText =
-      text.trim();
+      this.normalizeFragment(
+        text
+      );
 
-    if (!normalizedText) {
-
+    if (
+      !normalizedText
+    ) {
       return;
-
     }
+
+    const boundedText =
+      normalizedText.slice(
+        0,
+        MAX_BUFFER_CHARACTER_COUNT
+      );
 
     this.buffers.set(
       callId,
-      normalizedText
+      boundedText
     );
 
-    console.log(
-      `📝 Partial Replaced (${callId})`
+    log.debug(
+      {
+        event:
+          "transcript.buffer.partial_replaced",
+
+        callId,
+
+        characterCount:
+          boundedText.length,
+      },
+      "Partial transcript buffer replaced"
     );
-
-    console.log(normalizedText);
-
-    //----------------------------------
-    // Emit Partial Event
-    //----------------------------------
 
     TranscriptEvents.emit(
       TranscriptEvent.PARTIAL,
       {
         callId,
-        text: normalizedText,
-        isFinal: false,
-        timestamp: Date.now(),
+
+        text:
+          boundedText,
+
+        isFinal:
+          false,
+
+        timestamp:
+          Date.now(),
       }
     );
 
-    //----------------------------------
-    // Instant Barge-In Detection
-    //----------------------------------
-
-    if (
-      PlaybackState.isPlaying(callId) &&
-      ConversationStateService.getState(callId) !==
-        "INTERRUPTING"
-    ) {
-
-      console.log(
-        `🛑 Barge-In detected (${callId})`
-      );
-
-      await VoiceWorker.interrupt(
-        callId
-      );
-
-    }
-
+    await this.handleBargeIn(
+      callId
+    );
   }
 
   //----------------------------------
@@ -162,56 +197,245 @@ class TranscriptBufferService {
 
   flush(
     callId: string
-  ) {
+  ): void {
+    const bufferedText =
+      this.buffers.get(
+        callId
+      );
 
     const text =
-      this.buffers.get(callId);
+      bufferedText
+        ?.replace(
+          /\s+/g,
+          " "
+        )
+        .trim();
 
-    if (!text) {
+    if (
+      !text
+    ) {
+      log.debug(
+        {
+          event:
+            "transcript.buffer.flush_skipped",
 
-      console.log(
-        "⚠️ No transcript to flush"
+          callId,
+
+          reason:
+            "empty_buffer",
+        },
+        "Transcript buffer flush skipped"
       );
 
       return;
-
     }
 
     this.buffers.delete(
       callId
     );
 
-    console.log(
-      "=================================="
-    );
+    log.info(
+      {
+        event:
+          "transcript.buffer.final_emitted",
 
-    console.log(
-      "🛑 FLUSHING FINAL TRANSCRIPT"
-    );
+        callId,
 
-    console.log(callId);
-
-    console.log(text);
-
-    console.log(
-      "🔥 EMITTING FINAL EVENT"
-    );
-
-    console.log(
-      "=================================="
+        characterCount:
+          text.length,
+      },
+      "Final transcript event emitted"
     );
 
     TranscriptEvents.emit(
       TranscriptEvent.FINAL,
       {
         callId,
+
         text,
-        timestamp: Date.now(),
+
+        timestamp:
+          Date.now(),
       }
     );
-
   }
 
+  //----------------------------------
+  // Clear Transcript
+  //----------------------------------
+
+  clear(
+    callId: string
+  ): void {
+    const existed =
+      this.buffers.delete(
+        callId
+      );
+
+    log.debug(
+      {
+        event:
+          "transcript.buffer.cleared",
+
+        callId,
+
+        existed,
+      },
+      "Transcript buffer cleared"
+    );
+  }
+
+  //----------------------------------
+  // Read Transcript
+  //----------------------------------
+
+  get(
+    callId: string
+  ): string {
+    return (
+      this.buffers.get(
+        callId
+      ) ??
+      ""
+    );
+  }
+
+  //----------------------------------
+  // Normalize Fragment
+  //----------------------------------
+
+  private normalizeFragment(
+    text: string
+  ): string {
+    return text
+      .replace(
+        /\s+/g,
+        " "
+      )
+      .trim();
+  }
+
+  //----------------------------------
+  // Combine Transcript Text
+  //----------------------------------
+
+  private combineText(
+    current: string,
+    incoming: string
+  ): string {
+    if (
+      !current
+    ) {
+      return incoming;
+    }
+
+    const normalizedCurrent =
+      current
+        .replace(
+          /\s+/g,
+          " "
+        )
+        .trim();
+
+    const normalizedIncoming =
+      incoming
+        .replace(
+          /\s+/g,
+          " "
+        )
+        .trim();
+
+    /*
+     * Some STT providers send cumulative partial
+     * transcripts. Replace the old value when the
+     * incoming text already contains it.
+     */
+    if (
+      normalizedIncoming
+        .toLowerCase()
+        .startsWith(
+          normalizedCurrent.toLowerCase()
+        )
+    ) {
+      return normalizedIncoming;
+    }
+
+    /*
+     * Ignore an incoming fragment that is already
+     * represented at the end of the current buffer.
+     */
+    if (
+      normalizedCurrent
+        .toLowerCase()
+        .endsWith(
+          normalizedIncoming.toLowerCase()
+        )
+    ) {
+      return normalizedCurrent;
+    }
+
+    return `${normalizedCurrent} ${normalizedIncoming}`
+      .replace(
+        /\s+/g,
+        " "
+      )
+      .trim();
+  }
+
+  //----------------------------------
+  // Handle Barge-In
+  //----------------------------------
+
+  private async handleBargeIn(
+    callId: string
+  ): Promise<void> {
+    if (
+      !PlaybackState.isPlaying(
+        callId
+      ) ||
+      ConversationStateService.getState(
+        callId
+      ) ===
+        "INTERRUPTING"
+    ) {
+      return;
+    }
+
+    log.info(
+      {
+        event:
+          "transcript.barge_in.detected",
+
+        callId,
+      },
+      "Caller barge-in detected"
+    );
+
+    try {
+      await VoiceWorker.interrupt(
+        callId
+      );
+    } catch (
+      error
+    ) {
+      log.error(
+        {
+          event:
+            "transcript.barge_in.interrupt_failed",
+
+          callId,
+
+          error:
+            normalizeError(
+              error
+            ),
+        },
+        "Failed to interrupt voice playback"
+      );
+
+      throw error;
+    }
+  }
 }
 
 export const TranscriptBuffer =

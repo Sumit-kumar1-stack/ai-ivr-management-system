@@ -1,27 +1,69 @@
-import { askAI } from "@/services/ai/llm.factory";
+import {
+  createServerLogger,
+  getDurationMs,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
+  askAI,
+} from "@/services/ai/llm.factory";
+
+//--------------------------------------------------
+// Types
+//--------------------------------------------------
+
+export interface RerankableKnowledgeChunk {
+  content: string;
+  score: number;
+  documentId: string;
+  chunkIndex: number;
+}
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "knowledge-reranker"
+  );
+
+//--------------------------------------------------
+// Re-rank Knowledge
+//--------------------------------------------------
 
 export async function rerankKnowledge(
   question: string,
-  chunks: {
-    content: string;
-    score: number;
-    documentId: string;
-    chunkIndex: number;
-  }[]
-) {
-  if (chunks.length === 0) {
+  chunks:
+    RerankableKnowledgeChunk[]
+): Promise<
+  RerankableKnowledgeChunk[]
+> {
+  if (
+    chunks.length ===
+    0
+  ) {
     return [];
   }
 
-  const candidates = chunks
-    .map(
-      (chunk, index) => `
+  const startedAt =
+    process.hrtime.bigint();
+
+  const candidates =
+    chunks
+      .map(
+        (
+          chunk,
+          index
+        ) => `
 Candidate ${index + 1}
 
 ${chunk.content}
 `
-    )
-    .join("\n----------------------\n");
+      )
+      .join(
+        "\n----------------------\n"
+      );
 
   const prompt = `
 You are an expert retrieval ranking system.
@@ -60,20 +102,138 @@ ${candidates}
 Answer:
 `;
 
-  console.log("\n========== RERANK ==========");
-  console.log(prompt);
-  console.log("============================\n");
+  log.debug(
+    {
+      event:
+        "knowledge.rerank.started",
 
-  const response = await askAI(prompt);
+      candidateCount:
+        chunks.length,
 
-  console.log("Gemini Ranking:", response);
+      queryCharacterCount:
+        question.length,
 
-  const indexes = response
-    .split(",")
-    .map((x) => parseInt(x.trim()))
-    .filter((n) => !isNaN(n));
+      promptCharacterCount:
+        prompt.length,
+    },
+    "Knowledge reranking started"
+  );
 
-  return indexes
-    .map((index) => chunks[index - 1])
-    .filter(Boolean);
+  try {
+    const response =
+      await askAI(
+        prompt
+      );
+
+    const indexes =
+      parseCandidateIndexes(
+        response,
+        chunks.length
+      );
+
+    const reranked =
+      indexes
+        .map(
+          index =>
+            chunks[
+              index -
+                1
+            ]
+        )
+        .filter(
+          (
+            chunk
+          ): chunk is RerankableKnowledgeChunk =>
+            Boolean(
+              chunk
+            )
+        );
+
+    log.info(
+      {
+        event:
+          "knowledge.rerank.completed",
+
+        candidateCount:
+          chunks.length,
+
+        selectedCandidateCount:
+          reranked.length,
+
+        responseCharacterCount:
+          response.length,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+      },
+      "Knowledge reranking completed"
+    );
+
+    return reranked;
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "knowledge.rerank.failed",
+
+        candidateCount:
+          chunks.length,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Knowledge reranking failed"
+    );
+
+    throw error;
+  }
+}
+
+//--------------------------------------------------
+// Parse Candidate Indexes
+//--------------------------------------------------
+
+function parseCandidateIndexes(
+  response: string,
+  candidateCount: number
+): number[] {
+  const indexes =
+    response
+      .split(
+        /[,\s]+/
+      )
+      .map(
+        value =>
+          Number.parseInt(
+            value.trim(),
+            10
+          )
+      )
+      .filter(
+        value =>
+          Number.isInteger(
+            value
+          ) &&
+          value >=
+            1 &&
+          value <=
+            candidateCount
+      );
+
+  return Array.from(
+    new Set(
+      indexes
+    )
+  );
 }

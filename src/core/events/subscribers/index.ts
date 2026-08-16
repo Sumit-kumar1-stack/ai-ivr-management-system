@@ -1,5 +1,3 @@
-export * from "./timeline.subscriber";
-
-export * from "./logging.subscriber";
-
-export * from "./realtime.subscriber";
+export { TimelineSubscriber } from "./timeline.subscriber";
+export { LoggingSubscriber } from "./logging.subscriber";
+export { RealtimeSubscriber } from "./realtime.subscriber";

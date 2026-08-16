@@ -87,14 +87,25 @@ enum CampaignRunStatus {
   CANCELLED
 }
 
+enum OutboundCampaignPurpose {
+  GENERAL
+  REMINDER
+  CALLBACK
+  FOLLOW_UP
+}
+
 model Campaign {
   id          String  @id @default(cuid())
   name        String
   description String?
 
+  systemKey String? @unique
+
   language String  @default("English")
   voice    String  @default("Female")
   prompt   String?
+
+  purpose OutboundCampaignPurpose @default(GENERAL)
 
   status CampaignStatus @default(DRAFT)
 
@@ -218,6 +229,11 @@ model KnowledgeChunk {
 // CALL
 // ======================================================
 
+enum CallDirection {
+  INBOUND
+  OUTBOUND
+}
+
 enum CallStatus {
   QUEUED
   RINGING
@@ -232,6 +248,11 @@ enum CallStatus {
 model Call {
   id             String  @id @default(cuid())
   providerCallId String? @unique
+
+  direction CallDirection @default(OUTBOUND)
+
+  callerNumber String?
+  calledNumber String?
 
   campaignId String
   campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
@@ -287,7 +308,6 @@ model Call {
   completedAt DateTime?
   failedAt    DateTime?
 
-  // Temporary compatibility fields.
   startedAt DateTime?
   endedAt   DateTime?
 
@@ -296,10 +316,6 @@ model Call {
 
   conversation Conversation?
 
-  /**
-   * A contact may have multiple call attempts in one
-   * campaign run, but each attempt number must be unique.
-   */
   @@unique([campaignRunId, contactId, attemptNumber])
   @@index([campaignId])
   @@index([campaignRunId])
@@ -308,6 +324,9 @@ model Call {
   @@index([retryOfCallId])
   @@index([nextRetryAt])
   @@index([providerDestination])
+  @@index([direction])
+  @@index([callerNumber])
+  @@index([calledNumber])
   @@index([status])
   @@index([requestedAt])
   @@index([answeredAt])
@@ -399,4 +418,271 @@ model CallEvent {
   @@index([type])
   @@index([createdAt])
   @@index([callId, createdAt])
+}
+
+// ======================================================
+// CALLBACK REQUEST
+// ======================================================
+
+enum CallbackRequestStatus {
+  REQUESTED
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+model CallbackRequest {
+  id String @id @default(cuid())
+
+  callId String
+
+  phone String
+
+  requestedAt DateTime @default(now())
+
+  scheduledFor DateTime
+
+  timezone String
+
+  reason String?
+
+  status CallbackRequestStatus @default(REQUESTED)
+
+  idempotencyKey String @unique
+
+  requestedBy String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([callId])
+  @@index([phone])
+  @@index([scheduledFor])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ======================================================
+// BUSINESS TOOL EXECUTION
+// ======================================================
+
+enum ToolExecutionStatus {
+  STARTED
+  SUCCEEDED
+  FAILED
+  ABORTED
+  TIMED_OUT
+}
+
+model ToolExecution {
+  id String @id @default(cuid())
+
+  callId String
+
+  tool String
+
+  requestedBy String
+
+  tenantId String?
+
+  idempotencyKey String?
+
+  status ToolExecutionStatus @default(STARTED)
+
+  requiresConfirmation Boolean @default(false)
+  confirmed            Boolean @default(false)
+
+  mutating Boolean @default(false)
+
+  durationMs Int?
+
+  errorCode    String?
+  errorMessage String?
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tool, idempotencyKey])
+  @@index([callId])
+  @@index([tool])
+  @@index([status])
+  @@index([createdAt])
+  @@index([callId, createdAt])
+}
+
+// ======================================================
+// LEAD
+// ======================================================
+
+enum LeadStatus {
+  NEW
+  QUALIFIED
+  CONTACTED
+  CONVERTED
+  CLOSED
+}
+
+model Lead {
+  id String @id @default(cuid())
+
+  callId String
+
+  fullName String?
+
+  phone String?
+
+  email String?
+
+  interest String
+
+  notes String?
+
+  status LeadStatus @default(NEW)
+
+  source String @default("AI_IVR")
+
+  idempotencyKey String @unique
+
+  createdBy String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([callId])
+  @@index([status])
+  @@index([phone])
+  @@index([email])
+  @@index([createdAt])
+}
+
+// ======================================================
+// MESSAGING
+// ======================================================
+
+enum MessagingChannel {
+  SMS
+  WHATSAPP
+}
+
+enum MessageConsentStatus {
+  OPTED_IN
+  OPTED_OUT
+  UNKNOWN
+}
+
+enum OutboundMessageStatus {
+  PROCESSING
+  ACCEPTED
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  UNDELIVERED
+}
+
+model MessageConsent {
+  id String @id @default(cuid())
+
+  phone String
+
+  channel MessagingChannel
+
+  status MessageConsentStatus @default(UNKNOWN)
+
+  source String?
+
+  consentedAt DateTime?
+  revokedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([phone, channel])
+  @@index([phone])
+  @@index([channel])
+  @@index([status])
+}
+
+model OutboundMessage {
+  id String @id @default(cuid())
+
+  callId String?
+
+  channel MessagingChannel
+
+  provider String
+
+  recipient String
+
+  templateKey String
+
+  idempotencyKey String @unique
+
+  providerMessageId String? @unique
+
+  status OutboundMessageStatus @default(PROCESSING)
+
+  errorCode    String?
+  errorMessage String?
+
+  acceptedAt  DateTime?
+  sentAt      DateTime?
+  deliveredAt DateTime?
+  readAt      DateTime?
+  failedAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([callId])
+  @@index([channel])
+  @@index([recipient])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ======================================================
+// CONSENT EVIDENCE / HISTORY
+// ======================================================
+
+enum ConsentEvidenceAction {
+  OPT_IN
+  OPT_OUT
+}
+
+model ConsentEvidence {
+  id String @id @default(cuid())
+
+  phone   String
+  channel MessagingChannel
+
+  action ConsentEvidenceAction
+
+  source String
+
+  callId String?
+
+  requestedBy String?
+
+  evidenceText String?
+
+  previousStatus  MessageConsentStatus?
+  resultingStatus MessageConsentStatus
+
+  idempotencyKey String? @unique
+
+  occurredAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([phone])
+  @@index([channel])
+  @@index([action])
+  @@index([callId])
+  @@index([occurredAt])
+  @@index([phone, channel, occurredAt])
 }

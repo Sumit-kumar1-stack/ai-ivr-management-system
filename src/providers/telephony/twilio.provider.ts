@@ -3,7 +3,7 @@ import {
 } from "@/providers/twilio/twilio.client";
 
 import {
-  twilioConfig,
+  getTwilioConfig,
 } from "@/providers/twilio/twilio.config";
 
 import {
@@ -91,6 +91,29 @@ export class TwilioProvider
   }
 
   //--------------------------------------------------
+  // Build Provider Callback URL
+  //--------------------------------------------------
+
+  private buildCallbackUrl(
+    publicBaseUrl: string,
+    pathname: string,
+    internalCallId: string
+  ): string {
+    const url =
+      new URL(
+        pathname,
+        `${publicBaseUrl}/`
+      );
+
+    url.searchParams.set(
+      "callId",
+      internalCallId
+    );
+
+    return url.toString();
+  }
+
+  //--------------------------------------------------
   // Make Outbound Call
   //--------------------------------------------------
 
@@ -124,6 +147,13 @@ export class TwilioProvider
       }
 
       //------------------------------------------------
+      // Load validated Twilio configuration
+      //------------------------------------------------
+
+      const twilioConfig =
+        getTwilioConfig();
+
+      //------------------------------------------------
       // Format destination number
       //------------------------------------------------
 
@@ -137,25 +167,25 @@ export class TwilioProvider
       //------------------------------------------------
 
       const voiceUrl =
-        `${twilioConfig.appUrl}` +
-        `/api/twilio/voice-stream` +
-        `?callId=${encodeURIComponent(
+        this.buildCallbackUrl(
+          twilioConfig.publicBaseUrl,
+          "/api/twilio/voice-stream",
           request.callId
-        )}`;
+        );
 
       const statusCallbackUrl =
-        `${twilioConfig.appUrl}` +
-        `/api/twilio/status` +
-        `?callId=${encodeURIComponent(
+        this.buildCallbackUrl(
+          twilioConfig.publicBaseUrl,
+          "/api/twilio/status",
           request.callId
-        )}`;
+        );
 
       const recordingCallbackUrl =
-        `${twilioConfig.appUrl}` +
-        `/api/twilio/recording` +
-        `?callId=${encodeURIComponent(
+        this.buildCallbackUrl(
+          twilioConfig.publicBaseUrl,
+          "/api/twilio/recording",
           request.callId
-        )}`;
+        );
 
       log.info(
         {

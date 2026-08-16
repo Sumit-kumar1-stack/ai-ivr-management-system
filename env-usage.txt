@@ -1,0 +1,64 @@
+src\app\api\auth\login\route.ts:177:          process.env.NODE_ENV ===
+src\app\api\auth\logout\route.ts:30:        process.env.NODE_ENV ===
+src\app\api\calls\[id]\recording\route.ts:355:      process.env
+src\app\api\calls\[id]\recording\route.ts:360:      process.env
+src\app\api\campaigns\[id]\start\route.ts:412:    process.env
+src\app\api\campaigns\[id]\start\route.ts:430:          !process.env[name]
+src\app\api\health\route.ts:39:        process.env.NODE_ENV ??
+src\app\api\ready\route.ts:125:        process.env.NODE_ENV ??
+src\app\api\twilio\voice-stream\route.ts:262:        process.env
+src\app\api\twilio\voice-stream\route.ts:264:        process.env
+src\app\api\twilio\voice-stream\route.ts:282:        process.env
+src\config\ai.ts:5:    process.env[name];
+src\lib\jwt.ts:21:    process.env.JWT_SECRET;
+src\lib\logger.ts:10:  process.env.NODE_ENV !==
+src\lib\logger.ts:14:  process.env.LOG_LEVEL
+src\lib\logger.ts:54:        process.env.NODE_ENV ??
+src\lib\prisma.ts:63:  process.env.NODE_ENV !==
+src\lib\redis.ts:21:  process.env.REDIS_URL
+src\lib\twilio-webhook-auth.ts:78:    process.env
+src\lib\twilio-webhook-auth.ts:92:      process.env
+src\lib\twilio-webhook-auth.ts:95:      process.env
+src\providers\telephony\provider.factory.ts:20:      process.env
+src\providers\telephony\twilio-media-twiml.service.ts:12:      process.env
+src\providers\telephony\twilio-media-twiml.service.ts:14:      process.env.APP_URL
+src\providers\telephony\twilio-media-twiml.service.ts:27:      process.env
+src\providers\telephony\twilio.client.ts:4:  process.env.TWILIO_ACCOUNT_SID!,
+src\providers\telephony\twilio.client.ts:5:  process.env.TWILIO_AUTH_TOKEN!
+src\providers\twilio\twilio.config.ts:4:    process.env.TWILIO_ACCOUNT_SID!,
+src\providers\twilio\twilio.config.ts:7:    process.env.TWILIO_AUTH_TOKEN!,
+src\providers\twilio\twilio.config.ts:10:    process.env.TWILIO_PHONE_NUMBER!,
+src\providers\twilio\twilio.config.ts:13:    process.env.APP_URL!,
+src\providers\twilio\twilio.config.ts:33:    if (!process.env[key]) {
+src\server\legacy-bootstrap.ts:609:    process.env
+src\server\process-lifecycle.ts:575:    process.env
+src\server\server.ts:28:  process.env.NODE_ENV !==
+src\server\server.ts:33:    process.env.PORT
+src\server\socket-auth.ts:186:      process.env.NODE_ENV ===
+src\server\socket-auth.ts:217:    process.env
+src\server\socket-auth.ts:244:    process.env.NODE_ENV !==
+src\server\socket.ts:86:              process.env.NODE_ENV !==
+src\server\twilio-media-server.ts:48:    process.env
+src\server\twilio-websocket.ts:1203:    process.env
+src\server\twilio-websocket.ts:1265:    process.env
+src\services\ai\gemini-stream.service.ts:45:    process.env
+src\services\ai\gemini.service.ts:24:  process.env
+src\services\calls\stale-call-cleanup.service.ts:53:    process.env
+src\services\calls\stale-call-cleanup.service.ts:99:    process.env
+src\services\campaigns\campaign-runner.service.ts:378:      process.env
+src\services\campaigns\campaign-runner.service.ts:383:      process.env.NODE_ENV ===
+src\services\campaigns\campaign-runner.service.ts:1032:    process.env[
+src\services\conversations\conversation-engine.service.ts:927:      process.env
+src\services\conversations\conversation-engine.service.ts:1410:    process.env
+src\services\realtime\redis-realtime-bridge.service.ts:26:  process.env.IVR_PROCESS_NAME?.trim() ||
+src\services\stt\deepgram.socket.ts:166:      process.env
+src\services\stt\deepgram.socket.ts:1216:    process.env[
+src\services\voice\voice.service.ts:121:      process.env
+src\services\voice\voice.service.ts:127:      process.env
+src\services\voice\voice.service.ts:133:      process.env
+src\workers\call-retry.worker.ts:1047:      process.env
+src\workers\call-retry.worker.ts:1241:    process.env
+src\workers\call-retry.worker.ts:1290:    process.env[
+src\workers\campaign.worker.ts:745:    process.env
+src\workers\worker-health-server.ts:39:    process.env
+src\workers\worker-health-server.ts:485:        process.env.NODE_ENV ??

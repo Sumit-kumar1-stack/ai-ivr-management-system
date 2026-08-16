@@ -1,101 +1,304 @@
 import fs from "fs/promises";
+
 import mammoth from "mammoth";
 import PDFParser from "pdf2json";
+
+import {
+  createServerLogger,
+  getDurationMs,
+  normalizeError,
+} from "@/lib/logger";
+
+//--------------------------------------------------
+// Types
+//--------------------------------------------------
+
+interface PdfTextRun {
+  T?: string;
+}
+
+interface PdfTextItem {
+  R?: PdfTextRun[];
+}
+
+interface PdfPage {
+  Texts?: PdfTextItem[];
+}
+
+interface PdfData {
+  Pages?: PdfPage[];
+}
+
+interface PdfParserError {
+  parserError?: unknown;
+}
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "knowledge-parser"
+  );
+
+//--------------------------------------------------
+// Extract Text
+//--------------------------------------------------
 
 export async function extractText(
   filePath: string,
   mimeType: string
 ): Promise<string> {
+  const startedAt =
+    process.hrtime.bigint();
 
-  // ===========================
-  // PDF
-  // ===========================
-  if (mimeType === "application/pdf") {
+  try {
+    let text: string;
 
-    return new Promise((resolve, reject) => {
+    if (
+      mimeType ===
+      "application/pdf"
+    ) {
+      text =
+        await extractPdfText(
+          filePath
+        );
+    } else if (
+      mimeType.includes(
+        "word"
+      ) ||
+      mimeType.includes(
+        "officedocument"
+      )
+    ) {
+      text =
+        await extractDocxText(
+          filePath
+        );
+    } else if (
+      mimeType ===
+      "text/plain"
+    ) {
+      text =
+        await fs.readFile(
+          filePath,
+          "utf8"
+        );
+    } else {
+      throw new Error(
+        "Unsupported file type"
+      );
+    }
 
-      const pdf = new PDFParser();
+    log.debug(
+      {
+        event:
+          "knowledge.parser.completed",
+
+        mimeType,
+
+        characterCount:
+          text.length,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+      },
+      "Knowledge document text extraction completed"
+    );
+
+    return text;
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "knowledge.parser.failed",
+
+        mimeType,
+
+        durationMs:
+          getDurationMs(
+            startedAt
+          ),
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Knowledge document text extraction failed"
+    );
+
+    throw error;
+  }
+}
+
+//--------------------------------------------------
+// Extract PDF Text
+//--------------------------------------------------
+
+function extractPdfText(
+  filePath: string
+): Promise<string> {
+  return new Promise(
+    (
+      resolve,
+      reject
+    ) => {
+      const pdf =
+        new PDFParser();
 
       pdf.on(
         "pdfParser_dataError",
-        (err: any) => {
-          reject(err?.parserError ?? err);
+        (
+          error:
+            PdfParserError |
+            unknown
+        ) => {
+          if (
+            typeof error ===
+              "object" &&
+            error !==
+              null &&
+            "parserError" in
+              error
+          ) {
+            reject(
+              (
+                error as
+                  PdfParserError
+              ).parserError
+            );
+
+            return;
+          }
+
+          reject(
+            error
+          );
         }
       );
 
       pdf.on(
         "pdfParser_dataReady",
-        (pdfData: any) => {
+        (
+          pdfData:
+            PdfData
+        ) => {
+          try {
+            const result =
+              buildPdfText(
+                pdfData
+              );
 
-          let result = "";
+            log.debug(
+              {
+                event:
+                  "knowledge.parser.pdf_extracted",
 
-          for (const page of pdfData.Pages) {
+                characterCount:
+                  result.length,
 
-            for (const text of page.Texts) {
+                pageCount:
+                  pdfData.Pages
+                    ?.length ??
+                  0,
+              },
+              "PDF text extracted"
+            );
 
-              for (const run of text.R) {
-
-                let value = run.T;
-
-                // Decode only if possible
-                try {
-                  value = decodeURIComponent(value);
-                } catch {
-                  // Ignore malformed URI
-                }
-
-                result += value + " ";
-              }
-
-              result += "\n";
-            }
-
-            result += "\n";
+            resolve(
+              result
+            );
+          } catch (
+            error
+          ) {
+            reject(
+              error
+            );
           }
-
-          console.log("\n========== PDF TEXT ==========");
-          console.log(result);
-          console.log("==============================\n");
-
-          resolve(result);
         }
       );
 
-      pdf.loadPDF(filePath);
+      pdf.loadPDF(
+        filePath
+      );
+    }
+  );
+}
 
+//--------------------------------------------------
+// Build PDF Text
+//--------------------------------------------------
+
+function buildPdfText(
+  pdfData: PdfData
+): string {
+  let result =
+    "";
+
+  for (
+    const page of
+    pdfData.Pages ??
+    []
+  ) {
+    for (
+      const textItem of
+      page.Texts ??
+      []
+    ) {
+      for (
+        const run of
+        textItem.R ??
+        []
+      ) {
+        const encodedValue =
+          run.T ??
+          "";
+
+        let decodedValue =
+          encodedValue;
+
+        try {
+          decodedValue =
+            decodeURIComponent(
+              encodedValue
+            );
+        } catch {
+          // Preserve original value when decoding fails.
+        }
+
+        result +=
+          `${decodedValue} `;
+      }
+
+      result +=
+        "\n";
+    }
+
+    result +=
+      "\n";
+  }
+
+  return result;
+}
+
+//--------------------------------------------------
+// Extract DOCX Text
+//--------------------------------------------------
+
+async function extractDocxText(
+  filePath: string
+): Promise<string> {
+  const result =
+    await mammoth.extractRawText({
+      path:
+        filePath,
     });
 
-  }
-
-  // ===========================
-  // DOCX
-  // ===========================
-  if (
-    mimeType.includes("word") ||
-    mimeType.includes("officedocument")
-  ) {
-
-    const result =
-      await mammoth.extractRawText({
-        path: filePath,
-      });
-
-    return result.value;
-
-  }
-
-  // ===========================
-  // TXT
-  // ===========================
-  if (mimeType === "text/plain") {
-
-    return await fs.readFile(
-      filePath,
-      "utf8"
-    );
-
-  }
-
-  throw new Error("Unsupported file type");
-
+  return result.value;
 }

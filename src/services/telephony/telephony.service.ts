@@ -47,25 +47,28 @@ export async function startCall(
   // Normalize Phone Values
   //----------------------------------------
 
-  const normalizedContactPhone =
-    request.contactPhone.trim();
-
   const normalizedProviderDestination =
-    request.to.trim();
+    request.to
+      ?.trim();
 
-  if (
-    !normalizedContactPhone
-  ) {
-    throw new Error(
-      "Contact phone number is required"
-    );
-  }
+  const normalizedContactPhone =
+    request.contactPhone
+      ?.trim() ||
+    normalizedProviderDestination;
 
   if (
     !normalizedProviderDestination
   ) {
     throw new Error(
       "Provider destination is required"
+    );
+  }
+
+  if (
+    !normalizedContactPhone
+  ) {
+    throw new Error(
+      "Contact phone number is required"
     );
   }
 
@@ -212,10 +215,6 @@ export async function startCall(
       "Duplicate campaign call attempt prevented"
     );
 
-    /*
-     * Never contact the provider again when the same
-     * campaign-run/contact/attempt already exists.
-     */
     return {
       callId:
         call.id,
@@ -400,10 +399,6 @@ export async function startCall(
 
         status,
 
-        /*
-         * Twilio accepting the REST request does not
-         * mean the call was answered.
-         */
         queuedAt:
           status ===
           CallStatus.QUEUED
@@ -415,11 +410,6 @@ export async function startCall(
           CallStatus.RINGING
             ? acceptedAt
             : undefined,
-
-        /*
-         * Do not set answeredAt here. It must come
-         * from a verified provider status callback.
-         */
       }
     );
 
@@ -468,7 +458,9 @@ export async function startCall(
       attemptNumber:
         call.attemptNumber,
     };
-  } catch (error) {
+  } catch (
+    error
+  ) {
     const failedAt =
       new Date();
 

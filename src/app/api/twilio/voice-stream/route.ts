@@ -4,46 +4,64 @@ import {
 } from "next/server";
 
 import {
-  prisma,
-} from "@/lib/prisma";
+  createCallLogger,
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
 
 import {
-  createCallLogger,
-} from "@/lib/logger";
+  prisma,
+} from "@/lib/prisma";
 
 import {
   createTwilioAuthErrorResponse,
   validateTwilioWebhook,
 } from "@/lib/twilio-webhook-auth";
 
+import {
+  createErrorTwiml,
+  createMediaStreamTwiml,
+  createTwimlResponse,
+} from "@/providers/telephony/twilio-media-twiml.service";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const serviceLog =
+  createServerLogger(
+    "twilio-voice-stream-route"
+  );
 
 //--------------------------------------------------
 // Twilio Voice Stream Webhook
 //--------------------------------------------------
 
 export async function POST(
-  request: NextRequest
-): Promise<NextResponse> {
-
+  request:
+    NextRequest
+): Promise<Response> {
   let internalCallId =
     "";
 
   let twilioCallSid =
     "";
 
-
   try {
-
     //----------------------------------------------
     // Validate Twilio HTTP Signature
     //----------------------------------------------
 
     const {
       params,
-    } = await validateTwilioWebhook(
-      request
-    );
+    } =
+      await validateTwilioWebhook(
+        request
+      );
 
+    //----------------------------------------------
+    // Read Internal Call ID
+    //----------------------------------------------
 
     internalCallId =
       request.nextUrl
@@ -54,302 +72,432 @@ export async function POST(
         ?.trim() ??
       "";
 
+    //----------------------------------------------
+    // Read Twilio Call SID
+    //----------------------------------------------
 
     twilioCallSid =
       String(
         params.CallSid ??
-        ""
+          ""
       ).trim();
 
-
     //----------------------------------------------
-    // Validate Required Identifiers
+    // Validate Internal Call ID
     //----------------------------------------------
 
     if (
       !internalCallId
     ) {
-
-      console.error(
-        "Twilio voice-stream missing internal callId",
+      serviceLog.warn(
         {
-          twilioCallSid:
-            twilioCallSid ||
-            undefined,
-        }
+          event:
+            "twilio.voice_stream.rejected",
+
+          reason:
+            "missing_internal_call_id",
+
+          twilioCallSidPresent:
+            Boolean(
+              twilioCallSid
+            ),
+        },
+        "Twilio voice stream request rejected"
       );
 
-
-      return createTwimlResponse(`
-<Response>
-  <Say voice="alice">
-    We could not initialize this call.
-  </Say>
-  <Hangup />
-</Response>
-`);
-
-    }
-
-
-    if (
-      !twilioCallSid
-    ) {
-
-      console.error(
-        "Twilio voice-stream missing CallSid",
-        {
-          internalCallId,
-        }
+      return createTwimlResponse(
+        createErrorTwiml(
+          "We could not initialize this call."
+        )
       );
-
-
-      return createTwimlResponse(`
-<Response>
-  <Say voice="alice">
-    We could not verify this call.
-  </Say>
-  <Hangup />
-</Response>
-`);
-
     }
 
+    //----------------------------------------------
+    // Call Logger
+    //----------------------------------------------
 
     const log =
       createCallLogger(
         internalCallId
       );
 
+    //----------------------------------------------
+    // Validate Twilio Call SID
+    //----------------------------------------------
+
+    if (
+      !twilioCallSid
+    ) {
+      log.warn(
+        {
+          event:
+            "twilio.voice_stream.rejected",
+
+          reason:
+            "missing_provider_call_id",
+        },
+        "Twilio voice stream request rejected"
+      );
+
+      return createTwimlResponse(
+        createErrorTwiml(
+          "We could not verify this call."
+        )
+      );
+    }
 
     //----------------------------------------------
-    // Validate Internal Call Association
+    // Load Internal Call
     //----------------------------------------------
 
-    const call =
-      await prisma.call.findUnique({
-        where: {
-          id:
-            internalCallId,
-        },
+    let call =
+      await prisma.call
+        .findUnique({
+          where: {
+            id:
+              internalCallId,
+          },
 
-        select: {
-          id:
-            true,
+          select: {
+            id:
+              true,
 
-          providerCallId:
-            true,
+            providerCallId:
+              true,
 
-          status:
-            true,
-        },
-      });
+            status:
+              true,
 
+            direction:
+              true,
+          },
+        });
+
+    //----------------------------------------------
+    // Call Must Exist
+    //----------------------------------------------
 
     if (
       !call
     ) {
-
-      log.error(
+      log.warn(
         {
-          internalCallId,
-          twilioCallSid,
+          event:
+            "twilio.voice_stream.rejected",
+
+          reason:
+            "internal_call_not_found",
+
+          twilioCallSidPresent:
+            true,
         },
         "Internal call record not found"
       );
 
-
-      return createTwimlResponse(`
-<Response>
-  <Say voice="alice">
-    The call session could not be found.
-  </Say>
-  <Hangup />
-</Response>
-`);
-
+      return createTwimlResponse(
+        createErrorTwiml(
+          "The call session could not be found."
+        )
+      );
     }
 
+    //----------------------------------------------
+    // Outbound Route Ownership
+    //----------------------------------------------
 
     /*
-     * If a provider SID is already stored,
-     * it must match the signed Twilio CallSid.
+     * /voice-stream is the outbound Twilio
+     * continuation route.
+     *
+     * Inbound calls enter through /twilio/inbound,
+     * which creates INBOUND Media Stream TwiML.
      */
     if (
-      call.providerCallId &&
-      call.providerCallId !==
-        twilioCallSid
+      call.direction !==
+      "OUTBOUND"
     ) {
-
-      log.error(
+      log.warn(
         {
-          internalCallId,
+          event:
+            "twilio.voice_stream.rejected",
 
-          storedProviderCallId:
-            call.providerCallId,
+          reason:
+            "non_outbound_call",
 
-          receivedTwilioCallSid:
-            twilioCallSid,
+          direction:
+            call.direction,
         },
-        "Twilio call association mismatch"
+        "Non-outbound call attempted to use outbound voice stream route"
       );
-
 
       return new NextResponse(
         "Forbidden",
         {
           status:
             403,
+
+          headers: {
+            "Cache-Control":
+              "no-store",
+          },
         }
       );
-
     }
 
+    //----------------------------------------------
+    // Verify Existing Provider Association
+    //----------------------------------------------
 
-    /*
-     * Associate the Twilio CallSid if it was not
-     * already saved during outbound call creation.
-     */
+    if (
+      call.providerCallId &&
+      call.providerCallId !==
+        twilioCallSid
+    ) {
+      log.warn(
+        {
+          event:
+            "twilio.voice_stream.rejected",
+
+          reason:
+            "provider_call_id_mismatch",
+
+          storedProviderCallIdPresent:
+            true,
+
+          receivedProviderCallIdPresent:
+            true,
+        },
+        "Twilio call association mismatch"
+      );
+
+      return new NextResponse(
+        "Forbidden",
+        {
+          status:
+            403,
+
+          headers: {
+            "Cache-Control":
+              "no-store",
+          },
+        }
+      );
+    }
+
+    //----------------------------------------------
+    // Associate Provider Call SID If Missing
+    //----------------------------------------------
+
     if (
       !call.providerCallId
     ) {
+      /*
+       * updateMany with providerCallId:null creates
+       * a compare-and-set operation.
+       *
+       * Only one concurrent webhook may establish
+       * the provider association.
+       */
+      const associationResult =
+        await prisma.call
+          .updateMany({
+            where: {
+              id:
+                internalCallId,
 
-      await prisma.call.updateMany({
-        where: {
-          id:
-            internalCallId,
+              providerCallId:
+                null,
+            },
 
-          providerCallId:
-            null,
-        },
+            data: {
+              providerCallId:
+                twilioCallSid,
+            },
+          });
 
-        data: {
+      //--------------------------------------------
+      // Association Won
+      //--------------------------------------------
+
+      if (
+        associationResult.count ===
+        1
+      ) {
+        log.info(
+          {
+            event:
+              "twilio.voice_stream.provider_id_associated",
+
+            updatedRecordCount:
+              1,
+
+            providerCallIdPresent:
+              true,
+          },
+          "Twilio provider call ID associated with internal call"
+        );
+
+        call = {
+          ...call,
+
           providerCallId:
             twilioCallSid,
-        },
-      });
+        };
+      } else {
+        //------------------------------------------
+        // Concurrent Association Race
+        //------------------------------------------
 
+        const currentCall =
+          await prisma.call
+            .findUnique({
+              where: {
+                id:
+                  internalCallId,
+              },
 
-      log.info(
-        {
-          twilioCallSid,
-        },
-        "Twilio CallSid associated with internal call"
-      );
+              select: {
+                id:
+                  true,
 
+                providerCallId:
+                  true,
+
+                status:
+                  true,
+
+                direction:
+                  true,
+              },
+            });
+
+        //------------------------------------------
+        // Call Disappeared
+        //------------------------------------------
+
+        if (
+          !currentCall
+        ) {
+          log.warn(
+            {
+              event:
+                "twilio.voice_stream.rejected",
+
+              reason:
+                "call_disappeared_during_association",
+            },
+            "Internal call disappeared during provider association"
+          );
+
+          return createTwimlResponse(
+            createErrorTwiml(
+              "The call session could not be found."
+            )
+          );
+        }
+
+        //------------------------------------------
+        // Another SID Won The Race
+        //------------------------------------------
+
+        if (
+          currentCall.providerCallId !==
+          twilioCallSid
+        ) {
+          log.warn(
+            {
+              event:
+                "twilio.voice_stream.rejected",
+
+              reason:
+                "provider_association_race_mismatch",
+
+              storedProviderCallIdPresent:
+                Boolean(
+                  currentCall.providerCallId
+                ),
+
+              receivedProviderCallIdPresent:
+                true,
+            },
+            "Twilio provider association changed concurrently"
+          );
+
+          return new NextResponse(
+            "Forbidden",
+            {
+              status:
+                403,
+
+              headers: {
+                "Cache-Control":
+                  "no-store",
+              },
+            }
+          );
+        }
+
+        call =
+          currentCall;
+
+        log.info(
+          {
+            event:
+              "twilio.voice_stream.provider_id_already_associated",
+
+            providerCallIdPresent:
+              true,
+          },
+          "Twilio provider call ID was associated concurrently"
+        );
+      }
     }
 
-
     //----------------------------------------------
-    // Resolve Main Application URL
-    //----------------------------------------------
-
-    const appUrl =
-      normalizeAppUrl(
-        process.env
-          .TWILIO_PUBLIC_BASE_URL ??
-        process.env.APP_URL
-      );
-
-
-    if (
-      !appUrl
-    ) {
-
-      throw new Error(
-        "TWILIO_PUBLIC_BASE_URL or APP_URL is not configured"
-      );
-
-    }
-
-
-    //----------------------------------------------
-    // Resolve Dedicated Media Server URL
-    //----------------------------------------------
-
-    const mediaPublicUrl =
-      normalizeAppUrl(
-        process.env
-          .TWILIO_MEDIA_PUBLIC_URL
-      );
-
-
-    if (
-      !mediaPublicUrl
-    ) {
-
-      throw new Error(
-        "TWILIO_MEDIA_PUBLIC_URL is not configured"
-      );
-
-    }
-
-
-    const streamUrl =
-      toWebSocketUrl(
-        mediaPublicUrl,
-        "/api/twilio/stream"
-      );
-
-
-    const streamStatusUrl =
-      new URL(
-        "/api/twilio/stream-status",
-        `${appUrl}/`
-      ).toString();
-
-
-    //----------------------------------------------
-    // Build TwiML
+    // Build Canonical Outbound Media Stream TwiML
     //----------------------------------------------
 
     const twiml =
-      `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream
-      url="${escapeXml(
-        streamUrl
-      )}"
-      statusCallback="${escapeXml(
-        streamStatusUrl
-      )}"
-      statusCallbackMethod="POST"
-    >
-      <Parameter
-        name="callId"
-        value="${escapeXml(
-          internalCallId
-        )}"
-      />
-      <Parameter
-        name="twilioCallSid"
-        value="${escapeXml(
-          twilioCallSid
-        )}"
-      />
-    </Stream>
-  </Connect>
-</Response>`;
+      createMediaStreamTwiml({
+        internalCallId,
 
+        twilioCallSid,
+
+        direction:
+          "OUTBOUND",
+      });
+
+    //----------------------------------------------
+    // Log Successful Initialization
+    //----------------------------------------------
 
     log.info(
       {
-        twilioCallSid,
-        streamUrl,
-        streamStatusUrl,
-        mediaPublicUrl,
+        event:
+          "twilio.voice_stream.twiml_created",
+
+        direction:
+          "OUTBOUND",
+
+        providerCallIdPresent:
+          true,
+
+        callStatus:
+          call.status,
       },
-      "Returning authenticated Twilio Media Stream TwiML"
+      "Authenticated outbound Twilio Media Stream TwiML created"
     );
 
+    //----------------------------------------------
+    // Return TwiML
+    //----------------------------------------------
 
     return createTwimlResponse(
       twiml
     );
-
-  } catch (error) {
-
+  } catch (
+    error
+  ) {
     //----------------------------------------------
     // Twilio Authentication Error
     //----------------------------------------------
@@ -359,54 +507,53 @@ export async function POST(
         error
       );
 
-
     if (
       authResponse
     ) {
-
       return authResponse;
-
     }
-
 
     //----------------------------------------------
     // Generic Initialization Error
     //----------------------------------------------
 
-    console.error(
-      "Failed to initialize Twilio voice stream",
-      {
-        internalCallId:
-          internalCallId ||
-          undefined,
+    const log =
+      internalCallId
+        ? createCallLogger(
+            internalCallId
+          )
+        : serviceLog;
 
-        twilioCallSid:
-          twilioCallSid ||
-          undefined,
+    log.error(
+      {
+        event:
+          "twilio.voice_stream.initialization_failed",
+
+        internalCallIdPresent:
+          Boolean(
+            internalCallId
+          ),
+
+        twilioCallSidPresent:
+          Boolean(
+            twilioCallSid
+          ),
 
         error:
-          error instanceof Error
-            ? error.message
-            : String(
-                error
-              ),
-      }
+          normalizeError(
+            error
+          ),
+      },
+      "Failed to initialize Twilio voice stream"
     );
 
-
-    return createTwimlResponse(`
-<Response>
-  <Say voice="alice">
-    A call initialization error occurred.
-  </Say>
-  <Hangup />
-</Response>
-`);
-
+    return createTwimlResponse(
+      createErrorTwiml(
+        "A call initialization error occurred."
+      )
+    );
   }
-
 }
-
 
 //--------------------------------------------------
 // Reject GET Requests
@@ -414,7 +561,6 @@ export async function POST(
 
 export async function GET():
   Promise<NextResponse> {
-
   return NextResponse.json(
     {
       success:
@@ -430,144 +576,10 @@ export async function GET():
       headers: {
         Allow:
           "POST",
-      },
-    }
-  );
-
-}
-
-
-//--------------------------------------------------
-// XML Response
-//--------------------------------------------------
-
-function createTwimlResponse(
-  twiml: string
-): NextResponse {
-
-  return new NextResponse(
-    twiml.trim(),
-    {
-      status:
-        200,
-
-      headers: {
-        "Content-Type":
-          "text/xml; charset=utf-8",
 
         "Cache-Control":
           "no-store",
       },
     }
   );
-
-}
-
-
-//--------------------------------------------------
-// Normalize Public URL
-//--------------------------------------------------
-
-function normalizeAppUrl(
-  value:
-    | string
-    | undefined
-): string | null {
-
-  const normalized =
-    value
-      ?.trim()
-      .replace(
-        /\/+$/,
-        ""
-      );
-
-
-  return normalized ||
-    null;
-
-}
-
-
-//--------------------------------------------------
-// Convert HTTP URL To WebSocket URL
-//--------------------------------------------------
-
-function toWebSocketUrl(
-  baseUrl: string,
-  pathname: string
-): string {
-
-  const url =
-    new URL(
-      pathname,
-      `${baseUrl}/`
-    );
-
-
-  if (
-    url.protocol ===
-    "https:"
-  ) {
-
-    url.protocol =
-      "wss:";
-
-  } else if (
-    url.protocol ===
-    "http:"
-  ) {
-
-    url.protocol =
-      "ws:";
-
-  } else if (
-    url.protocol !==
-      "wss:" &&
-    url.protocol !==
-      "ws:"
-  ) {
-
-    throw new Error(
-      `Unsupported URL protocol: ${url.protocol}`
-    );
-
-  }
-
-
-  return url.toString();
-
-}
-
-
-//--------------------------------------------------
-// Escape XML Values
-//--------------------------------------------------
-
-function escapeXml(
-  value: string
-): string {
-
-  return value
-    .replace(
-      /&/g,
-      "&amp;"
-    )
-    .replace(
-      /</g,
-      "&lt;"
-    )
-    .replace(
-      />/g,
-      "&gt;"
-    )
-    .replace(
-      /"/g,
-      "&quot;"
-    )
-    .replace(
-      /'/g,
-      "&apos;"
-    );
-
 }

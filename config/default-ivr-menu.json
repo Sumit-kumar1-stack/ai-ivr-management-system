@@ -1,0 +1,45 @@
+{
+  "type": "DTMF_MENU",
+  "prompt": "Press 1 for loan information, 2 for deposits, 3 for branch information, 4 to request a callback, 9 for a human agent.",
+  "invalidPrompt": "That option is not available. Please try again.",
+  "timeoutPrompt": "I did not receive a selection. Please try again.",
+  "maxAttempts": 3,
+  "options": [
+    {
+      "digit": "1",
+      "action": "LOAN_INFORMATION",
+      "label": "loan information",
+      "response": "You selected loan information."
+    },
+    {
+      "digit": "2",
+      "action": "DEPOSIT_INFORMATION",
+      "label": "deposit information",
+      "response": "You selected deposit information."
+    },
+    {
+      "digit": "3",
+      "action": "BRANCH_INFORMATION",
+      "label": "branch information",
+      "response": "You selected branch information."
+    },
+    {
+      "digit": "4",
+      "action": "REQUEST_CALLBACK",
+      "label": "request a callback",
+      "response": "You selected callback."
+    },
+    {
+      "digit": "9",
+      "action": "HUMAN_AGENT",
+      "label": "human agent",
+      "response": "I will connect you to an agent."
+    },
+    {
+      "digit": "0",
+      "action": "REPEAT_MENU",
+      "label": "repeat menu",
+      "response": "Repeating the menu."
+    }
+  ]
+}

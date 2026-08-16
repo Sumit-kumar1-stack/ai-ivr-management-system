@@ -7,6 +7,12 @@ import {
 } from "twilio";
 
 import {
+  createCallLogger,
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
   prisma,
 } from "@/lib/prisma";
 
@@ -15,114 +21,198 @@ import {
   validateTwilioWebhook,
 } from "@/lib/twilio-webhook-auth";
 
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const serviceLog =
+  createServerLogger(
+    "twilio-voice-route"
+  );
+
+//--------------------------------------------------
+// Twilio Voice Webhook
+//--------------------------------------------------
 
 export async function POST(
   request: NextRequest
-) {
+): Promise<Response> {
+  let internalCallId =
+    "";
+
+  let twilioCallSid =
+    "";
 
   try {
-
     const {
       params,
-    } = await validateTwilioWebhook(
-      request
-    );
+    } =
+      await validateTwilioWebhook(
+        request
+      );
 
-
-    const twilioCallSid =
+    twilioCallSid =
       String(
         params.CallSid ??
-        ""
+          ""
       ).trim();
 
-
-    const internalCallId =
+    internalCallId =
       request.nextUrl
         .searchParams
-        .get("callId")
-        ?.trim();
+        .get(
+          "callId"
+        )
+        ?.trim() ??
+      "";
 
+    //----------------------------------------------
+    // Validate Required Identifiers
+    //----------------------------------------------
 
     if (
       !twilioCallSid ||
       !internalCallId
     ) {
+      serviceLog.warn(
+        {
+          event:
+            "twilio.voice.rejected",
+
+          reason:
+            "missing_call_identifiers",
+
+          internalCallIdPresent:
+            Boolean(
+              internalCallId
+            ),
+
+          providerCallIdPresent:
+            Boolean(
+              twilioCallSid
+            ),
+        },
+        "Twilio voice request rejected"
+      );
 
       return createErrorTwiML(
         "The call session could not be verified."
       );
-
     }
 
+    const log =
+      createCallLogger(
+        internalCallId
+      );
+
+    //----------------------------------------------
+    // Validate Internal Call Association
+    //----------------------------------------------
 
     const call =
-      await prisma.call.findFirst({
-        where: {
-          id:
-            internalCallId,
+      await prisma.call
+        .findFirst({
+          where: {
+            id:
+              internalCallId,
 
-          OR: [
-            {
-              providerCallId:
-                twilioCallSid,
-            },
-            {
-              providerCallId:
-                null,
-            },
-          ],
-        },
+            OR: [
+              {
+                providerCallId:
+                  twilioCallSid,
+              },
+              {
+                providerCallId:
+                  null,
+              },
+            ],
+          },
 
-        select: {
-          id:
-            true,
+          select: {
+            id:
+              true,
 
-          providerCallId:
-            true,
-        },
-      });
-
+            providerCallId:
+              true,
+          },
+        });
 
     if (
       !call
     ) {
+      log.warn(
+        {
+          event:
+            "twilio.voice.rejected",
+
+          reason:
+            "call_association_failed",
+
+          providerCallIdPresent:
+            true,
+        },
+        "Twilio voice call association rejected"
+      );
 
       return new Response(
         "Forbidden",
         {
           status:
             403,
+
+          headers: {
+            "Cache-Control":
+              "no-store",
+          },
         }
       );
-
     }
 
+    //----------------------------------------------
+    // Associate Provider Call ID
+    //----------------------------------------------
 
     if (
       !call.providerCallId
     ) {
+      const associationResult =
+        await prisma.call
+          .updateMany({
+            where: {
+              id:
+                internalCallId,
 
-      await prisma.call.updateMany({
-        where: {
-          id:
-            internalCallId,
+              providerCallId:
+                null,
+            },
 
-          providerCallId:
-            null,
+            data: {
+              providerCallId:
+                twilioCallSid,
+            },
+          });
+
+      log.info(
+        {
+          event:
+            "twilio.voice.provider_id_associated",
+
+          providerCallIdPresent:
+            true,
+
+          updatedRecordCount:
+            associationResult.count,
         },
-
-        data: {
-          providerCallId:
-            twilioCallSid,
-        },
-      });
-
+        "Twilio provider call ID associated"
+      );
     }
 
+    //----------------------------------------------
+    // Build Initial Gather Response
+    //----------------------------------------------
 
     const response =
       new twiml.VoiceResponse();
-
 
     const gather =
       response.gather({
@@ -142,59 +232,96 @@ export async function POST(
           "POST",
       });
 
+    const greeting =
+      "Hello. Welcome to ABC Company. How may I help you today?";
 
     gather.say(
       {
         voice:
           "alice",
       },
-      "Hello. Welcome to ABC Company. How may I help you today?"
+      greeting
     );
 
+    log.info(
+      {
+        event:
+          "twilio.voice.twiml_created",
+
+        providerCallIdPresent:
+          true,
+
+        greetingCharacterCount:
+          greeting.length,
+
+        speechGatherEnabled:
+          true,
+      },
+      "Twilio voice TwiML created"
+    );
 
     return createXmlResponse(
       response.toString()
     );
-
-  } catch (error) {
-
+  } catch (
+    error
+  ) {
     const authResponse =
       createTwilioAuthErrorResponse(
         error
       );
 
-
     if (
       authResponse
     ) {
-
       return authResponse;
-
     }
 
+    const log =
+      internalCallId
+        ? createCallLogger(
+            internalCallId
+          )
+        : serviceLog;
 
-    console.error(
-      "Twilio voice webhook failed",
-      error
+    log.error(
+      {
+        event:
+          "twilio.voice.failed",
+
+        internalCallIdPresent:
+          Boolean(
+            internalCallId
+          ),
+
+        providerCallIdPresent:
+          Boolean(
+            twilioCallSid
+          ),
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Twilio voice webhook failed"
     );
-
 
     return createErrorTwiML(
       "An error occurred while starting the call."
     );
-
   }
-
 }
 
+//--------------------------------------------------
+// Error TwiML
+//--------------------------------------------------
 
 function createErrorTwiML(
   message: string
 ): Response {
-
   const response =
     new twiml.VoiceResponse();
-
 
   response.say(
     {
@@ -204,21 +331,20 @@ function createErrorTwiML(
     message
   );
 
-
   response.hangup();
-
 
   return createXmlResponse(
     response.toString()
   );
-
 }
 
+//--------------------------------------------------
+// XML Response
+//--------------------------------------------------
 
 function createXmlResponse(
   xml: string
 ): Response {
-
   return new Response(
     xml,
     {
@@ -234,5 +360,4 @@ function createXmlResponse(
       },
     }
   );
-
 }

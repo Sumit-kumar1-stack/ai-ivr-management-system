@@ -3,13 +3,15 @@ import {
 } from "buffer";
 
 import {
+  createCallLogger,
+} from "@/lib/logger";
+
+import {
   AudioSessionService,
 } from "./audio-session.service";
 
-
 const SOCKET_TIMEOUT_MS =
   20_000;
-
 
 //--------------------------------------------------
 // Stream Audio To Twilio
@@ -19,91 +21,120 @@ export async function streamAudioToTwilio(
   callId: string,
   audio: Buffer
 ): Promise<void> {
+  const normalizedCallId =
+    callId.trim();
 
-  if (!AudioSessionService.getByCallId(callId)) {
-    console.warn(`Cancel stream audio to Twilio for call ${callId} because call session does not exist`);
-    return;
-  }
+  //--------------------------------------------
+  // Validate Input
+  //--------------------------------------------
 
   if (
-    !callId.trim()
+    !normalizedCallId
   ) {
-
     throw new Error(
       "Cannot stream audio without callId"
     );
-
   }
-
 
   if (
     !Buffer.isBuffer(
       audio
     )
   ) {
-
     throw new TypeError(
-      `Audio is not a Buffer for call ${callId}`
+      "Audio must be a Buffer"
     );
-
   }
-
 
   if (
     audio.length ===
     0
   ) {
-
     throw new Error(
-      `Audio buffer is empty for call ${callId}`
+      "Audio buffer cannot be empty"
     );
-
   }
 
+  const log =
+    createCallLogger(
+      normalizedCallId
+    );
 
-  console.log(
-    "Waiting for Twilio media stream",
+  //--------------------------------------------
+  // Validate Existing Session
+  //--------------------------------------------
+
+  if (
+    !AudioSessionService.getByCallId(
+      normalizedCallId
+    )
+  ) {
+    log.debug(
+      {
+        event:
+          "twilio.audio_stream.skipped",
+
+        reason:
+          "call_session_not_found",
+
+        audioByteCount:
+          audio.length,
+      },
+      "Twilio audio stream skipped"
+    );
+
+    return;
+  }
+
+  //--------------------------------------------
+  // Wait For Ready Media Stream
+  //--------------------------------------------
+
+  log.debug(
     {
-      callId,
+      event:
+        "twilio.audio_stream.waiting",
 
-      timeoutMs:
+      timeoutMilliseconds:
         SOCKET_TIMEOUT_MS,
-    }
+
+      audioByteCount:
+        audio.length,
+    },
+    "Waiting for Twilio media stream"
   );
 
-
   await AudioSessionService.waitForCall(
-    callId,
+    normalizedCallId,
     SOCKET_TIMEOUT_MS
   );
 
+  //--------------------------------------------
+  // Send Audio
+  //--------------------------------------------
 
   const sent =
     AudioSessionService.sendAudioByCallId(
-      callId,
+      normalizedCallId,
       audio
     );
-
 
   if (
     !sent
   ) {
-
     throw new Error(
-      `Failed to send audio to Twilio for call ${callId}`
+      "Failed to send audio to Twilio"
     );
-
   }
 
-
-  console.log(
-    "Audio streamed to Twilio",
+  log.debug(
     {
-      callId,
+      event:
+        "twilio.audio_stream.completed",
 
-      bytes:
+      audioByteCount:
         audio.length,
-    }
+    },
+    "Audio streamed to Twilio"
   );
-
 }

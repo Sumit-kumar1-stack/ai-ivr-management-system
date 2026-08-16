@@ -2,30 +2,35 @@
   "name": "ai-ivr-management-system",
   "version": "0.1.0",
   "private": true,
-    "scripts": {
-    "dev": "npm run dev:all",
-    "dev:web": "tsx watch src/server/web-process.ts",
-    "dev:worker": "tsx watch src/workers/worker-process.ts",
-    "dev:media": "tsx watch src/server/twilio-media-server.ts",
-    "dev:all": "concurrently -k -n WEB,WORKER,MEDIA \"npm:dev:web\" \"npm:dev:worker\" \"npm:dev:media\"",
+  "scripts": {
+  "dev": "npm run dev:all",
+  "test:inbound-media": "tsx scripts/test-inbound-media.ts",
 
-    "start": "npm run start:all",
-    "start:web": "tsx src/server/web-process.ts",
-    "start:worker": "tsx src/workers/worker-process.ts",
-    "start:media": "tsx src/server/twilio-media-server.ts",
-    "start:all": "concurrently -k -n WEB,WORKER,MEDIA \"npm:start:web\" \"npm:start:worker\" \"npm:start:media\"",
+  "dev:web": "tsx watch src/server/web-process.ts",
+  "dev:worker": "tsx watch src/workers/worker-process.ts",
+  "dev:media": "tsx watch src/server/twilio-media-server.ts",
 
-    "build": "next build",
-    "lint": "eslint",
-    "typecheck": "tsc --noEmit",
-    "seed": "tsx prisma/seed.ts",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
-    "test:unit": "vitest run tests/unit",
-    "test:ui": "vitest --ui"
-  }
-,
+  "dev:all": "concurrently -k -n WEB,WORKER,MEDIA \"npm run dev:web\" \"npm run dev:worker\" \"npm run dev:media\"",
+
+  "start": "npm run start:all",
+
+  "start:web": "tsx src/server/web-process.ts",
+  "start:worker": "tsx src/workers/worker-process.ts",
+  "start:media": "tsx src/server/twilio-media-server.ts",
+
+  "start:all": "concurrently -k -n WEB,WORKER,MEDIA \"npm run start:web\" \"npm run start:worker\" \"npm run start:media\"",
+
+  "build": "next build",
+  "lint": "eslint",
+  "typecheck": "tsc --noEmit",
+  "seed": "tsx prisma/seed.ts",
+
+  "test": "vitest run",
+  "test:watch": "vitest",
+  "test:coverage": "vitest run --coverage",
+  "test:unit": "vitest run tests/unit",
+  "test:ui": "vitest --ui"
+},
   "dependencies": {
     "@base-ui/react": "^1.6.0",
     "@deepgram/sdk": "^5.6.0",
@@ -72,7 +77,9 @@
     "uuid": "^14.0.1",
     "ws": "^8.18.0",
     "zod": "^4.4.3",
-    "zustand": "^5.0.14"
+    "zustand": "^5.0.14",
+    "concurrently": "^9.2.4",
+    "tsx": "^4.23.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -88,18 +95,14 @@
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.0",
     "@vitest/coverage-v8": "^4.1.10",
-    "concurrently": "^9.2.4",
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
     "pino-pretty": "^13.1.3",
     "prettier": "^3.9.4",
     "prettier-plugin-tailwindcss": "^0.8.0",
     "tailwindcss": "^4",
-    "tsx": "^4.23.1",
     "typescript": "^5",
     "vitest": "^4.1.10"
-  },
-  "prisma": {
-    "seed": "tsx prisma/seed.ts"
   }
 }
+

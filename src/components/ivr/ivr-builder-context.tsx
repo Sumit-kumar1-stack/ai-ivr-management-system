@@ -7,84 +7,169 @@ import {
 } from "react";
 
 import {
-  Edge,
-  Node,
-  Connection,
   addEdge,
 } from "@xyflow/react";
 
+import type {
+  Connection,
+} from "@xyflow/react";
+
+import type {
+  IVREdge,
+  IVRNode,
+} from "./types";
+
+//--------------------------------------------------
+// Context
+//--------------------------------------------------
+
 interface BuilderContextType {
-  nodes: Node[];
-  setNodes: React.Dispatch<
-    React.SetStateAction<Node[]>
-  >;
+  nodes:
+    IVRNode[];
 
-  edges: Edge[];
-  setEdges: React.Dispatch<
-    React.SetStateAction<Edge[]>
-  >;
+  setNodes:
+    React.Dispatch<
+      React.SetStateAction<
+        IVRNode[]
+      >
+    >;
 
-  selectedFlow?: string;
+  edges:
+    IVREdge[];
 
-  setSelectedFlow: React.Dispatch<
-    React.SetStateAction<string | undefined>
-  >;
+  setEdges:
+    React.Dispatch<
+      React.SetStateAction<
+        IVREdge[]
+      >
+    >;
 
-  flowName: string;
+  selectedFlow?:
+    string;
 
-  setFlowName: React.Dispatch<
-    React.SetStateAction<string>
-  >;
+  setSelectedFlow:
+    React.Dispatch<
+      React.SetStateAction<
+        string | undefined
+      >
+    >;
+
+  flowName:
+    string;
+
+  setFlowName:
+    React.Dispatch<
+      React.SetStateAction<string>
+    >;
+
+  campaignId:
+    string;
+
+  setCampaignId:
+    React.Dispatch<
+      React.SetStateAction<string>
+    >;
 
   onConnect: (
-    connection: Connection
+    connection:
+      Connection
   ) => void;
 }
 
 const BuilderContext =
-  createContext<BuilderContextType | null>(
+  createContext<
+    BuilderContextType | null
+  >(
     null
   );
+
+//--------------------------------------------------
+// Provider
+//--------------------------------------------------
 
 export function IVRBuilderProvider({
   children,
 }: {
-  children: React.ReactNode;
+  children:
+    React.ReactNode;
 }) {
-  const [nodes, setNodes] =
-    useState<Node[]>([
+  const [
+    nodes,
+    setNodes,
+  ] =
+    useState<
+      IVRNode[]
+    >([
       {
-        id: "1",
-        type: "ivr",
+        id:
+          "start",
+
+        type:
+          "ivr",
+
         position: {
-          x: 400,
-          y: 120,
+          x:
+            400,
+
+          y:
+            120,
         },
+
         data: {
-          label: "Start",
-          description: "Incoming Call",
+          nodeKind:
+            "START",
+
+          label:
+            "Start",
+
+          description:
+            "Incoming Call",
         },
       },
     ]);
 
-  const [edges, setEdges] =
-    useState<Edge[]>([]);
+  const [
+    edges,
+    setEdges,
+  ] =
+    useState<
+      IVREdge[]
+    >([]);
 
   const [
     selectedFlow,
     setSelectedFlow,
-  ] = useState<string>();
+  ] =
+    useState<
+      string | undefined
+    >();
 
   const [
     flowName,
     setFlowName,
-  ] = useState("Untitled Flow");
+  ] =
+    useState(
+      "Untitled Flow"
+    );
+
+  const [
+    campaignId,
+    setCampaignId,
+  ] =
+    useState(
+      ""
+    );
 
   function onConnect(
-    connection: Connection
-  ) {
-    setEdges((previous) =>
-      addEdge(connection, previous)
+    connection:
+      Connection
+  ): void {
+    setEdges(
+      previous =>
+        addEdge(
+          connection,
+          previous
+        )
     );
   }
 
@@ -103,6 +188,9 @@ export function IVRBuilderProvider({
         flowName,
         setFlowName,
 
+        campaignId,
+        setCampaignId,
+
         onConnect,
       }}
     >
@@ -111,11 +199,19 @@ export function IVRBuilderProvider({
   );
 }
 
+//--------------------------------------------------
+// Hook
+//--------------------------------------------------
+
 export function useIVRBuilder() {
   const context =
-    useContext(BuilderContext);
+    useContext(
+      BuilderContext
+    );
 
-  if (!context) {
+  if (
+    !context
+  ) {
     throw new Error(
       "useIVRBuilder must be inside provider"
     );

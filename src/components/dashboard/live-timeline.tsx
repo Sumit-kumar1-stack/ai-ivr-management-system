@@ -279,6 +279,23 @@ function getEventStyle(
   `;
 }
 
+function clampIndex(
+  index: number,
+  length: number
+): number {
+  if (length <= 0) {
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    Math.min(
+      index,
+      length - 1
+    )
+  );
+}
+
 export default function LiveTimeline() {
   const timeline =
     useDashboardStore(
@@ -312,22 +329,7 @@ export default function LiveTimeline() {
       ]
     );
 
-  useEffect(
-    () => {
-      if (
-        currentIndex >=
-        visibleEvents.length
-      ) {
-        setCurrentIndex(
-          0
-        );
-      }
-    },
-    [
-      currentIndex,
-      visibleEvents.length,
-    ]
-  );
+  const safeIndex = clampIndex(currentIndex, visibleEvents.length);
 
   useEffect(
     () => {
@@ -345,12 +347,14 @@ export default function LiveTimeline() {
             setCurrentIndex(
               (
                 current
-              ) =>
-                (
-                  current +
+              ) => {
+                const clamped = clampIndex(current, visibleEvents.length);
+                return (
+                  clamped +
                   1
                 ) %
-                visibleEvents.length
+                visibleEvents.length;
+              }
             );
           },
           SLIDE_INTERVAL_MS
@@ -379,13 +383,12 @@ export default function LiveTimeline() {
     setCurrentIndex(
       (
         current
-      ) =>
-        current ===
-        0
-          ? visibleEvents.length -
-            1
-          : current -
-            1
+      ) => {
+        const clamped = clampIndex(current, visibleEvents.length);
+        return clamped === 0
+          ? visibleEvents.length - 1
+          : clamped - 1;
+      }
     );
   }
 
@@ -400,18 +403,20 @@ export default function LiveTimeline() {
     setCurrentIndex(
       (
         current
-      ) =>
-        (
-          current +
+      ) => {
+        const clamped = clampIndex(current, visibleEvents.length);
+        return (
+          clamped +
           1
         ) %
-        visibleEvents.length
+        visibleEvents.length;
+      }
     );
   }
 
   const currentEvent =
     visibleEvents[
-      currentIndex
+      safeIndex
     ];
 
   return (
@@ -608,7 +613,7 @@ export default function LiveTimeline() {
                     text-muted-foreground
                   "
                 >
-                  {currentIndex +
+                  {safeIndex +
                     1}{" "}
                   /{" "}
                   {
@@ -717,7 +722,7 @@ export default function LiveTimeline() {
                 >
                   <div
                     key={
-                      currentIndex
+                      safeIndex
                     }
                     className="
                       h-full
@@ -762,7 +767,7 @@ export default function LiveTimeline() {
                     transition-all
                     ${
                       index ===
-                      currentIndex
+                      safeIndex
                         ? `
                           w-8
                           bg-primary

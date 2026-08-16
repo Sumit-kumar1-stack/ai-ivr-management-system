@@ -1,35 +1,69 @@
 import {
-  voiceQueue,
-} from "./voice-queue.service";
+  createCallLogger,
+} from "@/lib/logger";
 
 import {
   PlaybackState,
 } from "./playback-state.service";
 
-export class BargeInService {
+import {
+  voiceQueue,
+} from "./voice-queue.service";
 
+//--------------------------------------------------
+// Barge-In Service
+//--------------------------------------------------
+
+export class BargeInService {
   static interrupt(
     callId: string
-  ) {
+  ): boolean {
+    const normalizedCallId =
+      callId.trim();
 
     if (
-      !PlaybackState.isSpeaking(callId)
+      !normalizedCallId
     ) {
-
       return false;
-
     }
 
-    console.log(
-      "\n🛑 BARGE-IN DETECTED\n"
+    if (
+      !PlaybackState.isSpeaking(
+        normalizedCallId
+      )
+    ) {
+      return false;
+    }
+
+    const log =
+      createCallLogger(
+        normalizedCallId
+      );
+
+    const queuedItemCount =
+      voiceQueue.size(
+        normalizedCallId
+      );
+
+    voiceQueue.clear(
+      normalizedCallId
     );
 
-    voiceQueue.clear(callId);
+    PlaybackState.stop(
+      normalizedCallId
+    );
 
-    PlaybackState.stop(callId);
+    log.info(
+      {
+        event:
+          "voice.barge_in.detected",
+
+        clearedQueueItemCount:
+          queuedItemCount,
+      },
+      "Caller barge-in detected"
+    );
 
     return true;
-
   }
-
 }

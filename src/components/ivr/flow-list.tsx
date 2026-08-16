@@ -1,9 +1,10 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import type { IVRFlow } from "./types";
 
 interface Props {
-  flows: any[];
+  flows: IVRFlow[];
   onSelect: (id: string) => void;
 }
 

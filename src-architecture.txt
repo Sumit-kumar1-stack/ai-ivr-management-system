@@ -1,0 +1,649 @@
+Folder PATH listing for volume Windows-SSD
+Volume serial number is 000001DF 5EA0:A153
+C:\USERS\SUMIT\AI-IVR-MANAGEMENT-SYSTEM\SRC
++---app
+|   |   favicon.ico
+|   |   globals.css
+|   |   layout.tsx
+|   |   page.tsx
+|   |   
+|   +---(auth)
+|   +---(dashboard)
+|   |   |   layout.tsx
+|   |   |   
+|   |   +---agents
+|   |   |       page.tsx
+|   |   |       
+|   |   +---analytics
+|   |   |       page.tsx
+|   |   |       
+|   |   +---calls
+|   |   |   |   page.tsx
+|   |   |   |   
+|   |   |   \---[id]
+|   |   |           page.tsx
+|   |   |           
+|   |   +---campaigns
+|   |   |   |   page.tsx
+|   |   |   |   
+|   |   |   \---[id]
+|   |   |           page.tsx
+|   |   |           
+|   |   +---contacts
+|   |   |       page.tsx
+|   |   |       
+|   |   +---dashboard
+|   |   |       page.tsx
+|   |   |       
+|   |   +---ivr
+|   |   |       page.tsx
+|   |   |       
+|   |   +---ivr-builder
+|   |   |       page.tsx
+|   |   |       
+|   |   +---knowledge
+|   |   |       page.tsx
+|   |   |       
+|   |   +---settings
+|   |   |       page.tsx
+|   |   |       
+|   |   \---users
+|   |           page.tsx
+|   |           
+|   +---api
+|   |   |   route.ts
+|   |   |   
+|   |   +---agents
+|   |   +---analytics
+|   |   +---auth
+|   |   |   +---login
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   +---logout
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   \---me
+|   |   |           route.ts
+|   |   |           
+|   |   +---calls
+|   |   |   |   route.ts
+|   |   |   |   
+|   |   |   +---start
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   +---webhook
+|   |   |   |   |   route.ts
+|   |   |   |   |   
+|   |   |   |   \---status
+|   |   |   \---[id]
+|   |   |       |   route.ts
+|   |   |       |   
+|   |   |       \---recording
+|   |   |               route.ts
+|   |   |               
+|   |   +---campaigns
+|   |   |   |   route.ts
+|   |   |   |   
+|   |   |   \---[id]
+|   |   |       |   route.ts
+|   |   |       |   
+|   |   |       +---contacts
+|   |   |       |   |   route.ts
+|   |   |       |   |   
+|   |   |       |   \---[contactId]
+|   |   |       |           route.ts
+|   |   |       |           
+|   |   |       +---start
+|   |   |       |       route.ts
+|   |   |       |       
+|   |   |       \---stats
+|   |   |               route.ts
+|   |   |               
+|   |   +---contacts
+|   |   |   |   route.ts
+|   |   |   |   
+|   |   |   +---import
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   +---stats
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   \---[id]
+|   |   |           route.ts
+|   |   |           
+|   |   +---conversations
+|   |   |   \---[callId]
+|   |   |           route.ts
+|   |   |           
+|   |   +---dashboard
+|   |   |   +---active
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   +---live
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   +---metrics
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   \---timeline
+|   |   |           route.ts
+|   |   |           
+|   |   +---health
+|   |   |       route.ts
+|   |   |       
+|   |   +---ivr
+|   |   +---ivr-flows
+|   |   |   |   route.ts
+|   |   |   |   
+|   |   |   \---[id]
+|   |   |           route.ts
+|   |   |           
+|   |   +---knowledge
+|   |   |   |   route.ts
+|   |   |   |   use-upload-knowledge.ts
+|   |   |   |   
+|   |   |   +---upload
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   \---[id]
+|   |   |           route.ts
+|   |   |           
+|   |   +---ready
+|   |   |       route.ts
+|   |   |       
+|   |   +---socket
+|   |   |       route.ts
+|   |   |       
+|   |   +---telephony
+|   |   |   \---webhook
+|   |   |           route.ts
+|   |   |           
+|   |   +---test-logger
+|   |   |       route.ts
+|   |   |       
+|   |   +---twilio
+|   |   |   +---gather
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   +---inbound
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   +---media
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   +---recording
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   +---status
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   +---stream
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   +---stream-status
+|   |   |   |       route.ts
+|   |   |   |       
+|   |   |   +---voice
+|   |   |   |   |   route.ts
+|   |   |   |   |   
+|   |   |   |   \---input
+|   |   |   |           route.ts
+|   |   |   |           
+|   |   |   \---voice-stream
+|   |   |           route.ts
+|   |   |           
+|   |   +---users
+|   |   |   |   route.ts
+|   |   |   |   
+|   |   |   \---[id]
+|   |   |           route.ts
+|   |   |           
+|   |   +---webhooks
+|   |   |   \---telephony
+|   |   |           route.ts
+|   |   |           
+|   |   \---ws
+|   |           route.ts
+|   |           
+|   \---login
+|           page.tsx
+|           
++---components
+|   +---campaigns
+|   |       available-contact-table.tsx
+|   |       campaign-contacts-card.tsx
+|   |       campaign-header.tsx
+|   |       campaign-skeleton.tsx
+|   |       campaign-stats.tsx
+|   |       create-campaign-dialog.tsx
+|   |       manage-contacts-dialog.tsx
+|   |       
+|   +---contacts
+|   |       assign-campaign-dialog.tsx
+|   |       contact-actions.tsx
+|   |       contact-bulk-actions.tsx
+|   |       contact-columns.tsx
+|   |       contact-filters.tsx
+|   |       contact-form.tsx
+|   |       contact-stats.tsx
+|   |       contact-table.tsx
+|   |       contacts-page-content.tsx
+|   |       delete-contact-dialog.tsx
+|   |       edit-contact-dialog.tsx
+|   |       language-badge.tsx
+|   |       pagination.tsx
+|   |       status-badge.tsx
+|   |       upload-csv.tsx
+|   |       
+|   +---dashboard
+|   |       call-duration.tsx
+|   |       conversation-card.tsx
+|   |       conversation-message.tsx
+|   |       live-active-calls.tsx
+|   |       live-call-card.tsx
+|   |       live-conversation.tsx
+|   |       live-metrics.tsx
+|   |       live-timeline.tsx
+|   |       status-badge.tsx
+|   |       thinking-animation.tsx
+|   |       transcript.tsx
+|   |       waveform.tsx
+|   |       
+|   +---ivr
+|   |   |   edge-options.ts
+|   |   |   flow-list.tsx
+|   |   |   ivr-builder-context.tsx
+|   |   |   ivr-canvas.tsx
+|   |   |   ivr-node.tsx
+|   |   |   ivr-sidebar.tsx
+|   |   |   ivr-toolbar.tsx
+|   |   |   node-properties.tsx
+|   |   |   save-flow-button.tsx
+|   |   |   
+|   |   \---properties
+|   |           ai-knowledge.tsx
+|   |           ai-prompt-editor.tsx
+|   |           ai-properties-panel.tsx
+|   |           knowledge-item.tsx
+|   |           knowledge-list.tsx
+|   |           knowledge-upload.tsx
+|   |           llm-parameters.tsx
+|   |           parameter-help.tsx
+|   |           parameter-number.tsx
+|   |           parameter-slider.tsx
+|   |           prompt-tips.tsx
+|   |           prompt-variables.tsx
+|   |           property-input.tsx
+|   |           property-section.tsx
+|   |           token-counter.tsx
+|   |           voice-model-select.tsx
+|   |           voice-preview.tsx
+|   |           voice-provider-select.tsx
+|   |           voice-settings.tsx
+|   |           voice-slider.tsx
+|   |           
+|   +---knowledge
+|   |       knowledge-table.tsx
+|   |       knowledge-upload.tsx
+|   |       
+|   +---layout
+|   |       dashboard-shell.tsx
+|   |       header.tsx
+|   |       sidebar.tsx
+|   |       stats-card.tsx
+|   |       
+|   +---shared
+|   +---ui
+|   |   |   badge.tsx
+|   |   |   button.tsx
+|   |   |   card.tsx
+|   |   |   confirm-dialog.tsx
+|   |   |   dialog.tsx
+|   |   |   dropdown-menu.tsx
+|   |   |   input.tsx
+|   |   |   table-skeleton.tsx
+|   |   |   table.tsx
+|   |   |   textarea.tsx
+|   |   |   
+|   |   \---data-table
+|   |           data-table.tsx
+|   |           
+|   \---users
+|           create-user-dialog.tsx
+|           role-badge.tsx
+|           status-badge.tsx
+|           user-columns.tsx
+|           user-table.tsx
+|           
++---config
+|       ai.ts
+|       stt.ts
+|       
++---constants
++---contexts
+|       socket-context.tsx
+|       
++---core
+|   |   bootstrap.ts
+|   |   
+|   \---events
+|       |   app-event.ts
+|       |   event-bus.ts
+|       |   event-monitor.service.ts
+|       |   event-publisher.ts
+|       |   event-registry.ts
+|       |   event-snapshot.ts
+|       |   event-subscriber.ts
+|       |   event-types.ts
+|       |   index.ts
+|       |   route.ts
+|       |   
+|       +---clear
+|       |       route.ts
+|       |       
+|       +---history
+|       |       route.ts
+|       |       
+|       +---payloads
+|       |       call.payload.ts
+|       |       conversation.payload.ts
+|       |       voice.payload.ts
+|       |       
+|       +---stats
+|       |       route.ts
+|       |       
+|       \---subscribers
+|               index.ts
+|               logging.subscriber.ts
+|               realtime.subscriber.ts
+|               timeline.subscriber.ts
+|               
++---features
+|   +---analytics
+|   +---auth
+|   |       auth.schema.ts
+|   |       
+|   +---call-events
+|   |       call-event.mapper.ts
+|   |       call-event.repository.ts
+|   |       call-event.schema.ts
+|   |       call-event.service.ts
+|   |       index.ts
+|   |       
+|   +---calls
+|   +---campaigns
+|   |       campaign-contact.mapper.ts
+|   |       campaign-contact.repository.ts
+|   |       campaign-contact.schema.ts
+|   |       campaign-contact.service.ts
+|   |       campaign.mapper.ts
+|   |       campaign.repository.ts
+|   |       campaign.schema.ts
+|   |       campaign.service.ts
+|   |       campaign.types.ts
+|   |       use-assign-campaign-contacts.ts
+|   |       use-assign-contacts.ts
+|   |       use-campaign-contacts.ts
+|   |       use-campaign-stats.ts
+|   |       use-campaigns.ts
+|   |       use-create-campaign.ts
+|   |       use-delete-campaign.ts
+|   |       use-remove-contact.ts
+|   |       use-start-campaign.ts
+|   |       use-update-campaign.ts
+|   |       
+|   +---contacts
+|   |       contact.mapper.ts
+|   |       contact.repository.ts
+|   |       contact.schema.ts
+|   |       contact.service.ts
+|   |       contact.types.ts
+|   |       csv.service.ts
+|   |       csv.validator.ts
+|   |       use-contact-stats.ts
+|   |       use-contacts.ts
+|   |       use-create-contact.ts
+|   |       use-delete-contact.ts
+|   |       use-import-contacts.ts
+|   |       use-update-contact.ts
+|   |       
+|   +---dashboard
+|   |       dashboard.mapper.ts
+|   |       dashboard.repository.ts
+|   |       dashboard.service.ts
+|   |       index.ts
+|   |       
+|   +---ivr
+|   |       use-flow.ts
+|   |       use-flows.ts
+|   |       use-save-flow.ts
+|   |       use-update-flow.ts
+|   |       
+|   +---knowledge
+|   |       use-delete-knowledge.ts
+|   |       use-knowledge.ts
+|   |       use-upload-knowledge.ts
+|   |       
+|   +---settings
+|   \---users
+|           use-create-user.ts
+|           use-delete-user.ts
+|           use-update-user.ts
+|           use-users.ts
+|           user.mapper.ts
+|           user.repository.ts
+|           user.schema.ts
+|           user.service.ts
+|           user.types.ts
+|           
++---hooks
+|       use-call-duration.ts
+|       use-dashboard-events.ts
+|       use-debounce.ts
+|       useLiveCall.ts
+|       
++---lib
+|   |   api-response.ts
+|   |   app-error.ts
+|   |   async-handler.ts
+|   |   auth-constants.ts
+|   |   auth-response.ts
+|   |   auth.ts
+|   |   axios.ts
+|   |   errors.ts
+|   |   hash.ts
+|   |   jwt.ts
+|   |   logger.ts
+|   |   pagination.ts
+|   |   prisma.ts
+|   |   redis.ts
+|   |   request-id.ts
+|   |   socket.ts
+|   |   twilio-webhook-auth.ts
+|   |   utils.ts
+|   |   
+|   \---validators
++---middleware
+|       request-id.middleware.ts
+|       
++---providers
+|   |   query-provider.tsx
+|   |   socket-provider.tsx
+|   |   
+|   +---telephony
+|   |       audio-session.service.ts
+|   |       base.provider.ts
+|   |       exotel.provider.ts
+|   |       index.ts
+|   |       mock.provider.ts
+|   |       playback.service.ts
+|   |       provider.enum.ts
+|   |       provider.factory.ts
+|   |       status-map.ts
+|   |       stream.service.ts
+|   |       telnyx.provider.ts
+|   |       twilio-media-twiml.service.ts
+|   |       twilio-stream.gateway.ts
+|   |       twilio-stream.service.ts
+|   |       twilio.client.ts
+|   |       twilio.provider.ts
+|   |       twiml.service.ts
+|   |       
+|   \---twilio
+|           twilio.client.ts
+|           twilio.config.ts
+|           
++---repositories
++---server
+|       legacy-bootstrap.ts
+|       process-lifecycle.ts
+|       server.ts
+|       socket-auth.ts
+|       socket-events.ts
+|       socket.ts
+|       twilio-media-server.ts
+|       twilio-websocket.ts
+|       web-process.ts
+|       
++---services
+|   |   ivr-flow.service.ts
+|   |   knowledge.service.ts
+|   |   
+|   +---ai
+|   |   |   ai-chat.service.ts
+|   |   |   ai-response.service.ts
+|   |   |   ai.types.ts
+|   |   |   gemini-stream.service.ts
+|   |   |   gemini.service.ts
+|   |   |   llm.factory.ts
+|   |   |   openai.service.ts
+|   |   |   
+|   |   \---chat
+|   |           route.ts
+|   |           
+|   +---calls
+|   |       call-retry-policy.ts
+|   |       call-retry-queue.service.ts
+|   |       call-timeline.service.ts
+|   |       call.service.ts
+|   |       inbound-call.service.ts
+|   |       stale-call-cleanup.service.ts
+|   |       
+|   +---campaigns
+|   |       campaign-finalizer.service.ts
+|   |       campaign-queue.service.ts
+|   |       campaign-runner.service.ts
+|   |       
+|   +---conversations
+|   |       abort.service.ts
+|   |       action-detector.service.ts
+|   |       action.service.ts
+|   |       ai-response.service.ts
+|   |       analysis.service.ts
+|   |       conversation-engine.service.ts
+|   |       conversation-events.service.ts
+|   |       conversation-state.service.ts
+|   |       conversation.repository.ts
+|   |       conversation.service.ts
+|   |       conversation.types.ts
+|   |       memory-summary.service.ts
+|   |       memory.service.ts
+|   |       partial-transcript.service.ts
+|   |       prompt-builder.service.ts
+|   |       silence-detector.service.ts
+|   |       summary.service.ts
+|   |       
+|   +---knowledge
+|   |       bm25.service.ts
+|   |       chunker.ts
+|   |       indexer.service.ts
+|   |       parser.ts
+|   |       query-rewriter.service.ts
+|   |       rag.service.ts
+|   |       reranker.service.ts
+|   |       retrieval.service.ts
+|   |       search.service.ts
+|   |       tokenizer.service.ts
+|   |       
+|   +---realtime
+|   |       audio.gateway.ts
+|   |       event-bus.ts
+|   |       index.ts
+|   |       realtime-emitter.service.ts
+|   |       realtime-subscriber.ts
+|   |       realtime.service.ts
+|   |       redis-realtime-bridge.service.ts
+|   |       socket-gateway.service.ts
+|   |       socket.events.ts
+|   |       socket.gateway.ts
+|   |       socket.service.ts
+|   |       websocket.service.ts
+|   |       
+|   +---speech
+|   |       deepgram.service.ts
+|   |       index.ts
+|   |       mock-stt.provider.ts
+|   |       speech-provider.ts
+|   |       stt.service.ts
+|   |       transcript-buffer.service.ts
+|   |       transcript.events.ts
+|   |       transcript.subscriber.ts
+|   |       transcript.types.ts
+|   |       
+|   +---stt
+|   |   |   deepgram.events.ts
+|   |   |   deepgram.service.ts
+|   |   |   deepgram.socket.ts
+|   |   |   session-manager.service.ts
+|   |   |   stt-heartbeat.service.ts
+|   |   |   stt-reconnect.service.ts
+|   |   |   stt.events.ts
+|   |   |   stt.metrics.service.ts
+|   |   |   
+|   |   \---providers
+|   |           base-stt.provider.ts
+|   |           deepgram.provider.ts
+|   |           mock-stt.provider.ts
+|   |           provider.factory.ts
+|   |           
+|   +---telephony
+|   |       ivr.service.ts
+|   |       provider.ts
+|   |       telephony.service.ts
+|   |       types.ts
+|   |       
+|   \---voice
+|           audio-buffer.service.ts
+|           audio-converter.service.ts
+|           audio-events.service.ts
+|           audio-router.service.ts
+|           audio-session.service.ts
+|           audio-stream.service.ts
+|           audio-stream.types.ts
+|           barge-in.service.ts
+|           live-speech.service.ts
+|           live-transcript.service.ts
+|           playback-state.service.ts
+|           sentence-buffer.service.ts
+|           silence-detector.service.ts
+|           types.ts
+|           voice-queue.service.ts
+|           voice-worker.service.ts
+|           voice.service.ts
+|           
++---store
+|       dashboard.store.ts
+|       
++---styles
++---types
+|       api.ts
+|       
++---utils
++---validators
+\---workers
+        call-retry.worker.ts
+        campaign.worker.ts
+        initialize-workers.ts
+        worker-health-server.ts
+        worker-process.ts
+        

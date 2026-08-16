@@ -3,6 +3,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@/lib/axios";
+import { isAxiosError } from "axios";
 
 export function useUpdateCampaign() {
   const queryClient = useQueryClient();
@@ -45,10 +46,11 @@ export function useUpdateCampaign() {
       });
     },
 
-    onError(error: any) {
+    onError(error: unknown) {
       toast.error(
-        error?.response?.data?.message ??
-          "Failed to update campaign"
+        isAxiosError<{ message?: string }>(error)
+          ? error.response?.data?.message ?? "Failed to update campaign"
+          : "Failed to update campaign"
       );
     },
   });

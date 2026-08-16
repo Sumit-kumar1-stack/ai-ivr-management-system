@@ -128,13 +128,6 @@ describe(
           .mockReturnValue(
             true
           );
-
-        vi.spyOn(
-          console,
-          "warn"
-        ).mockImplementation(
-          () => undefined
-        );
       }
     );
 
@@ -314,19 +307,21 @@ describe(
         ).toHaveBeenCalledOnce();
 
         expect(
-          console.warn
+          mocks.validateRequest
         ).toHaveBeenCalledWith(
-          "Twilio webhook signature rejected",
-          expect.objectContaining({
-            pathname:
-              "/api/twilio/status",
-
-            validationUrl:
-              "https://public.example.com/api/twilio/status",
-
-            callSid:
+          "test-twilio-auth-token",
+          "invalid-signature",
+          "https://public.example.com/api/twilio/status",
+          {
+            CallSid:
               "CA123",
-          })
+
+            CallStatus:
+              "completed",
+
+            CallDuration:
+              "42",
+          }
         );
       }
     );

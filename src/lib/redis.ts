@@ -1,5 +1,23 @@
 import IORedis from "ioredis";
 
+import {
+  getRedisEnvironment,
+} from "@/config/env";
+
+import {
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "redis"
+  );
+
 //--------------------------------------------------
 // Redis Global State
 //--------------------------------------------------
@@ -14,20 +32,16 @@ const redisGlobal =
   globalThis as RedisGlobal;
 
 //--------------------------------------------------
-// Redis URL
-//--------------------------------------------------
-
-const redisUrl =
-  process.env.REDIS_URL
-    ?.trim() ??
-  "redis://127.0.0.1:6379";
-
-//--------------------------------------------------
 // Create Redis Connection
 //--------------------------------------------------
 
 function createRedisConnection():
   IORedis {
+  const {
+    redisUrl,
+  } =
+    getRedisEnvironment();
+
   const connection =
     new IORedis(
       redisUrl,
@@ -38,8 +52,16 @@ function createRedisConnection():
         enableReadyCheck:
           false,
 
+        /*
+         * Do not open a network connection merely
+         * because a module imported this file.
+         *
+         * The first Redis command, publish, subscribe
+         * or explicit connect call starts the
+         * connection automatically.
+         */
         lazyConnect:
-          false,
+          true,
 
         /*
          * Prevent unbounded retry intervals while
@@ -64,7 +86,11 @@ function createRedisConnection():
   connection.on(
     "connect",
     () => {
-      console.log(
+      log.info(
+        {
+          event:
+            "redis.connection.established",
+        },
         "Redis connection established"
       );
     }
@@ -73,39 +99,48 @@ function createRedisConnection():
   connection.on(
     "ready",
     () => {
-      console.log(
+      log.info(
+        {
+          event:
+            "redis.connection.ready",
+        },
         "Redis connection ready"
       );
     }
   );
 
   connection.on(
-  "reconnecting",
-  (
-    delay:
-      number
-  ) => {
-    console.warn(
-      "Redis reconnecting",
-      {
-        delay,
-      }
-    );
-  }
-);
+    "reconnecting",
+    (
+      delay:
+        number
+    ) => {
+      log.warn(
+        {
+          event:
+            "redis.connection.reconnecting",
+
+          delay,
+        },
+        "Redis connection reconnecting"
+      );
+    }
+  );
 
   connection.on(
     "error",
     error => {
-      console.error(
-        "Redis connection error",
+      log.error(
         {
-          name:
-            error.name,
+          event:
+            "redis.connection.error",
 
-          message:
-            error.message,
-        }
+          error:
+            normalizeError(
+              error
+            ),
+        },
+        "Redis connection error"
       );
     }
   );
@@ -113,7 +148,11 @@ function createRedisConnection():
   connection.on(
     "close",
     () => {
-      console.warn(
+      log.warn(
+        {
+          event:
+            "redis.connection.closed",
+        },
         "Redis connection closed"
       );
     }
@@ -122,7 +161,11 @@ function createRedisConnection():
   connection.on(
     "end",
     () => {
-      console.warn(
+      log.warn(
+        {
+          event:
+            "redis.connection.ended",
+        },
         "Redis connection ended"
       );
     }
@@ -141,28 +184,71 @@ export const redisConnection =
   createRedisConnection();
 
 /*
- * Preserve the connection across Next.js development
- * module reloads.
+ * Preserve one connection across development module
+ * reloads and duplicate imports in the same process.
  */
 redisGlobal
   .__ivrRedisConnection =
   redisConnection;
 
 //--------------------------------------------------
-// Close Redis
+// Close Redis Connection
 //--------------------------------------------------
 
 export async function closeRedisConnection():
   Promise<void> {
+  const connection =
+    redisGlobal
+      .__ivrRedisConnection;
+
   if (
-    redisConnection.status ===
+    !connection
+  ) {
+    return;
+  }
+
+  delete redisGlobal
+    .__ivrRedisConnection;
+
+  /*
+   * A lazy client may never have opened a socket.
+   * Calling quit() while its status is "wait" would
+   * unnecessarily initiate a connection.
+   */
+  if (
+    connection.status ===
+      "wait"
+  ) {
+    connection.disconnect();
+
+    return;
+  }
+
+  if (
+    connection.status ===
       "end"
   ) {
     return;
   }
 
-  await redisConnection.quit();
+  try {
+    await connection.quit();
+  } catch (
+    error
+  ) {
+    log.warn(
+      {
+        event:
+          "redis.disconnect.graceful_failed",
 
-  delete redisGlobal
-    .__ivrRedisConnection;
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Graceful Redis shutdown failed; disconnecting"
+    );
+
+    connection.disconnect();
+  }
 }

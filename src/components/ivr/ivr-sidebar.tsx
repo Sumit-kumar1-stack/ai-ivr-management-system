@@ -2,6 +2,7 @@
 
 import { useFlows } from "@/features/ivr/use-flows";
 import { useIVRBuilder } from "./ivr-builder-context";
+import type { IVRFlow } from "./types";
 
 const nodes = [
   "Greeting",
@@ -49,7 +50,7 @@ export default function IVRSidebar() {
           </p>
         )}
 
-        {flows.map((flow: any) => (
+        {flows.map((flow: IVRFlow) => (
           <button
             key={flow.id}
             onClick={() =>

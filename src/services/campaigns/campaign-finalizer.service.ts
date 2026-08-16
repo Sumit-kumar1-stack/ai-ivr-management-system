@@ -694,15 +694,67 @@ export async function finalizeCampaignRunIfReady(
       latestRun?.id ===
       campaignRun.id;
 
-    //------------------------------------------------
-    // Persist Final Run State
-    //------------------------------------------------
+//------------------------------------------------
+// Persist Final Run State
+//------------------------------------------------
 
-    const persistenceResult =
-      await prisma.$transaction(
-        async transaction => {
-          const runUpdate =
-            await transaction.campaignRun.updateMany({
+const persistenceResult =
+  await prisma.$transaction(
+    async transaction => {
+      //------------------------------------------------
+      // Latest Run Also Owns Campaign State
+      //------------------------------------------------
+
+      if (
+        isLatestRun
+      ) {
+        /*
+         * Claim the campaign final transition first.
+         *
+         * If cancellation has already changed the
+         * campaign away from RUNNING, do not finalize
+         * the run either.
+         */
+
+        const campaignUpdate =
+          await transaction.campaign
+            .updateMany({
+              where: {
+                id:
+                  campaignRun.campaignId,
+
+                status:
+                  CampaignStatus.RUNNING,
+              },
+
+              data: {
+                status:
+                  finalCampaignStatus,
+
+                completedAt,
+              },
+            });
+
+        if (
+          campaignUpdate.count ===
+          0
+        ) {
+          return {
+            runUpdateCount:
+              0,
+
+            campaignUpdateCount:
+              0,
+          };
+        }
+
+        //------------------------------------------------
+        // Finalize Run
+        //------------------------------------------------
+
+        const runUpdate =
+          await transaction.campaignRun
+            .updateMany({
               where: {
                 id:
                   campaignRun.id,
@@ -719,133 +771,200 @@ export async function finalizeCampaignRunIfReady(
               },
             });
 
-          let campaignUpdateCount =
-            0;
+        /*
+         * If another process changed the run while
+         * campaign update succeeded, abort this
+         * transaction so the campaign update rolls
+         * back as well.
+         */
 
-          if (
-            isLatestRun
-          ) {
-            const campaignUpdate =
-              await transaction.campaign.updateMany({
-                where: {
-                  id:
-                    campaignRun.campaignId,
-
-                  status:
-                    CampaignStatus.RUNNING,
-                },
-
-                data: {
-                  status:
-                    finalCampaignStatus,
-
-                  completedAt,
-                },
-              });
-
-            campaignUpdateCount =
-              campaignUpdate.count;
-          }
-
-          return {
-            runUpdateCount:
-              runUpdate.count,
-
-            campaignUpdateCount,
-          };
+        if (
+          runUpdate.count ===
+          0
+        ) {
+          throw new Error(
+            "Campaign run changed during finalization"
+          );
         }
-      );
 
-    /*
-     * Another process may have finalized the run
-     * between our read and update.
-     */
-    const finalized =
-      persistenceResult.runUpdateCount >
-      0;
+        return {
+          runUpdateCount:
+            runUpdate.count,
 
-    log.info(
-      {
-        event:
-          finalized
-            ? "campaign.finalization.completed"
-            : "campaign.finalization.concurrent_skip",
+          campaignUpdateCount:
+            campaignUpdate.count,
+        };
+      }
 
-        finalRunStatus,
+      //------------------------------------------------
+      // Historical Run Only
+      //------------------------------------------------
 
-        finalCampaignStatus:
-          isLatestRun
-            ? finalCampaignStatus
-            : undefined,
+      const runUpdate =
+        await transaction.campaignRun
+          .updateMany({
+            where: {
+              id:
+                campaignRun.id,
 
-        totalContacts:
-          campaignRun.total,
+              status:
+                CampaignRunStatus.RUNNING,
+            },
 
-        processedContacts:
-          campaignRun.processed,
+            data: {
+              status:
+                finalRunStatus,
 
-        settledContacts,
+              completedAt,
+            },
+          });
 
-        completedContacts,
-
-        unsuccessfulContacts,
-
-        isLatestRun,
-
+      return {
         runUpdateCount:
-          persistenceResult.runUpdateCount,
+          runUpdate.count,
 
         campaignUpdateCount:
-          persistenceResult.campaignUpdateCount,
+          0,
+      };
+    }
+  );
 
-        completedAt:
-          completedAt.toISOString(),
+//------------------------------------------------
+// Did We Win The Finalization Race?
+//------------------------------------------------
 
-        durationMs:
-          getDurationMs(
-            startedAt
-          ),
-      },
+const finalized =
+  persistenceResult
+    .runUpdateCount >
+  0;
+
+//------------------------------------------------
+// Reload Actual Run State On Concurrent Skip
+//------------------------------------------------
+
+const currentRun =
+  finalized
+    ? null
+    : await prisma.campaignRun
+        .findUnique({
+          where: {
+            id:
+              campaignRun.id,
+          },
+
+          select: {
+            status:
+              true,
+          },
+        });
+
+const effectiveRunStatus =
+  finalized
+    ? finalRunStatus
+    : currentRun?.status ??
+      campaignRun.status;
+
+//------------------------------------------------
+// Log
+//------------------------------------------------
+
+log.info(
+  {
+    event:
       finalized
-        ? "Campaign run finalized from call outcomes"
-        : "Campaign run was already finalized concurrently"
-    );
+        ? "campaign.finalization.completed"
+        : "campaign.finalization.concurrent_skip",
 
-    return {
-      campaignId:
-        campaignRun.campaignId,
+    finalRunStatus:
+      finalized
+        ? finalRunStatus
+        : undefined,
 
-      campaignRunId:
-        campaignRun.id,
+    effectiveRunStatus,
 
-      finalized,
+    finalCampaignStatus:
+      finalized &&
+      isLatestRun
+        ? finalCampaignStatus
+        : undefined,
 
-      skipped:
-        !finalized,
+    totalContacts:
+      campaignRun.total,
 
-      reason:
-        finalized
-          ? "Every processed contact has a settled final outcome"
-          : "Campaign run was finalized by another process",
+    processedContacts:
+      campaignRun.processed,
 
-      runStatus:
-        finalRunStatus,
+    settledContacts,
 
-      totalContacts:
-        campaignRun.total,
+    completedContacts,
 
-      processedContacts:
-        campaignRun.processed,
+    unsuccessfulContacts,
 
-      settledContacts,
+    isLatestRun,
 
-      unresolvedContacts:
-        0,
+    runUpdateCount:
+      persistenceResult
+        .runUpdateCount,
 
-      completedContacts,
+    campaignUpdateCount:
+      persistenceResult
+        .campaignUpdateCount,
 
-      unsuccessfulContacts,
-    };
+    completedAt:
+      completedAt.toISOString(),
+
+    durationMs:
+      getDurationMs(
+        startedAt
+      ),
+  },
+  finalized
+    ? "Campaign run finalized from call outcomes"
+    : "Campaign run finalization lost a concurrent state transition"
+);
+
+//------------------------------------------------
+// Result
+//------------------------------------------------
+
+return {
+  campaignId:
+    campaignRun.campaignId,
+
+  campaignRunId:
+    campaignRun.id,
+
+  finalized,
+
+  skipped:
+    !finalized,
+
+  reason:
+    finalized
+      ? "Every processed contact has a settled final outcome"
+      : effectiveRunStatus ===
+          CampaignRunStatus.CANCELLED
+        ? "Campaign run was cancelled concurrently"
+        : "Campaign run state changed before finalization",
+
+  runStatus:
+    effectiveRunStatus,
+
+  totalContacts:
+    campaignRun.total,
+
+  processedContacts:
+    campaignRun.processed,
+
+  settledContacts,
+
+  unresolvedContacts:
+    0,
+
+  completedContacts,
+
+  unsuccessfulContacts,
+};
   } catch (
     error
   ) {
@@ -945,6 +1064,32 @@ async function finalizeEmptyCampaignRun(
     runUpdate.count >
     0;
 
+//------------------------------------------------
+// Resolve Actual State After Concurrent Skip
+//------------------------------------------------
+
+const currentRun =
+  finalized
+    ? null
+    : await prisma.campaignRun
+        .findUnique({
+          where: {
+            id:
+              input.campaignRunId,
+          },
+
+          select: {
+            status:
+              true,
+          },
+        });
+
+const effectiveRunStatus =
+  finalized
+    ? CampaignRunStatus.COMPLETED
+    : currentRun?.status ??
+      CampaignRunStatus.COMPLETED;
+
   log.info(
     {
       event:
@@ -966,9 +1111,9 @@ async function finalizeEmptyCampaignRun(
           input.startedAt
         ),
     },
-    finalized
-      ? "Empty campaign run finalized"
-      : "Empty campaign run was already finalized"
+finalized
+  ? "Empty campaign run finalized"
+  : "Empty campaign run finalization lost a concurrent state transition"
   );
 
   return {
@@ -983,13 +1128,16 @@ async function finalizeEmptyCampaignRun(
     skipped:
       !finalized,
 
-    reason:
-      finalized
-        ? "Empty campaign run finalized"
-        : "Empty campaign run was finalized by another process",
+reason:
+  finalized
+    ? "Empty campaign run finalized"
+    : effectiveRunStatus ===
+        CampaignRunStatus.CANCELLED
+      ? "Empty campaign run was cancelled concurrently"
+      : "Empty campaign run state changed concurrently",
 
-    runStatus:
-      CampaignRunStatus.COMPLETED,
+runStatus:
+  effectiveRunStatus,
 
     totalContacts:
       0,

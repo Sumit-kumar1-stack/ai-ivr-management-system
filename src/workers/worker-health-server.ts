@@ -4,6 +4,11 @@ import http, {
 } from "node:http";
 
 import {
+  checkIntegrationConfiguration,
+  isIntegrationConfigurationReady,
+} from "@/config/readiness";
+
+import {
   prisma,
 } from "@/lib/prisma";
 
@@ -46,9 +51,7 @@ const WORKER_HEALTH_PORT =
 
 interface DependencyResult {
   healthy: boolean;
-
   durationMs: number;
-
   message: string;
 }
 
@@ -389,6 +392,9 @@ async function handleReadiness(
   const startedAt =
     process.hrtime.bigint();
 
+  const configuration =
+    checkIntegrationConfiguration();
+
   const [
     database,
     redis,
@@ -418,45 +424,43 @@ async function handleReadiness(
   const ready =
     database.healthy &&
     redis.healthy &&
-    workers.healthy;
+    workers.healthy &&
+    isIntegrationConfigurationReady(
+      configuration
+    );
 
   const durationMs =
     getDurationMs(
       startedAt
     );
 
+  const logData = {
+    event:
+      ready
+        ? "worker.readiness.check.passed"
+        : "worker.readiness.check.failed",
+
+    durationMs,
+
+    database,
+
+    redis,
+
+    workers,
+
+    configuration,
+  };
+
   if (
     ready
   ) {
     log.debug(
-      {
-        event:
-          "worker.readiness.check.passed",
-
-        durationMs,
-
-        database,
-
-        redis,
-
-        workers,
-      },
+      logData,
       "Worker readiness check passed"
     );
   } else {
     log.warn(
-      {
-        event:
-          "worker.readiness.check.failed",
-
-        durationMs,
-
-        database,
-
-        redis,
-
-        workers,
-      },
+      logData,
       "Worker readiness check failed"
     );
   }
@@ -498,10 +502,9 @@ async function handleReadiness(
 
       dependencies: {
         database,
-
         redis,
-
         workers,
+        configuration,
       },
     }
   );

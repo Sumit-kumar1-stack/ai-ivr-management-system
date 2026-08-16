@@ -5,50 +5,95 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 
-import { api } from "@/lib/axios";
+import {
+  toast,
+} from "sonner";
 
-import { toast } from "sonner";
+import type {
+  IVREdge,
+  IVRNode,
+} from "@/components/ivr/types";
+
+import {
+  api,
+} from "@/lib/axios";
+
+//--------------------------------------------------
+// Payload
+//--------------------------------------------------
 
 interface UpdateFlowPayload {
-  id: string;
-  nodes: any[];
-  edges: any[];
+  id:
+    string;
+
+  name?:
+    string;
+
+  description?:
+    string | null;
+
+  campaignId?:
+    string | null;
+
+  nodes:
+    IVRNode[];
+
+  edges:
+    IVREdge[];
 }
 
+//--------------------------------------------------
+// Hook
+//--------------------------------------------------
+
 export function useUpdateFlow() {
-  const queryClient = useQueryClient();
+  const queryClient =
+    useQueryClient();
 
   return useMutation({
-    mutationFn: async ({
-      id,
-      nodes,
-      edges,
-    }: UpdateFlowPayload) => {
-      const { data } = await api.put(
-        `/ivr-flows/${id}`,
-        {
-          nodes,
-          edges,
-        }
+    mutationFn:
+      async ({
+        id,
+        ...payload
+      }:
+        UpdateFlowPayload) => {
+        const {
+          data,
+        } =
+          await api.put(
+            `/ivr-flows/${id}`,
+            payload
+          );
+
+        return data.data;
+      },
+
+    onSuccess(
+      _flow,
+      variables
+    ) {
+      toast.success(
+        "Flow updated"
       );
 
-      return data.data;
-    },
-
-    onSuccess(_, variables) {
-      toast.success("Flow updated");
-
       queryClient.invalidateQueries({
-        queryKey: ["ivr-flows"],
+        queryKey: [
+          "ivr-flows",
+        ],
       });
 
       queryClient.invalidateQueries({
-        queryKey: ["ivr-flow", variables.id],
+        queryKey: [
+          "ivr-flow",
+          variables.id,
+        ],
       });
     },
 
     onError() {
-      toast.error("Failed to update flow");
+      toast.error(
+        "Failed to update flow"
+      );
     },
   });
 }

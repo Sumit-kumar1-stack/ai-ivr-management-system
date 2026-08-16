@@ -15,6 +15,19 @@ import {
   AppError,
 } from "@/lib/app-error";
 
+import {
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "async-route-handler"
+  );
 
 //--------------------------------------------------
 // Route Handler Types
@@ -30,7 +43,6 @@ type RouteContext = {
     >;
 };
 
-
 type RouteHandler<
   TContext extends RouteContext =
     RouteContext
@@ -41,6 +53,13 @@ type RouteHandler<
   | Promise<Response>
   | Response;
 
+type RouteMetadata = {
+  method:
+    string;
+
+  pathname:
+    string;
+};
 
 //--------------------------------------------------
 // Async Handler
@@ -53,40 +72,45 @@ export function asyncHandler<
   handler:
     RouteHandler<TContext>
 ) {
-
   return async (
     request: NextRequest,
     context: TContext
   ): Promise<Response> => {
-
     try {
-
       return await handler(
         request,
         context
       );
-
-    } catch (error) {
-
+    } catch (
+      error
+    ) {
       return handleRouteError(
-        error
+        error,
+        {
+          method:
+            request.method,
+
+          /*
+           * Do not log query parameters because they
+           * may contain call IDs or other identifiers.
+           */
+          pathname:
+            request.nextUrl.pathname,
+        }
       );
-
     }
-
   };
-
 }
-
 
 //--------------------------------------------------
 // Central Error Mapping
 //--------------------------------------------------
 
 function handleRouteError(
-  error: unknown
+  error: unknown,
+  route:
+    RouteMetadata
 ): NextResponse {
-
   //----------------------------------------
   // Typed Application Error
   //----------------------------------------
@@ -95,6 +119,30 @@ function handleRouteError(
     error instanceof
     AppError
   ) {
+    if (
+      error.statusCode >=
+      500
+    ) {
+      log.error(
+        {
+          event:
+            "api.application_error",
+
+          method:
+            route.method,
+
+          pathname:
+            route.pathname,
+
+          statusCode:
+            error.statusCode,
+
+          applicationErrorCode:
+            error.code,
+        },
+        "API application error"
+      );
+    }
 
     return NextResponse.json(
       {
@@ -115,9 +163,7 @@ function handleRouteError(
           error.statusCode,
       }
     );
-
   }
-
 
   //----------------------------------------
   // Zod Validation Error
@@ -127,7 +173,6 @@ function handleRouteError(
     error instanceof
     ZodError
   ) {
-
     return NextResponse.json(
       {
         success:
@@ -147,9 +192,7 @@ function handleRouteError(
           400,
       }
     );
-
   }
-
 
   //----------------------------------------
   // Prisma Known Errors
@@ -159,12 +202,10 @@ function handleRouteError(
     error instanceof
     Prisma.PrismaClientKnownRequestError
   ) {
-
     if (
       error.code ===
       "P2025"
     ) {
-
       return NextResponse.json(
         {
           success:
@@ -181,15 +222,12 @@ function handleRouteError(
             404,
         }
       );
-
     }
-
 
     if (
       error.code ===
       "P2002"
     ) {
-
       return NextResponse.json(
         {
           success:
@@ -200,35 +238,37 @@ function handleRouteError(
 
           code:
             "DUPLICATE_RECORD",
-
-          details:
-            error.meta,
         },
         {
           status:
             409,
         }
       );
-
     }
-
   }
-
 
   //----------------------------------------
   // Unexpected Error
   //----------------------------------------
 
-  console.error(
-    "Unhandled API route error",
+  log.error(
     {
+      event:
+        "api.unhandled_error",
+
+      method:
+        route.method,
+
+      pathname:
+        route.pathname,
+
       error:
         normalizeError(
           error
         ),
-    }
+    },
+    "Unhandled API route error"
   );
-
 
   return NextResponse.json(
     {
@@ -244,55 +284,6 @@ function handleRouteError(
     {
       status:
         500,
-    }
+      }
   );
-
-}
-
-
-//--------------------------------------------------
-// Normalize Error For Logging
-//--------------------------------------------------
-
-function normalizeError(
-  error: unknown
-) {
-
-  if (
-    error instanceof
-    Error
-  ) {
-
-    const errorWithCode =
-      error as Error & {
-        code?:
-          string |
-          number;
-      };
-
-
-    return {
-      name:
-        error.name,
-
-      message:
-        error.message,
-
-      code:
-        errorWithCode.code,
-
-      stack:
-        error.stack,
-    };
-
-  }
-
-
-  return {
-    message:
-      String(
-        error
-      ),
-  };
-
 }

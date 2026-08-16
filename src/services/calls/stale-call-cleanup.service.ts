@@ -4,8 +4,17 @@ import {
 } from "@prisma/client";
 
 import {
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import {
   prisma,
 } from "@/lib/prisma";
+
+//--------------------------------------------------
+// Configuration
+//--------------------------------------------------
 
 const DEFAULT_STALE_MINUTES =
   30;
@@ -13,12 +22,30 @@ const DEFAULT_STALE_MINUTES =
 const DEFAULT_CHECK_INTERVAL_MS =
   5 * 60 * 1000;
 
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
+
+const log =
+  createServerLogger(
+    "stale-call-cleanup"
+  );
+
+//--------------------------------------------------
+// Runtime State
+//--------------------------------------------------
+
 let cleanupInterval:
-  NodeJS.Timeout | null =
+  NodeJS.Timeout |
+  null =
     null;
 
 let cleanupRunning =
   false;
+
+//--------------------------------------------------
+// Configuration Helpers
+//--------------------------------------------------
 
 function getStaleMinutes():
   number {
@@ -29,17 +56,35 @@ function getStaleMinutes():
 
   const parsedValue =
     rawValue
-      ? Number(rawValue)
+      ? Number(
+          rawValue
+        )
       : DEFAULT_STALE_MINUTES;
 
   if (
     !Number.isFinite(
       parsedValue
     ) ||
-    parsedValue < 1
+    parsedValue <
+      1
   ) {
-    console.warn(
-      "Invalid STALE_CALL_TIMEOUT_MINUTES; using 30"
+    log.warn(
+      {
+        event:
+          "stale_call.config_invalid",
+
+        configName:
+          "STALE_CALL_TIMEOUT_MINUTES",
+
+        configuredValuePresent:
+          Boolean(
+            rawValue
+          ),
+
+        fallbackValue:
+          DEFAULT_STALE_MINUTES,
+      },
+      "Invalid stale-call timeout configuration"
     );
 
     return DEFAULT_STALE_MINUTES;
@@ -57,17 +102,35 @@ function getCheckIntervalMs():
 
   const parsedValue =
     rawValue
-      ? Number(rawValue)
+      ? Number(
+          rawValue
+        )
       : DEFAULT_CHECK_INTERVAL_MS;
 
   if (
     !Number.isFinite(
       parsedValue
     ) ||
-    parsedValue < 60_000
+    parsedValue <
+      60_000
   ) {
-    console.warn(
-      "Invalid STALE_CALL_CHECK_INTERVAL_MS; using 5 minutes"
+    log.warn(
+      {
+        event:
+          "stale_call.config_invalid",
+
+        configName:
+          "STALE_CALL_CHECK_INTERVAL_MS",
+
+        configuredValuePresent:
+          Boolean(
+            rawValue
+          ),
+
+        fallbackValue:
+          DEFAULT_CHECK_INTERVAL_MS,
+      },
+      "Invalid stale-call cleanup interval configuration"
     );
 
     return DEFAULT_CHECK_INTERVAL_MS;
@@ -76,26 +139,38 @@ function getCheckIntervalMs():
   return parsedValue;
 }
 
-function getStaleCutoff():
-  Date {
+function getStaleCutoff(
+  staleMinutes: number
+): Date {
   const cutoff =
     new Date();
 
   cutoff.setMinutes(
     cutoff.getMinutes() -
-      getStaleMinutes()
+      staleMinutes
   );
 
   return cutoff;
 }
+
+//--------------------------------------------------
+// Cleanup Stale Queued Calls
+//--------------------------------------------------
 
 export async function cleanupStaleQueuedCalls():
   Promise<number> {
   if (
     cleanupRunning
   ) {
-    console.log(
-      "Stale call cleanup already running"
+    log.debug(
+      {
+        event:
+          "stale_call.cleanup_skipped",
+
+        reason:
+          "cleanup_already_running",
+      },
+      "Stale-call cleanup is already running"
     );
 
     return 0;
@@ -104,53 +179,57 @@ export async function cleanupStaleQueuedCalls():
   cleanupRunning =
     true;
 
+  const staleMinutes =
+    getStaleMinutes();
+
   try {
     const cutoff =
-      getStaleCutoff();
+      getStaleCutoff(
+        staleMinutes
+      );
 
     const staleCalls =
-      await prisma.call.findMany({
-        where: {
-          status:
-            CallStatus.QUEUED,
+      await prisma.call
+        .findMany({
+          where: {
+            status:
+              CallStatus.QUEUED,
 
-          updatedAt: {
-            lt:
-              cutoff,
+            updatedAt: {
+              lt:
+                cutoff,
+            },
           },
-        },
 
-        select: {
-          id:
-            true,
+          select: {
+            id:
+              true,
+          },
 
-          campaignId:
-            true,
+          orderBy: {
+            updatedAt:
+              "asc",
+          },
 
-          campaignRunId:
-            true,
-
-          providerCallId:
-            true,
-
-          updatedAt:
-            true,
-        },
-
-        orderBy: {
-          updatedAt:
-            "asc",
-        },
-
-        take:
-          500,
-      });
+          take:
+            500,
+        });
 
     if (
       staleCalls.length ===
       0
     ) {
-      console.log(
+      log.debug(
+        {
+          event:
+            "stale_call.cleanup_completed",
+
+          staleCandidateCount:
+            0,
+
+          updatedCallCount:
+            0,
+        },
         "No stale queued calls found"
       );
 
@@ -162,150 +241,146 @@ export async function cleanupStaleQueuedCalls():
 
     const staleCallIds =
       staleCalls.map(
-        (
-          call
-        ) =>
+        call =>
           call.id
       );
 
     const result =
       await prisma.$transaction(
-        async (
-          transaction
-        ) => {
+        async transaction => {
           const updateResult =
-            await transaction.call.updateMany({
-              where: {
-                id: {
-                  in:
-                    staleCallIds,
+            await transaction.call
+              .updateMany({
+                where: {
+                  id: {
+                    in:
+                      staleCallIds,
+                  },
+
+                  status:
+                    CallStatus.QUEUED,
+
+                  updatedAt: {
+                    lt:
+                      cutoff,
+                  },
                 },
 
-                status:
-                  CallStatus.QUEUED,
+                data: {
+                  status:
+                    CallStatus.FAILED,
 
-                updatedAt: {
-                  lt:
-                    cutoff,
+                  failedAt:
+                    now,
+
+                  endedAt:
+                    now,
                 },
-              },
-
-              data: {
-                status:
-                  CallStatus.FAILED,
-
-                failedAt:
-                  now,
-
-                endedAt:
-                  now,
-              },
-            });
+              });
 
           const updatedCalls =
-            await transaction.call.findMany({
-              where: {
-                id: {
-                  in:
-                    staleCallIds,
+            await transaction.call
+              .findMany({
+                where: {
+                  id: {
+                    in:
+                      staleCallIds,
+                  },
+
+                  status:
+                    CallStatus.FAILED,
+
+                  failedAt:
+                    now,
                 },
 
-                status:
-                  CallStatus.FAILED,
-
-                failedAt:
-                  now,
-              },
-
-              select: {
-                id:
-                  true,
-
-                campaignId:
-                  true,
-
-                campaignRunId:
-                  true,
-
-                providerCallId:
-                  true,
-              },
-            });
+                select: {
+                  id:
+                    true,
+                },
+              });
 
           if (
             updatedCalls.length >
             0
           ) {
-            await transaction.callEvent.createMany({
-              data:
-                updatedCalls.map(
-                  (
-                    call
-                  ) => ({
-                    callId:
-                      call.id,
+            await transaction.callEvent
+              .createMany({
+                data:
+                  updatedCalls.map(
+                    call => ({
+                      callId:
+                        call.id,
 
-                    type:
-                      CallEventType.FAILED,
+                      type:
+                        CallEventType.FAILED,
 
-                    message:
-                      "call.stale_queue_timeout",
+                      message:
+                        "call.stale_queue_timeout",
 
-                    payload: {
-                      reason:
-                        "STALE_QUEUE_TIMEOUT",
+                      payload: {
+                        reason:
+                          "STALE_QUEUE_TIMEOUT",
 
-                      previousStatus:
-                        CallStatus.QUEUED,
+                        previousStatus:
+                          CallStatus.QUEUED,
 
-                      newStatus:
-                        CallStatus.FAILED,
+                        newStatus:
+                          CallStatus.FAILED,
 
-                      timeoutMinutes:
-                        getStaleMinutes(),
+                        timeoutMinutes:
+                          staleMinutes,
 
-                      providerCallId:
-                        call.providerCallId,
-
-                      campaignId:
-                        call.campaignId,
-
-                      campaignRunId:
-                        call.campaignRunId,
-
-                      cleanedAt:
-                        now.toISOString(),
-                    },
-                  })
-                ),
-            });
+                        cleanedAt:
+                          now.toISOString(),
+                      },
+                    })
+                  ),
+              });
           }
 
           return updateResult.count;
         }
       );
 
-    console.warn(
-      "Stale queued calls marked as failed",
+    log.warn(
       {
-        count:
+        event:
+          "stale_call.cleanup_completed",
+
+        staleCandidateCount:
+          staleCalls.length,
+
+        updatedCallCount:
           result,
 
-        cutoff:
-          cutoff.toISOString(),
+        timeoutMinutes:
+          staleMinutes,
 
-        callIds:
-          staleCallIds,
-      }
+        cutoffTimestamp:
+          cutoff.toISOString(),
+      },
+      "Stale queued calls marked as failed"
     );
 
     return result;
   } catch (
     error
   ) {
-    console.error(
-      "Stale queued call cleanup failed",
-      error
+    log.error(
+      {
+        event:
+          "stale_call.cleanup_failed",
+
+        timeoutMinutes:
+          staleMinutes,
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Stale queued call cleanup failed"
     );
 
     return 0;
@@ -315,22 +390,36 @@ export async function cleanupStaleQueuedCalls():
   }
 }
 
+//--------------------------------------------------
+// Initialize Cleanup
+//--------------------------------------------------
+
 export function initializeStaleCallCleanup():
   void {
   if (
     cleanupInterval
   ) {
-    console.log(
-      "Stale call cleanup already initialized"
+    log.debug(
+      {
+        event:
+          "stale_call.initialization_skipped",
+
+        reason:
+          "already_initialized",
+      },
+      "Stale-call cleanup is already initialized"
     );
 
     return;
   }
 
-  void cleanupStaleQueuedCalls();
+  const staleMinutes =
+    getStaleMinutes();
 
   const intervalMs =
     getCheckIntervalMs();
+
+  void cleanupStaleQueuedCalls();
 
   cleanupInterval =
     setInterval(
@@ -342,16 +431,24 @@ export function initializeStaleCallCleanup():
 
   cleanupInterval.unref?.();
 
-  console.log(
-    "Stale call cleanup initialized",
+  log.info(
     {
-      timeoutMinutes:
-        getStaleMinutes(),
+      event:
+        "stale_call.initialized",
 
-      intervalMs,
-    }
+      timeoutMinutes:
+        staleMinutes,
+
+      intervalMilliseconds:
+        intervalMs,
+    },
+    "Stale-call cleanup initialized"
   );
 }
+
+//--------------------------------------------------
+// Close Cleanup
+//--------------------------------------------------
 
 export function closeStaleCallCleanup():
   void {
@@ -368,7 +465,11 @@ export function closeStaleCallCleanup():
   cleanupInterval =
     null;
 
-  console.log(
-    "Stale call cleanup closed"
+  log.info(
+    {
+      event:
+        "stale_call.closed",
+    },
+    "Stale-call cleanup closed"
   );
 }

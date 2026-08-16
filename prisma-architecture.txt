@@ -1,0 +1,54 @@
+Folder PATH listing for volume Windows-SSD
+Volume serial number is 0000017C 5EA0:A153
+C:\USERS\SUMIT\AI-IVR-MANAGEMENT-SYSTEM\PRISMA
+|   schema.prisma
+|   seed.ts
+|   
+\---migrations
+    |   migration_lock.toml
+    |   
+    +---20260705051037_init
+    |       migration.sql
+    |       
+    +---20260706073056_user_management
+    |       migration.sql
+    |       
+    +---20260706162325_create_contacts
+    |       migration.sql
+    |       
+    +---20260707084400_create_campaign_module
+    |       migration.sql
+    |       
+    +---20260708104609_create_ivr_flow
+    |       migration.sql
+    |       
+    +---20260712210037_init
+    |       migration.sql
+    |       
+    +---20260713060503_add_conversation
+    |       migration.sql
+    |       
+    +---20260713171601_add_conversation_analysis
+    |       migration.sql
+    |       
+    +---20260713222020_add_embeddings
+    |       migration.sql
+    |       
+    +---20260714075413_remove_embeddings
+    |       migration.sql
+    |       
+    +---20260721052711_campaign_run_idempotency
+    |       migration.sql
+    |       
+    +---20260721074346_call_destination_snapshot
+    |       migration.sql
+    |       
+    +---20260721080740_call_lifecycle_timestamps
+    |       migration.sql
+    |       
+    +---20260723135631_add_call_retry_tracking
+    |       migration.sql
+    |       
+    \---20260729192337_add_call_direction
+            migration.sql
+            

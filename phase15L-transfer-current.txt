@@ -1,0 +1,1174 @@
+===== src\providers\telephony\twilio-human-transfer.adapter.ts =====
+import {
+  twiml,
+} from "twilio";
+
+import {
+  twilioClient,
+} from "@/providers/twilio/twilio.client";
+
+import {
+  getTwilioConfig,
+} from "@/providers/twilio/twilio.config";
+
+import {
+  createCallLogger,
+  normalizeError,
+} from "@/lib/logger";
+
+import type {
+  HumanTransferAdapter,
+  HumanTransferRequest,
+  HumanTransferResult,
+} from "@/services/telephony/human-transfer.types";
+
+//--------------------------------------------------
+// Adapter
+//--------------------------------------------------
+
+export class TwilioHumanTransferAdapter
+  implements HumanTransferAdapter
+{
+  readonly provider =
+    "TWILIO" as const;
+
+  //------------------------------------------------
+  // Configured
+  //------------------------------------------------
+
+  isConfigured():
+    boolean {
+    try {
+      const config =
+        getTwilioConfig();
+
+      return Boolean(
+        config.accountSid &&
+        config.authToken &&
+        config.phoneNumber
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  //------------------------------------------------
+  // Transfer
+  //------------------------------------------------
+
+  async transfer(
+    request:
+      HumanTransferRequest
+  ): Promise<HumanTransferResult> {
+    const log =
+      createCallLogger(
+        request.callId
+      );
+
+    const providerCallId =
+      request.providerCallId.trim();
+
+    const destination =
+      request.destination.trim();
+
+    //------------------------------------------------
+    // Validate Provider SID
+    //------------------------------------------------
+
+    if (
+      !isTwilioCallSid(
+        providerCallId
+      )
+    ) {
+      return {
+        success:
+          false,
+
+        provider:
+          "TWILIO",
+
+        providerCallId,
+
+        code:
+          "INVALID_TWILIO_CALL_SID",
+
+        message:
+          "The active Twilio call identifier is invalid.",
+      };
+    }
+
+    //------------------------------------------------
+    // Abort Guard
+    //------------------------------------------------
+
+    if (
+      request.signal?.aborted
+    ) {
+      return {
+        success:
+          false,
+
+        provider:
+          "TWILIO",
+
+        providerCallId,
+
+        code:
+          "TRANSFER_ABORTED",
+
+        message:
+          "Human transfer was cancelled.",
+      };
+    }
+
+    //------------------------------------------------
+    // Strategy
+    //------------------------------------------------
+
+    if (
+      request.strategy !==
+      "DIRECT_NUMBER"
+    ) {
+      return {
+        success:
+          false,
+
+        provider:
+          "TWILIO",
+
+        providerCallId,
+
+        code:
+          "TRANSFER_STRATEGY_NOT_SUPPORTED",
+
+        message:
+          `Twilio transfer strategy ${request.strategy} is not implemented yet.`,
+      };
+    }
+
+    //------------------------------------------------
+    // Normalize Destination
+    //------------------------------------------------
+
+    const normalizedDestination =
+      normalizePhoneNumber(
+        destination
+      );
+
+    if (
+      !normalizedDestination
+    ) {
+      return {
+        success:
+          false,
+
+        provider:
+          "TWILIO",
+
+        providerCallId,
+
+        code:
+          "INVALID_TRANSFER_DESTINATION",
+
+        message:
+          "The human-agent phone number is invalid.",
+      };
+    }
+
+    //------------------------------------------------
+    // Build TwiML
+    //------------------------------------------------
+
+    const voiceResponse =
+      new twiml.VoiceResponse();
+
+    if (
+      request.announcement
+        ?.trim()
+    ) {
+      voiceResponse.say(
+        {
+          voice:
+            "alice",
+        },
+        request.announcement.trim()
+      );
+    }
+
+    const dial =
+      voiceResponse.dial({
+        timeout:
+          clampTimeout(
+            request.timeoutSeconds
+          ),
+
+        answerOnBridge:
+          true,
+      });
+
+    dial.number(
+      normalizedDestination
+    );
+
+    const transferTwiml =
+      voiceResponse.toString();
+
+    //------------------------------------------------
+    // Execute Twilio Call Update
+    //------------------------------------------------
+
+    try {
+      log.info(
+        {
+          event:
+            "twilio.human_transfer.started",
+
+          providerCallId,
+
+          strategy:
+            request.strategy,
+
+          destinationMasked:
+            maskPhoneNumber(
+              normalizedDestination
+            ),
+
+          reasonPresent:
+            Boolean(
+              request.reason
+            ),
+        },
+        "Starting Twilio human transfer"
+      );
+
+      const updatedCall =
+        await twilioClient
+          .calls(
+            providerCallId
+          )
+          .update({
+            twiml:
+              transferTwiml,
+          });
+
+      //------------------------------------------------
+      // Abort Note
+      //------------------------------------------------
+
+      /*
+       * Once Twilio accepts the call update, the
+       * remote provider owns the new TwiML execution.
+       *
+       * We therefore do not claim that the human
+       * answered here. We only claim that the
+       * transfer instruction was accepted by Twilio.
+       */
+
+      log.info(
+        {
+          event:
+            "twilio.human_transfer.accepted",
+
+          providerCallId:
+
+            updatedCall.sid,
+
+          twilioCallStatus:
+            updatedCall.status,
+
+          destinationMasked:
+            maskPhoneNumber(
+              normalizedDestination
+            ),
+        },
+        "Twilio accepted human transfer instructions"
+      );
+
+      return {
+        success:
+          true,
+
+        provider:
+          "TWILIO",
+
+        providerCallId:
+          updatedCall.sid,
+
+        destination:
+          normalizedDestination,
+
+        transferReference:
+          updatedCall.sid,
+
+        message:
+          "Twilio accepted the human transfer instruction.",
+      };
+    } catch (
+      error
+    ) {
+      log.error(
+        {
+          event:
+            "twilio.human_transfer.failed",
+
+          providerCallId,
+
+          destinationMasked:
+            maskPhoneNumber(
+              normalizedDestination
+            ),
+
+          error:
+            normalizeError(
+              error
+            ),
+        },
+        "Twilio human transfer failed"
+      );
+
+      return {
+        success:
+          false,
+
+        provider:
+          "TWILIO",
+
+        providerCallId,
+
+        code:
+          "TWILIO_TRANSFER_FAILED",
+
+        message:
+          "Twilio could not start the human transfer.",
+      };
+    }
+  }
+}
+
+//--------------------------------------------------
+// Twilio SID Validation
+//--------------------------------------------------
+
+function isTwilioCallSid(
+  value:
+    string
+): boolean {
+  return /^CA[a-fA-F0-9]{32}$/.test(
+    value
+  );
+}
+
+//--------------------------------------------------
+// Phone Normalization
+//--------------------------------------------------
+
+function normalizePhoneNumber(
+  phone:
+    string
+): string | null {
+  const normalized =
+    phone
+      .trim()
+      .replace(
+        /[\s()-]/g,
+        ""
+      );
+
+  if (
+    !/^\+[1-9]\d{7,14}$/.test(
+      normalized
+    )
+  ) {
+    return null;
+  }
+
+  return normalized;
+}
+
+//--------------------------------------------------
+// Timeout
+//--------------------------------------------------
+
+function clampTimeout(
+  timeoutSeconds:
+    number |
+    undefined
+): number {
+  const value =
+    timeoutSeconds ??
+    30;
+
+  return Math.min(
+    120,
+    Math.max(
+      5,
+      Math.round(
+        value
+      )
+    )
+  );
+}
+
+//--------------------------------------------------
+// Phone Masking
+//--------------------------------------------------
+
+function maskPhoneNumber(
+  phone:
+    string
+): string {
+  if (
+    phone.length <=
+    4
+  ) {
+    return "****";
+  }
+
+  return `${"*".repeat(
+    Math.max(
+      0,
+      phone.length - 4
+    )
+  )}${phone.slice(-4)}`;
+}
+===== src\services\telephony\human-transfer.types.ts =====
+//--------------------------------------------------
+// Human Transfer Provider
+//--------------------------------------------------
+
+export type HumanTransferProvider =
+  | "TWILIO"
+  | "EXOTEL"
+  | "PLIVO"
+  | "TELNYX"
+  | "MOCK";
+
+//--------------------------------------------------
+// Transfer Strategy
+//--------------------------------------------------
+
+export type HumanTransferStrategy =
+  | "DIRECT_NUMBER"
+  | "QUEUE"
+  | "SIP";
+
+//--------------------------------------------------
+// Transfer Request
+//--------------------------------------------------
+
+export interface HumanTransferRequest {
+  callId:
+    string;
+
+  providerCallId:
+    string;
+
+  provider:
+    HumanTransferProvider;
+
+  strategy:
+    HumanTransferStrategy;
+
+  destination:
+    string;
+
+  reason?:
+    string;
+
+  announcement?:
+    string;
+
+  timeoutSeconds?:
+    number;
+
+  signal?:
+    AbortSignal;
+}
+
+//--------------------------------------------------
+// Transfer Result
+//--------------------------------------------------
+
+export interface HumanTransferSuccess {
+  success:
+    true;
+
+  provider:
+    HumanTransferProvider;
+
+  providerCallId:
+    string;
+
+  destination:
+    string;
+
+  transferReference?:
+    string;
+
+  message:
+    string;
+}
+
+export interface HumanTransferFailure {
+  success:
+    false;
+
+  provider:
+    HumanTransferProvider;
+
+  providerCallId:
+    string;
+
+  code:
+    string;
+
+  message:
+    string;
+}
+
+export type HumanTransferResult =
+  | HumanTransferSuccess
+  | HumanTransferFailure;
+
+//--------------------------------------------------
+// Transfer Adapter
+//--------------------------------------------------
+
+export interface HumanTransferAdapter {
+  readonly provider:
+    HumanTransferProvider;
+
+  isConfigured():
+    boolean;
+
+  transfer(
+    request:
+      HumanTransferRequest
+  ): Promise<HumanTransferResult>;
+}
+===== src\services\telephony\human-transfer-orchestrator.service.ts =====
+import {
+  createCallLogger,
+} from "@/lib/logger";
+
+import {
+  resolveHumanTransferPolicy,
+} from "./human-transfer-policy.service";
+
+import {
+  requestHumanTransfer,
+} from "@/services/tools/transfer-to-human.service";
+
+//--------------------------------------------------
+// Result
+//--------------------------------------------------
+
+export interface HumanTransferOrchestrationResult {
+  requested:
+    boolean;
+
+  transferred:
+    boolean;
+
+  message:
+    string;
+
+  code:
+    string | null;
+}
+
+//--------------------------------------------------
+// Execute
+//--------------------------------------------------
+
+export async function orchestrateHumanTransfer(
+  callId:
+    string,
+
+  reason?:
+    string
+): Promise<HumanTransferOrchestrationResult> {
+  const log =
+    createCallLogger(
+      callId
+    );
+
+  //------------------------------------------------
+  // Policy
+  //------------------------------------------------
+
+  const policy =
+    resolveHumanTransferPolicy();
+
+  if (
+    !policy.allowed ||
+    !policy.destination
+  ) {
+    log.info(
+      {
+        event:
+          "human_transfer.policy_denied",
+
+        reason:
+          policy.reason,
+      },
+      "Human transfer denied by policy"
+    );
+
+    return {
+      requested:
+        true,
+
+      transferred:
+        false,
+
+      message:
+        policy.reason ||
+        "A human agent is not available right now.",
+
+      code:
+        "TRANSFER_NOT_AVAILABLE",
+    };
+  }
+
+  //------------------------------------------------
+  // Stable Operation Key
+  //------------------------------------------------
+
+  const idempotencyKey =
+    [
+      "human-transfer",
+      callId,
+    ].join(
+      ":"
+    );
+
+  //------------------------------------------------
+  // Tool Gateway
+  //------------------------------------------------
+
+  const result =
+    await requestHumanTransfer({
+      callId,
+
+      destination:
+        policy.destination,
+
+      announcement:
+        policy.announcement ??
+        undefined,
+
+      reason:
+        reason?.trim() ||
+        "Caller requested a human agent",
+
+      timeoutSeconds:
+        policy.timeoutSeconds,
+
+      /*
+       * Selecting HUMAN_AGENT through the keypad is
+       * the explicit user request/confirmation for
+       * this operation.
+       */
+      confirmed:
+        true,
+
+      requestedBy:
+        "IVR",
+
+      idempotencyKey,
+    });
+
+  //------------------------------------------------
+  // Failure
+  //------------------------------------------------
+
+  if (
+    !result.success
+  ) {
+    log.warn(
+      {
+        event:
+          "human_transfer.tool_failed",
+
+        code:
+          result.error.code,
+
+        durationMs:
+          result.durationMs,
+      },
+      "Human transfer tool failed"
+    );
+
+    return {
+      requested:
+        true,
+
+      transferred:
+        false,
+
+      message:
+        "I could not connect the call to a human agent right now.",
+
+      code:
+        result.error.code,
+    };
+  }
+
+  //------------------------------------------------
+  // Accepted
+  //------------------------------------------------
+
+  log.info(
+    {
+      event:
+        "human_transfer.tool_accepted",
+
+      durationMs:
+        result.durationMs,
+    },
+    "Human transfer accepted by telephony provider"
+  );
+
+  return {
+    requested:
+      true,
+
+    /*
+     * Here transferred means the provider accepted
+     * the transfer operation.
+     *
+     * It does NOT mean a human agent answered.
+     */
+    transferred:
+      true,
+
+    message:
+      "Your call is being connected to a human agent.",
+
+    code:
+      null,
+  };
+}
+===== src\services\telephony\human-transfer-policy.service.ts =====
+//--------------------------------------------------
+// Types
+//--------------------------------------------------
+
+export interface HumanTransferPolicyDecision {
+  allowed:
+    boolean;
+
+  destination:
+    string | null;
+
+  announcement:
+    string | null;
+
+  timeoutSeconds:
+    number;
+
+  reason:
+    string | null;
+}
+
+//--------------------------------------------------
+// Resolve Policy
+//--------------------------------------------------
+
+export function resolveHumanTransferPolicy():
+  HumanTransferPolicyDecision {
+  //------------------------------------------------
+  // Enabled
+  //------------------------------------------------
+
+  const enabled =
+    parseBoolean(
+      process.env
+        .HUMAN_TRANSFER_ENABLED,
+      false
+    );
+
+  if (
+    !enabled
+  ) {
+    return {
+      allowed:
+        false,
+
+      destination:
+        null,
+
+      announcement:
+        null,
+
+      timeoutSeconds:
+        30,
+
+      reason:
+        "Human transfer is disabled.",
+    };
+  }
+
+  //------------------------------------------------
+  // Destination
+  //------------------------------------------------
+
+  const destination =
+    process.env
+      .HUMAN_TRANSFER_DESTINATION
+      ?.trim() ||
+    "";
+
+  if (
+    !destination
+  ) {
+    return {
+      allowed:
+        false,
+
+      destination:
+        null,
+
+      announcement:
+        null,
+
+      timeoutSeconds:
+        30,
+
+      reason:
+        "Human transfer destination is not configured.",
+    };
+  }
+
+  if (
+    !isValidDestination(
+      destination
+    )
+  ) {
+    return {
+      allowed:
+        false,
+
+      destination:
+        null,
+
+      announcement:
+        null,
+
+      timeoutSeconds:
+        30,
+
+      reason:
+        "Human transfer destination configuration is invalid.",
+    };
+  }
+
+  //------------------------------------------------
+  // Optional Service Window
+  //------------------------------------------------
+
+  const timezone =
+    process.env
+      .HUMAN_TRANSFER_TIMEZONE
+      ?.trim();
+
+  const startHour =
+    parseHour(
+      process.env
+        .HUMAN_TRANSFER_START_HOUR
+    );
+
+  const endHour =
+    parseHour(
+      process.env
+        .HUMAN_TRANSFER_END_HOUR
+    );
+
+  if (
+    timezone &&
+    startHour !==
+      null &&
+    endHour !==
+      null
+  ) {
+    if (
+      !isWithinServiceWindow(
+        timezone,
+        startHour,
+        endHour
+      )
+    ) {
+      return {
+        allowed:
+          false,
+
+        destination:
+          null,
+
+        announcement:
+          null,
+
+        timeoutSeconds:
+          resolveTimeout(),
+
+        reason:
+          "Human agents are currently outside the configured service window.",
+      };
+    }
+  }
+
+  //------------------------------------------------
+  // Allowed
+  //------------------------------------------------
+
+  return {
+    allowed:
+      true,
+
+    destination,
+
+    announcement:
+      process.env
+        .HUMAN_TRANSFER_ANNOUNCEMENT
+        ?.trim() ||
+      "Please hold while I connect your call.",
+
+    timeoutSeconds:
+      resolveTimeout(),
+
+    reason:
+      null,
+  };
+}
+
+//--------------------------------------------------
+// Timeout
+//--------------------------------------------------
+
+function resolveTimeout():
+  number {
+  const parsed =
+    Number(
+      process.env
+        .HUMAN_TRANSFER_TIMEOUT_SECONDS
+    );
+
+  if (
+    !Number.isFinite(
+      parsed
+    )
+  ) {
+    return 30;
+  }
+
+  return Math.min(
+    120,
+    Math.max(
+      5,
+      Math.round(
+        parsed
+      )
+    )
+  );
+}
+
+//--------------------------------------------------
+// Boolean
+//--------------------------------------------------
+
+function parseBoolean(
+  value:
+    string |
+    undefined,
+
+  defaultValue:
+    boolean
+): boolean {
+  if (
+    value ===
+    undefined
+  ) {
+    return defaultValue;
+  }
+
+  const normalized =
+    value
+      .trim()
+      .toLowerCase();
+
+  if (
+    [
+      "true",
+      "1",
+      "yes",
+      "on",
+    ].includes(
+      normalized
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    [
+      "false",
+      "0",
+      "no",
+      "off",
+    ].includes(
+      normalized
+    )
+  ) {
+    return false;
+  }
+
+  return defaultValue;
+}
+
+//--------------------------------------------------
+// Hour
+//--------------------------------------------------
+
+function parseHour(
+  value:
+    string |
+    undefined
+): number | null {
+  if (
+    !value
+  ) {
+    return null;
+  }
+
+  const parsed =
+    Number(
+      value
+    );
+
+  if (
+    !Number.isInteger(
+      parsed
+    ) ||
+    parsed <
+      0 ||
+    parsed >
+      23
+  ) {
+    return null;
+  }
+
+  return parsed;
+}
+
+//--------------------------------------------------
+// Destination Validation
+//--------------------------------------------------
+
+function isValidDestination(
+  value:
+    string
+): boolean {
+  const normalized =
+    value
+      .trim()
+      .replace(
+        /[\s()-]/g,
+        ""
+      );
+
+  return /^\+[1-9]\d{7,14}$/.test(
+    normalized
+  );
+}
+
+//--------------------------------------------------
+// Service Window
+//--------------------------------------------------
+
+function isWithinServiceWindow(
+  timezone:
+    string,
+
+  startHour:
+    number,
+
+  endHour:
+    number
+): boolean {
+  try {
+    const hourText =
+      new Intl.DateTimeFormat(
+        "en-US",
+        {
+          timeZone:
+            timezone,
+
+          hour:
+            "2-digit",
+
+          hourCycle:
+            "h23",
+        }
+      ).format(
+        new Date()
+      );
+
+    const currentHour =
+      Number(
+        hourText
+      );
+
+    if (
+      !Number.isFinite(
+        currentHour
+      )
+    ) {
+      return false;
+    }
+
+    //------------------------------------------------
+    // Same start/end means 24-hour availability
+    //------------------------------------------------
+
+    if (
+      startHour ===
+      endHour
+    ) {
+      return true;
+    }
+
+    //------------------------------------------------
+    // Normal Window
+    //
+    // Example: 09 -> 18
+    //------------------------------------------------
+
+    if (
+      startHour <
+      endHour
+    ) {
+      return (
+        currentHour >=
+          startHour &&
+        currentHour <
+          endHour
+      );
+    }
+
+    //------------------------------------------------
+    // Overnight Window
+    //
+    // Example: 20 -> 06
+    //------------------------------------------------
+
+    return (
+      currentHour >=
+        startHour ||
+      currentHour <
+        endHour
+    );
+  } catch {
+    return false;
+  }
+}

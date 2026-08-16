@@ -1,46 +1,164 @@
-import { NextRequest } from "next/server";
-import { success } from "@/lib/api-response";
-import { asyncHandler } from "@/lib/async-handler";
+import {
+  NextRequest,
+} from "next/server";
 
-import { IVRFlowService } from "@/services/ivr-flow.service";
+import {
+  success,
+} from "@/lib/api-response";
 
-export const GET = asyncHandler(
-  async (
-    req,
-    { params }: { params: Promise<{ id: string }> }
-  ) => {
-    const { id } = await params;
+import {
+  asyncHandler,
+} from "@/lib/async-handler";
 
-    const flow = await IVRFlowService.findById(id);
+import {
+  IVRFlowService,
+} from "@/services/ivr-flow.service";
 
-    return success(flow);
-  }
-);
+//--------------------------------------------------
+// GET
+//--------------------------------------------------
 
-export const PUT = asyncHandler(
-  async (
-    req: NextRequest,
-    { params }: { params: Promise<{ id: string }> }
-  ) => {
-    const { id } = await params;
+export const GET =
+  asyncHandler(
+    async (
+      _request,
+      {
+        params,
+      }: {
+        params:
+          Promise<{
+            id:
+              string;
+          }>;
+      }
+    ) => {
+      const {
+        id,
+      } =
+        await params;
 
-    const body = await req.json();
+      const flow =
+        await IVRFlowService
+          .findById(
+            id
+          );
 
-    const flow = await IVRFlowService.update(id, body);
+      return success(
+        flow
+      );
+    }
+  );
 
-    return success(flow);
-  }
-);
+//--------------------------------------------------
+// PUT
+//--------------------------------------------------
 
-export const DELETE = asyncHandler(
-  async (
-    req,
-    { params }: { params: Promise<{ id: string }> }
-  ) => {
-    const { id } = await params;
+export const PUT =
+  asyncHandler(
+    async (
+      request:
+        NextRequest,
 
-    await IVRFlowService.delete(id);
+      {
+        params,
+      }: {
+        params:
+          Promise<{
+            id:
+              string;
+          }>;
+      }
+    ) => {
+      const {
+        id,
+      } =
+        await params;
 
-    return success(null, "Flow deleted");
-  }
-);
+      const body =
+        await request.json();
+
+      const flow =
+        await IVRFlowService
+          .update(
+            id,
+            {
+              name:
+                typeof body.name ===
+                  "string"
+                  ? body.name
+                  : undefined,
+
+              description:
+                body.description ===
+                  null ||
+                typeof body.description ===
+                  "string"
+                  ? body.description
+                  : undefined,
+
+              campaignId:
+                body.campaignId ===
+                  null ||
+                typeof body.campaignId ===
+                  "string"
+                  ? body.campaignId
+                  : undefined,
+
+              nodes:
+                Array.isArray(
+                  body.nodes
+                )
+                  ? body.nodes
+                  : [],
+
+              edges:
+                Array.isArray(
+                  body.edges
+                )
+                  ? body.edges
+                  : [],
+            }
+          );
+
+      return success(
+        flow,
+        "Flow updated successfully"
+      );
+    }
+  );
+
+//--------------------------------------------------
+// DELETE
+//--------------------------------------------------
+
+export const DELETE =
+  asyncHandler(
+    async (
+      _request,
+
+      {
+        params,
+      }: {
+        params:
+          Promise<{
+            id:
+              string;
+          }>;
+      }
+    ) => {
+      const {
+        id,
+      } =
+        await params;
+
+      await IVRFlowService
+        .delete(
+          id
+        );
+
+      return success(
+        null,
+        "Flow deleted"
+      );
+    }
+  );

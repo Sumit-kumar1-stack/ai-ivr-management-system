@@ -1,68 +1,171 @@
-import { askAI } from "@/services/ai/llm.factory";
+import {
+  createServerLogger,
+  normalizeError,
+} from "@/lib/logger";
 
-function isContextDependentOrAmbiguous(history: string, question: string): boolean {
-  if (!history || history.trim() === "") {
-    return false;
-  }
+import {
+  askAI,
+} from "@/services/ai/llm.factory";
 
-  const words = question.trim().split(/\s+/).filter(Boolean);
-  
-  // Very short utterances in the middle of a conversation (1-2 words) are context-dependent (e.g. "why?", "how?", "yes", "sure")
-  if (words.length <= 2) {
-    return true;
-  }
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
 
-  // Long questions are complex follow-up questions and benefit from rewriting
-  if (words.length > 5) {
-    return true;
-  }
-
-  // Words that indicate reference to previous context
-  const contextKeywords = new Set([
-    "it", "its", "this", "that", "these", "those", "they", "them", "their",
-    "he", "him", "his", "she", "her", "hers", "here", "there", "then",
-    "yes", "no", "ok", "okay", "yeah", "yep", "yup", "nah", "sure", "correct",
-    "right", "wrong", "previous", "last", "above", "mentioned", "earlier", "before",
-    "latter", "former", "other", "another", "same", "one", "ones", "much", "many",
-    "else", "also", "too", "instead", "except", "about", "more", "so", "then"
-  ]);
-
-  const hasContextKeyword = words.some(word => 
-    contextKeywords.has(word.toLowerCase().replace(/[^a-z]/g, ""))
+const log =
+  createServerLogger(
+    "query-rewriter"
   );
 
-  return hasContextKeyword;
-}
+//--------------------------------------------------
+// Rewrite Query
+//--------------------------------------------------
 
 export async function rewriteQuery(
   history: string,
   question: string
 ): Promise<string> {
-  if (!isContextDependentOrAmbiguous(history, question)) {
-    console.log("Skipping query rewriting for standalone question:", question);
-    return question.trim();
+  const normalizedQuestion =
+    question.trim();
+
+  const normalizedHistory =
+    history.trim();
+
+  //------------------------------------------------
+  // Safety fallback
+  //------------------------------------------------
+
+  if (
+    !normalizedQuestion
+  ) {
+    return "";
   }
 
-  const prompt = `
-You rewrite customer questions for retrieval.
+  //------------------------------------------------
+  // No history means nothing needs resolving
+  //------------------------------------------------
+
+  if (
+    !normalizedHistory
+  ) {
+    log.debug(
+      {
+        event:
+          "knowledge.query_rewrite.skipped",
+
+        reason:
+          "no_conversation_history",
+
+        questionCharacterCount:
+          normalizedQuestion.length,
+      },
+      "Query rewriting skipped"
+    );
+
+    return normalizedQuestion;
+  }
+
+  //------------------------------------------------
+  // Rewrite only when caller's wording genuinely
+  // depends on previous conversation context.
+  //------------------------------------------------
+
+  const prompt =
+    `
+You convert a contextual customer follow-up into a standalone knowledge-search query.
 
 Conversation:
 
-${history}
+${normalizedHistory}
 
-Latest Question:
+Latest customer question:
 
-${question}
+${normalizedQuestion}
 
-Rewrite the latest question into a standalone search query.
+Resolve references such as:
+- it
+- its
+- this
+- that
+- they
+- what about
+- how about
+- previous subject
 
-Only return the rewritten query.
+Return only one concise standalone search query.
 
-Do not answer it.
-`;
+Do not answer the question.
+Do not add facts that are not present in the conversation.
+`.trim();
 
-  const rewritten =
-    await askAI(prompt);
+  log.debug(
+    {
+      event:
+        "knowledge.query_rewrite.started",
 
-  return rewritten.trim();
+      questionCharacterCount:
+        normalizedQuestion.length,
+
+      historyCharacterCount:
+        normalizedHistory.length,
+
+      promptCharacterCount:
+        prompt.length,
+    },
+    "Contextual query rewriting started"
+  );
+
+  try {
+    const rewritten =
+      (
+        await askAI(
+          prompt
+        )
+      ).trim();
+
+    const result =
+      rewritten ||
+      normalizedQuestion;
+
+    log.info(
+      {
+        event:
+          "knowledge.query_rewrite.completed",
+
+        originalCharacterCount:
+          normalizedQuestion.length,
+
+        rewrittenCharacterCount:
+          result.length,
+
+        fallbackUsed:
+          !rewritten,
+      },
+      "Contextual query rewriting completed"
+    );
+
+    return result;
+  } catch (
+    error
+  ) {
+    log.error(
+      {
+        event:
+          "knowledge.query_rewrite.failed",
+
+        questionCharacterCount:
+          normalizedQuestion.length,
+
+        historyCharacterCount:
+          normalizedHistory.length,
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Contextual query rewriting failed; original question will be used"
+    );
+
+    return normalizedQuestion;
+  }
 }
