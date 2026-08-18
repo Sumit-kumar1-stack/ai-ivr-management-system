@@ -14,6 +14,10 @@ import {
   AudioChunk,
 } from "./audio-stream.types";
 
+import type {
+  CommunicationVoiceRuntime,
+} from "@/config/communication-plan";
+
 //--------------------------------------------------
 // Types
 //--------------------------------------------------

@@ -157,9 +157,10 @@ function createDefaultRuntimeMenu():
 
         label:
           "Human agent",
-
-        response:
-          "I will connect you to an agent.",
+          
+response:
+  "You requested a human agent. I will check whether an agent is available.",
+          
       },
 
       {
@@ -407,46 +408,58 @@ export default function IVRCanvas() {
   // Load Existing Flow
   //--------------------------------------------------
 
-  useEffect(
-    () => {
-      if (
-        !flow
-      ) {
-        return;
-      }
+useEffect(
+  () => {
+    if (
+      !flow
+    ) {
+      return;
+    }
 
-      setNodes(
-        flow.nodes ??
-          []
+    const timer =
+      window.setTimeout(
+        () => {
+          setNodes(
+            flow.nodes ??
+              []
+          );
+
+          setEdges(
+            flow.edges ??
+              []
+          );
+
+          setFlowName(
+            flow.name ??
+              "Untitled Flow"
+          );
+
+          setCampaignId(
+            flow.campaignId ??
+              ""
+          );
+
+          setSelectedNode(
+            null
+          );
+        },
+        0
       );
 
-      setEdges(
-        flow.edges ??
-          []
+    return () => {
+      window.clearTimeout(
+        timer
       );
-
-      setFlowName(
-        flow.name ??
-          "Untitled Flow"
-      );
-
-      setCampaignId(
-        flow.campaignId ??
-          ""
-      );
-
-      setSelectedNode(
-        null
-      );
-    },
-    [
-      flow,
-      setNodes,
-      setEdges,
-      setFlowName,
-      setCampaignId,
-    ]
-  );
+    };
+  },
+  [
+    flow,
+    setNodes,
+    setEdges,
+    setFlowName,
+    setCampaignId,
+  ]
+);
 
   //------------------------------------------------
   // Save

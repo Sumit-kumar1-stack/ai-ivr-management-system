@@ -72,6 +72,9 @@ const mocks =
 
         close:
           vi.fn(),
+
+        onClose:
+          vi.fn(),
       };
 
       const sttProvider = {
@@ -129,6 +132,12 @@ const mocks =
 vi.mock(
   "@/lib/logger",
   () => ({
+    createLogger:
+      vi.fn(
+        () =>
+          mocks.logger
+      ),
+
     createCallLogger:
       vi.fn(
         () =>
@@ -320,6 +329,15 @@ function createStoredCall(
 
       direction:
         CallDirection;
+
+      campaign: {
+        communicationVoiceParent:
+          {
+            id: string;
+            tier: "STANDARD" | "PREMIUM";
+          } |
+          null;
+      };
     }> = {}
 ) {
   return {
@@ -335,6 +353,11 @@ function createStoredCall(
     direction:
       CallDirection.INBOUND,
 
+    campaign: {
+      communicationVoiceParent:
+        null,
+    },
+
     ...overrides,
   };
 }
@@ -346,20 +369,28 @@ function createAudioSession(
 ): AudioSession {
   return {
     callId:
+      overrides.callId ??
       CALL_ID,
 
     twilioCallSid:
+      overrides.twilioCallSid ??
       PROVIDER_CALL_ID,
 
     streamSid:
+      overrides.streamSid ??
       STREAM_SID,
 
-    socket,
+    socket:
+      overrides.socket ??
+      socket,
+
+    voiceRuntime:
+      overrides.voiceRuntime ??
+      "CASCADED",
 
     createdAt:
+      overrides.createdAt ??
       Date.now(),
-
-    ...overrides,
   };
 }
 
@@ -818,6 +849,20 @@ describe(
 
             direction:
               true,
+
+            campaign: {
+              select: {
+                communicationVoiceParent: {
+                  select: {
+                    id:
+                      true,
+
+                    tier:
+                      true,
+                  },
+                },
+              },
+            },
           },
         });
 
@@ -990,6 +1035,9 @@ describe(
 
           socket:
             socket.socket,
+
+          voiceRuntime:
+            "CASCADED",
         });
       }
     );
@@ -1223,6 +1271,9 @@ describe(
 
           socket:
             newSocket.socket,
+
+          voiceRuntime:
+            "CASCADED",
         });
       }
     );
@@ -1842,9 +1893,12 @@ describe(
         ).toHaveBeenCalledWith(
           expect.objectContaining({
             event:
-              "twilio.stream.stt_disconnect_failed",
+              "twilio.stream.voice_runtime_disconnect_failed",
+
+            voiceRuntime:
+              "CASCADED",
           }),
-          "Failed to disconnect STT"
+          "Failed to disconnect voice runtime"
         );
 
         expect(

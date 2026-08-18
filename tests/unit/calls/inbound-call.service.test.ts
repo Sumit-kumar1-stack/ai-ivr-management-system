@@ -61,10 +61,16 @@ const mocks =
           vi.fn(),
       };
 
+      const ivrMenuSession = {
+        reset:
+          vi.fn(),
+      };
+
       return {
         logger,
         transaction,
         prisma,
+        ivrMenuSession,
       };
     }
   );
@@ -80,11 +86,16 @@ vi.mock(
       mocks.prisma,
   })
 );
-
 vi.mock(
   "@/lib/logger",
   () => ({
     createLogger:
+      vi.fn(
+        () =>
+          mocks.logger
+      ),
+
+    createServerLogger:
       vi.fn(
         () =>
           mocks.logger
@@ -119,6 +130,15 @@ vi.mock(
                 ),
         })
       ),
+  })
+);
+
+
+vi.mock(
+  "@/services/ivr/ivr-menu-session.service",
+  () => ({
+    IVRMenuSessionService:
+      mocks.ivrMenuSession,
   })
 );
 
@@ -157,6 +177,13 @@ const CALLED_NUMBER =
 //--------------------------------------------------
 
 function configureSuccessfulCreation(): void {
+  mocks
+    .ivrMenuSession
+    .reset
+    .mockResolvedValue(
+      undefined
+    );
+
   mocks
     .transaction
     .campaign
@@ -405,6 +432,9 @@ describe(
 
             direction:
               true,
+
+            status:
+              true,
           },
         });
 
@@ -520,23 +550,6 @@ describe(
             .$transaction
         ).not.toHaveBeenCalled();
 
-        expect(
-          mocks
-            .logger
-            .debug
-        ).toHaveBeenCalledWith(
-          expect.objectContaining({
-            event:
-              "inbound.call.idempotent_existing",
-
-            direction:
-              CallDirection.INBOUND,
-
-            created:
-              false,
-          }),
-          "Existing inbound call returned"
-        );
       }
     );
 
@@ -619,6 +632,9 @@ describe(
           update: {
             status:
               CampaignStatus.RUNNING,
+
+            language:
+              "Hindi",
           },
 
           create: {
@@ -682,7 +698,10 @@ describe(
               CALLER_NUMBER,
           },
 
-          update: {},
+          update: {
+            language:
+              "Hindi",
+          },
 
           create: {
             fullName:
@@ -698,16 +717,13 @@ describe(
           select: {
             id:
               true,
-
-            language:
-              true,
           },
         });
       }
     );
 
     it(
-      "preserves the existing contact language",
+      "uses the requested language for the inbound call",
       async () => {
         mocks
           .transaction
@@ -716,9 +732,6 @@ describe(
           .mockResolvedValue({
             id:
               CONTACT_ID,
-
-            language:
-              "Telugu",
           });
 
         await createOrGetInboundCall({
@@ -745,7 +758,7 @@ describe(
             data:
               expect.objectContaining({
                 language:
-                  "Telugu",
+                  "Hindi",
               }),
           })
         );
@@ -856,9 +869,6 @@ describe(
 
             campaignId:
               true,
-
-            language:
-              true,
           },
         });
       }
@@ -944,11 +954,6 @@ describe(
             calledNumber:
               "***5678",
 
-            languageConfigured:
-              true,
-
-            created:
-              true,
           }),
           "Inbound call record created"
         );
@@ -1037,23 +1042,6 @@ describe(
             false,
         });
 
-        expect(
-          mocks
-            .logger
-            .debug
-        ).toHaveBeenCalledWith(
-          expect.objectContaining({
-            event:
-              "inbound.call.concurrent_duplicate",
-
-            direction:
-              CallDirection.INBOUND,
-
-            created:
-              false,
-          }),
-          "Concurrent duplicate inbound webhook resolved"
-        );
       }
     );
 
@@ -1185,8 +1173,6 @@ describe(
             calledNumber:
               "***5678",
 
-            providerCallIdPresent:
-              true,
 
             error: {
               message:

@@ -63,6 +63,80 @@ export interface CampaignEnqueueOptions {
 }
 
 //--------------------------------------------------
+// Queue State
+//
+// IMPORTANT:
+//
+// Do not construct BullMQ Queue at module import time.
+// Next.js imports API route dependencies while running
+// `next build`; constructing Queue there forces Redis to
+// connect even though no queue operation is being made.
+//--------------------------------------------------
+
+let campaignQueue:
+  Queue<CampaignJobData> |
+  null =
+    null;
+
+//--------------------------------------------------
+// Get Queue
+//--------------------------------------------------
+
+function getCampaignQueue():
+  Queue<CampaignJobData> {
+  if (
+    campaignQueue
+  ) {
+    return campaignQueue;
+  }
+
+  campaignQueue =
+    new Queue<CampaignJobData>(
+      CAMPAIGN_QUEUE_NAME,
+      {
+        connection:
+          redisConnection,
+
+        defaultJobOptions: {
+          attempts:
+            3,
+
+          backoff: {
+            type:
+              "exponential",
+
+            delay:
+              5_000,
+          },
+
+          removeOnComplete: {
+            age:
+              24 *
+              60 *
+              60,
+
+            count:
+              1_000,
+          },
+
+          removeOnFail: {
+            age:
+              7 *
+              24 *
+              60 *
+              60,
+
+            count:
+              5_000,
+          },
+        },
+      }
+    );
+
+  return campaignQueue;
+}
+
+//--------------------------------------------------
 // Build Safe BullMQ Job ID
 //--------------------------------------------------
 
@@ -100,53 +174,6 @@ function normalizeDelay(
     MAX_DELAY_MS
   );
 }
-
-//--------------------------------------------------
-// BullMQ Queue
-//--------------------------------------------------
-
-export const campaignQueue =
-  new Queue<CampaignJobData>(
-    CAMPAIGN_QUEUE_NAME,
-    {
-      connection:
-        redisConnection,
-
-      defaultJobOptions: {
-        attempts:
-          3,
-
-        backoff: {
-          type:
-            "exponential",
-
-          delay:
-            5_000,
-        },
-
-        removeOnComplete: {
-          age:
-            24 *
-            60 *
-            60,
-
-          count:
-            1_000,
-        },
-
-        removeOnFail: {
-          age:
-            7 *
-            24 *
-            60 *
-            60,
-
-          count:
-            5_000,
-        },
-      },
-    }
-  );
 
 //--------------------------------------------------
 // Campaign Queue Service
@@ -198,8 +225,11 @@ export class CampaignQueueService {
     );
 
     try {
+      const queue =
+        getCampaignQueue();
+
       const job =
-        await campaignQueue.add(
+        await queue.add(
           CAMPAIGN_JOB_NAME,
           data,
           {
@@ -281,7 +311,10 @@ export class CampaignQueueService {
         campaignRunId
       );
 
-    return campaignQueue.getJob(
+    const queue =
+      getCampaignQueue();
+
+    return queue.getJob(
       jobId
     );
   }
@@ -316,6 +349,23 @@ export class CampaignQueueService {
 
   static async close():
     Promise<void> {
-    await campaignQueue.close();
+    const queue =
+      campaignQueue;
+
+    campaignQueue =
+      null;
+
+    /*
+     * Do not instantiate a queue merely to close it.
+     * A process that never used campaign queueing should
+     * finish without opening a Redis connection.
+     */
+    if (
+      !queue
+    ) {
+      return;
+    }
+
+    await queue.close();
   }
 }

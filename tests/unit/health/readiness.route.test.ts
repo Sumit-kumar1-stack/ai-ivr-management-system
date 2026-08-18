@@ -41,13 +41,68 @@ const mocks =
 
         normalizeError:
           vi.fn(),
+
+        checkIntegrationConfiguration:
+          vi.fn(),
+
+        isIntegrationConfigurationReady:
+          vi.fn(),
       };
     }
   );
 
 //--------------------------------------------------
+// Shared Configuration Fixture
+//--------------------------------------------------
+
+const HEALTHY_CONFIGURATION = {
+  application: {
+    healthy:
+      true,
+
+    message:
+      "Application configuration is valid",
+  },
+
+  redisConfiguration: {
+    healthy:
+      true,
+
+    message:
+      "Redis configuration is valid",
+  },
+
+  twilioConfiguration: {
+    healthy:
+      true,
+
+    message:
+      "Twilio configuration is valid",
+  },
+
+  aiConfiguration: {
+    healthy:
+      true,
+
+    message:
+      "Gemini and Deepgram configuration is valid",
+  },
+};
+
+//--------------------------------------------------
 // Module Mocks
 //--------------------------------------------------
+
+vi.mock(
+  "@/config/readiness",
+  () => ({
+    checkIntegrationConfiguration:
+      mocks.checkIntegrationConfiguration,
+
+    isIntegrationConfigurationReady:
+      mocks.isIntegrationConfigurationReady,
+  })
+);
 
 vi.mock(
   "@/lib/prisma",
@@ -126,6 +181,18 @@ describe(
           );
 
         mocks
+          .checkIntegrationConfiguration
+          .mockReturnValue(
+            HEALTHY_CONFIGURATION
+          );
+
+        mocks
+          .isIntegrationConfigurationReady
+          .mockReturnValue(
+            true
+          );
+
+        mocks
           .getDurationMs
           .mockReturnValue(
             5
@@ -154,7 +221,7 @@ describe(
     //------------------------------------------------
 
     it(
-      "returns 200 when database and Redis are healthy",
+      "returns 200 when database, Redis, and integration configuration are healthy",
       async () => {
         const response =
           await GET();
@@ -211,6 +278,9 @@ describe(
               message:
                 "Redis connection available",
             },
+
+            configuration:
+              HEALTHY_CONFIGURATION,
           },
         });
 
@@ -218,6 +288,18 @@ describe(
           body.dependencies
         ).not.toHaveProperty(
           "workers"
+        );
+
+        expect(
+          mocks
+            .checkIntegrationConfiguration
+        ).toHaveBeenCalledOnce();
+
+        expect(
+          mocks
+            .isIntegrationConfigurationReady
+        ).toHaveBeenCalledWith(
+          HEALTHY_CONFIGURATION
         );
 
         expect(
@@ -295,6 +377,12 @@ describe(
         );
 
         expect(
+          body.dependencies.configuration
+        ).toEqual(
+          HEALTHY_CONFIGURATION
+        );
+
+        expect(
           body.dependencies
         ).not.toHaveProperty(
           "workers"
@@ -353,6 +441,12 @@ describe(
         });
 
         expect(
+          body.dependencies.configuration
+        ).toEqual(
+          HEALTHY_CONFIGURATION
+        );
+
+        expect(
           body.dependencies
         ).not.toHaveProperty(
           "workers"
@@ -399,6 +493,12 @@ describe(
           message:
             "Unexpected Redis response: LOADING",
         });
+
+        expect(
+          body.dependencies.configuration
+        ).toEqual(
+          HEALTHY_CONFIGURATION
+        );
 
         expect(
           body.dependencies
@@ -459,6 +559,12 @@ describe(
           body.dependencies.redis.healthy
         ).toBe(
           false
+        );
+
+        expect(
+          body.dependencies.configuration
+        ).toEqual(
+          HEALTHY_CONFIGURATION
         );
 
         expect(
@@ -541,6 +647,13 @@ describe(
           response.status
         ).toBe(
           200
+        );
+
+        expect(
+          mocks
+            .isIntegrationConfigurationReady
+        ).toHaveBeenCalledWith(
+          HEALTHY_CONFIGURATION
         );
       }
     );

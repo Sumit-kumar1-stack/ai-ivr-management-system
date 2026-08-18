@@ -37,6 +37,14 @@ import {
   STTProviderFactory,
 } from "@/services/stt/providers/provider.factory";
 
+import {
+  GeminiLiveMediaService,
+} from "@/services/voice/gemini-live-media.service";
+
+import {
+  resolveCommunicationVoiceRuntime,
+} from "@/services/communication/communication-entitlement.service";
+
 //--------------------------------------------------
 // Types
 //--------------------------------------------------
@@ -131,9 +139,16 @@ const serviceLog =
 //--------------------------------------------------
 
 export class TwilioStreamGateway {
+  //------------------------------------------------
+  // Handle Incoming WebSocket Message
+  //------------------------------------------------
+
   static async handle(
-    socket: WebSocket,
-    message: string
+    socket:
+      WebSocket,
+
+    message:
+      string
   ): Promise<void> {
     let event:
       TwilioEvent;
@@ -174,9 +189,9 @@ export class TwilioStreamGateway {
     switch (
       event.event
     ) {
-      //--------------------------------------
+      //--------------------------------------------
       // Connected
-      //--------------------------------------
+      //--------------------------------------------
 
       case "connected": {
         serviceLog.debug(
@@ -190,9 +205,9 @@ export class TwilioStreamGateway {
         return;
       }
 
-      //--------------------------------------
+      //--------------------------------------------
       // Start
-      //--------------------------------------
+      //--------------------------------------------
 
       case "start": {
         await this.handleStart(
@@ -203,9 +218,9 @@ export class TwilioStreamGateway {
         return;
       }
 
-      //--------------------------------------
-      // Incoming Twilio Audio
-      //--------------------------------------
+      //--------------------------------------------
+      // Incoming Audio
+      //--------------------------------------------
 
       case "media": {
         await this.handleMedia(
@@ -215,9 +230,9 @@ export class TwilioStreamGateway {
         return;
       }
 
-      //--------------------------------------
+      //--------------------------------------------
       // Playback Mark
-      //--------------------------------------
+      //--------------------------------------------
 
       case "mark": {
         serviceLog.debug(
@@ -242,9 +257,9 @@ export class TwilioStreamGateway {
         return;
       }
 
-      //--------------------------------------
+      //--------------------------------------------
       // Stop
-      //--------------------------------------
+      //--------------------------------------------
 
       case "stop": {
         await this.handleStop(
@@ -254,9 +269,9 @@ export class TwilioStreamGateway {
         return;
       }
 
-      //--------------------------------------
+      //--------------------------------------------
       // Unknown Event
-      //--------------------------------------
+      //--------------------------------------------
 
       default: {
         serviceLog.debug(
@@ -313,7 +328,7 @@ export class TwilioStreamGateway {
       ).trim();
 
     //----------------------------------------------
-    // Require Internal Application ID
+    // Require Internal Application Call ID
     //----------------------------------------------
 
     if (
@@ -354,7 +369,7 @@ export class TwilioStreamGateway {
       );
 
     //----------------------------------------------
-    // Validate Required Provider Identifiers
+    // Validate Stream SID
     //----------------------------------------------
 
     if (
@@ -379,6 +394,10 @@ export class TwilioStreamGateway {
       return;
     }
 
+    //----------------------------------------------
+    // Validate Twilio Call SID
+    //----------------------------------------------
+
     if (
       !twilioCallSid
     ) {
@@ -401,10 +420,16 @@ export class TwilioStreamGateway {
       return;
     }
 
+    //----------------------------------------------
+    // Validate TwiML Custom CallSid
+    //----------------------------------------------
+
     /*
-     * The CallSid passed in TwiML custom parameters
-     * must match the CallSid supplied by Twilio.
+     * The CallSid supplied in the TwiML custom
+     * parameters must match Twilio's actual
+     * start-event CallSid.
      */
+
     if (
       customTwilioCallSid &&
       customTwilioCallSid !==
@@ -436,7 +461,7 @@ export class TwilioStreamGateway {
     }
 
     //----------------------------------------------
-    // Load And Validate Internal Call
+    // Load Internal Call + Communication Runtime
     //----------------------------------------------
 
     const call =
@@ -458,8 +483,26 @@ export class TwilioStreamGateway {
 
           direction:
             true,
+
+          campaign: {
+            select: {
+              communicationVoiceParent: {
+                select: {
+                  id:
+                    true,
+
+                  tier:
+                    true,
+                },
+              },
+            },
+          },
         },
       });
+
+    //----------------------------------------------
+    // Call Must Exist
+    //----------------------------------------------
 
     if (
       !call
@@ -482,6 +525,10 @@ export class TwilioStreamGateway {
 
       return;
     }
+
+    //----------------------------------------------
+    // Reject Terminal Calls
+    //----------------------------------------------
 
     if (
       isTerminalStatus(
@@ -509,6 +556,10 @@ export class TwilioStreamGateway {
 
       return;
     }
+
+    //----------------------------------------------
+    // Validate Existing Provider Association
+    //----------------------------------------------
 
     if (
       call.providerCallId &&
@@ -564,9 +615,13 @@ export class TwilioStreamGateway {
         });
 
       /*
-       * A concurrent callback may have associated the
-       * CallSid first. Verify the final stored value.
+       * A concurrent callback may have associated
+       * the CallSid first.
+       *
+       * If our compare-and-set lost the race,
+       * re-read and verify the final association.
        */
+
       if (
         association.count ===
         0
@@ -625,7 +680,57 @@ export class TwilioStreamGateway {
     }
 
     //----------------------------------------------
-    // Handle Duplicate Or Replacement Stream
+    // M10 — Resolve Per-Call Voice Runtime
+    //----------------------------------------------
+
+    const communicationVoiceParent =
+      call
+        .campaign
+        .communicationVoiceParent;
+
+    const voiceRuntime =
+      communicationVoiceParent
+        ? resolveCommunicationVoiceRuntime(
+            communicationVoiceParent
+              .tier
+          )
+        : "CASCADED";
+
+    //----------------------------------------------
+    // Premium Runtime Audit
+    //----------------------------------------------
+
+    /*
+     * A Premium communication call must never enter
+     * the Standard:
+     *
+     * Deepgram → Gemini → TTS
+     *
+     * pipeline.
+     */
+
+    if (
+      voiceRuntime ===
+      "GEMINI_LIVE"
+    ) {
+      log.info(
+        {
+          event:
+            "twilio.stream.premium_runtime_selected",
+
+          voiceRuntime,
+
+          communicationCampaignId:
+            communicationVoiceParent
+              ?.id ??
+            null,
+        },
+        "Premium Gemini Live media runtime selected"
+      );
+    }
+
+    //----------------------------------------------
+    // Handle Duplicate / Replacement Stream
     //----------------------------------------------
 
     const previousSession =
@@ -637,6 +742,10 @@ export class TwilioStreamGateway {
     if (
       previousSession
     ) {
+      //--------------------------------------------
+      // Exact Duplicate
+      //--------------------------------------------
+
       if (
         previousSession.streamSid ===
           streamSid &&
@@ -657,6 +766,10 @@ export class TwilioStreamGateway {
         return;
       }
 
+      //--------------------------------------------
+      // Replacement Stream
+      //--------------------------------------------
+
       log.warn(
         {
           event:
@@ -671,28 +784,46 @@ export class TwilioStreamGateway {
         "Replacing an existing Twilio audio session"
       );
 
-      try {
-        await STTProviderFactory
-          .get()
-          .disconnect(
-            internalCallId
-          );
-      } catch (
-        error
-      ) {
-        log.warn(
-          {
-            event:
-              "twilio.stream.previous_stt_disconnect_failed",
+      //--------------------------------------------
+      // Close Previous Voice Runtime
+      //--------------------------------------------
 
-            error:
-              normalizeError(
-                error
-              ),
-          },
-          "Previous STT session could not be disconnected"
+      if (
+        previousSession
+          .voiceRuntime ===
+        "GEMINI_LIVE"
+      ) {
+        GeminiLiveMediaService.close(
+          internalCallId
         );
+      } else {
+        try {
+          await STTProviderFactory
+            .get()
+            .disconnect(
+              internalCallId
+            );
+        } catch (
+          error
+        ) {
+          log.warn(
+            {
+              event:
+                "twilio.stream.previous_stt_disconnect_failed",
+
+              error:
+                normalizeError(
+                  error
+                ),
+            },
+            "Previous STT session could not be disconnected"
+          );
+        }
       }
+
+      //--------------------------------------------
+      // Close Previous Audio Session
+      //--------------------------------------------
 
       AudioSessionService.close(
         previousSession.streamSid
@@ -723,6 +854,10 @@ export class TwilioStreamGateway {
         },
       });
 
+    //----------------------------------------------
+    // Determine New vs Resumed Conversation
+    //----------------------------------------------
+
     const existingMessageCount =
       await prisma.conversationMessage.count({
         where: {
@@ -744,7 +879,13 @@ export class TwilioStreamGateway {
       streamSid,
 
       socket,
+
+      voiceRuntime,
     });
+
+    //----------------------------------------------
+    // Stream Started
+    //----------------------------------------------
 
     log.info(
       {
@@ -760,6 +901,8 @@ export class TwilioStreamGateway {
         direction:
           call.direction,
 
+        voiceRuntime,
+
         existingConversationMessageCount:
           existingMessageCount,
 
@@ -774,7 +917,139 @@ export class TwilioStreamGateway {
     );
 
     //----------------------------------------------
-    // Connect Speech-To-Text
+    // PREMIUM — Gemini Live Runtime
+    //----------------------------------------------
+
+    if (
+      voiceRuntime ===
+      "GEMINI_LIVE"
+    ) {
+      try {
+        //------------------------------------------
+        // Connect Native-Audio Session
+        //------------------------------------------
+
+        await GeminiLiveMediaService
+          .start({
+            callId:
+              internalCallId,
+
+            streamSid,
+
+            newConversation:
+              existingMessageCount ===
+              0,
+          });
+
+        //------------------------------------------
+        // Audio Transport Ready
+        //------------------------------------------
+
+        await EventPublisher.publish(
+          AppEvent.AUDIO_CONNECTED,
+          {
+            callId:
+              internalCallId,
+
+            runtime:
+              "GEMINI_LIVE",
+
+            timestamp:
+              Date.now(),
+          }
+        );
+
+        //------------------------------------------
+        // Start / Resume Premium Conversation
+        //------------------------------------------
+
+        await GeminiLiveMediaService
+          .beginConversation(
+            internalCallId
+          );
+
+        //------------------------------------------
+        // Premium Runtime Ready
+        //------------------------------------------
+
+        log.info(
+          {
+            event:
+              "twilio.stream.gemini_live_initialized",
+
+            voiceRuntime,
+
+            newConversation:
+              existingMessageCount ===
+              0,
+
+            existingConversationMessageCount:
+              existingMessageCount,
+
+            conversationState:
+              ConversationStateService
+                .getState(
+                  internalCallId
+                ),
+          },
+          "Premium Gemini Live call stream initialized"
+        );
+      } catch (
+        error
+      ) {
+        //------------------------------------------
+        // Fail Closed
+        //
+        // Never fall from Premium into Standard STT
+        // when Gemini Live initialization fails.
+        //------------------------------------------
+
+        log.error(
+          {
+            event:
+              "twilio.stream.gemini_live_initialization_failed",
+
+            error:
+              normalizeError(
+                error
+              ),
+          },
+          "Gemini Live initialization failed"
+        );
+
+        ConversationStateService.setState(
+          internalCallId,
+          "ENDED"
+        );
+
+        GeminiLiveMediaService.close(
+          internalCallId
+        );
+
+        AudioSessionService.close(
+          streamSid
+        );
+
+        socket.close(
+          1011,
+          "Gemini Live initialization failed"
+        );
+
+        return;
+      }
+
+      //--------------------------------------------
+      // CRITICAL
+      //
+      // Premium must never enter the Standard
+      // Deepgram/STT branch below.
+      //--------------------------------------------
+
+      return;
+    }
+
+    //----------------------------------------------
+    // STANDARD / LEGACY — Connect STT
     //----------------------------------------------
 
     try {
@@ -817,7 +1092,7 @@ export class TwilioStreamGateway {
     }
 
     //----------------------------------------------
-    // Publish Audio Connection
+    // Standard Audio Connection Ready
     //----------------------------------------------
 
     await EventPublisher.publish(
@@ -832,13 +1107,17 @@ export class TwilioStreamGateway {
     );
 
     //----------------------------------------------
-    // Start New Conversation Or Resume
+    // Standard Conversation State
     //----------------------------------------------
 
     ConversationStateService.setState(
       internalCallId,
       "LISTENING"
     );
+
+    //----------------------------------------------
+    // New Standard Conversation
+    //----------------------------------------------
 
     if (
       existingMessageCount ===
@@ -870,11 +1149,12 @@ export class TwilioStreamGateway {
         "AI conversation initialized"
       );
     } else {
-      /*
-       * A replacement stream should resume the
-       * existing conversation without repeating
-       * the greeting or duplicating the message.
-       */
+      //--------------------------------------------
+      // Replacement Standard Stream
+      //
+      // Resume without replaying the greeting.
+      //--------------------------------------------
+
       await EventPublisher.publish(
         AppEvent.VOICE_LISTENING,
         {
@@ -901,15 +1181,22 @@ export class TwilioStreamGateway {
       );
     }
 
+    //----------------------------------------------
+    // Standard Runtime Ready
+    //----------------------------------------------
+
     log.info(
       {
         event:
           "twilio.stream.initialized",
 
+        voiceRuntime,
+
         conversationState:
-          ConversationStateService.getState(
-            internalCallId
-          ),
+          ConversationStateService
+            .getState(
+              internalCallId
+            ),
 
         greetingRequired:
           existingMessageCount ===
@@ -931,6 +1218,10 @@ export class TwilioStreamGateway {
       event.streamSid
         ?.trim();
 
+    //----------------------------------------------
+    // Require Stream SID
+    //----------------------------------------------
+
     if (
       !streamSid
     ) {
@@ -947,6 +1238,10 @@ export class TwilioStreamGateway {
 
       return;
     }
+
+    //----------------------------------------------
+    // Resolve Registered Audio Session
+    //----------------------------------------------
 
     const session =
       AudioSessionService.get(
@@ -973,6 +1268,10 @@ export class TwilioStreamGateway {
       return;
     }
 
+    //----------------------------------------------
+    // Read Payload
+    //----------------------------------------------
+
     const payload =
       event.media
         ?.payload
@@ -988,6 +1287,10 @@ export class TwilioStreamGateway {
       createCallLogger(
         session.callId
       );
+
+    //----------------------------------------------
+    // Validate Base64
+    //----------------------------------------------
 
     if (
       !isValidBase64(
@@ -1011,6 +1314,10 @@ export class TwilioStreamGateway {
       return;
     }
 
+    //----------------------------------------------
+    // Decode μ-law Payload
+    //----------------------------------------------
+
     const audio =
       Buffer.from(
         payload,
@@ -1023,6 +1330,54 @@ export class TwilioStreamGateway {
     ) {
       return;
     }
+
+    //----------------------------------------------
+    // PREMIUM — Twilio → Gemini Live
+    //----------------------------------------------
+
+    if (
+      session.voiceRuntime ===
+      "GEMINI_LIVE"
+    ) {
+      try {
+        GeminiLiveMediaService
+          .sendTwilioAudio(
+            session.callId,
+            audio
+          );
+      } catch (
+        error
+      ) {
+        log.error(
+          {
+            event:
+              "twilio.stream.gemini_live_audio_forward_failed",
+
+            audioSizeBytes:
+              audio.length,
+
+            error:
+              normalizeError(
+                error
+              ),
+          },
+          "Failed to send Twilio audio to Gemini Live"
+        );
+      }
+
+      /*
+       * Important:
+       *
+       * A failed Premium audio forward does not
+       * fall through to Deepgram.
+       */
+
+      return;
+    }
+
+    //----------------------------------------------
+    // STANDARD / LEGACY — Twilio → STT
+    //----------------------------------------------
 
     try {
       await STTProviderFactory
@@ -1064,6 +1419,10 @@ export class TwilioStreamGateway {
       event.streamSid
         ?.trim();
 
+    //----------------------------------------------
+    // Require Stream SID
+    //----------------------------------------------
+
     if (
       !streamSid
     ) {
@@ -1080,6 +1439,10 @@ export class TwilioStreamGateway {
 
       return;
     }
+
+    //----------------------------------------------
+    // Resolve Session
+    //----------------------------------------------
 
     const session =
       AudioSessionService.get(
@@ -1111,40 +1474,72 @@ export class TwilioStreamGateway {
         session.callId
       );
 
+    //----------------------------------------------
+    // Disconnect Selected Runtime
+    //----------------------------------------------
+
     try {
-      await STTProviderFactory
-        .get()
-        .disconnect(
+      if (
+        session.voiceRuntime ===
+        "GEMINI_LIVE"
+      ) {
+        GeminiLiveMediaService.close(
           session.callId
         );
 
-      log.info(
-        {
-          event:
-            "twilio.stream.stt_disconnected",
-        },
-        "STT session disconnected"
-      );
+        log.info(
+          {
+            event:
+              "twilio.stream.gemini_live_disconnected",
+          },
+          "Gemini Live session disconnected"
+        );
+      } else {
+        await STTProviderFactory
+          .get()
+          .disconnect(
+            session.callId
+          );
+
+        log.info(
+          {
+            event:
+              "twilio.stream.stt_disconnected",
+          },
+          "STT session disconnected"
+        );
+      }
     } catch (
       error
     ) {
       log.error(
         {
           event:
-            "twilio.stream.stt_disconnect_failed",
+            "twilio.stream.voice_runtime_disconnect_failed",
+
+          voiceRuntime:
+            session.voiceRuntime,
 
           error:
             normalizeError(
               error
             ),
         },
-        "Failed to disconnect STT"
+        "Failed to disconnect voice runtime"
       );
     } finally {
+      //--------------------------------------------
+      // Conversation End State
+      //--------------------------------------------
+
       ConversationStateService.setState(
         session.callId,
         "ENDED"
       );
+
+      //--------------------------------------------
+      // Publish Audio Disconnected
+      //--------------------------------------------
 
       await EventPublisher.publish(
         AppEvent.AUDIO_DISCONNECTED,
@@ -1157,15 +1552,26 @@ export class TwilioStreamGateway {
         }
       );
 
+      //--------------------------------------------
+      // Remove Audio Session
+      //--------------------------------------------
+
       AudioSessionService.close(
         streamSid
       );
     }
 
+    //----------------------------------------------
+    // Stop Complete
+    //----------------------------------------------
+
     log.info(
       {
         event:
           "twilio.stream.stopped",
+
+        voiceRuntime:
+          session.voiceRuntime,
       },
       "Twilio media stream stopped"
     );
@@ -1177,7 +1583,8 @@ export class TwilioStreamGateway {
 //--------------------------------------------------
 
 function isTerminalStatus(
-  status: CallStatus
+  status:
+    CallStatus
 ): boolean {
   return (
     status ===
@@ -1198,7 +1605,8 @@ function isTerminalStatus(
 //--------------------------------------------------
 
 function isValidBase64(
-  value: string
+  value:
+    string
 ): boolean {
   if (
     value.length ===

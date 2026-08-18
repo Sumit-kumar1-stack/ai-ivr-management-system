@@ -502,15 +502,31 @@ export async function createOrGetInboundCall(
 //--------------------------------------------------
 
 function normalizePhoneNumber(
-  value:
-    string
+  value: string
 ): string {
-  return value
-    .trim()
-    .replace(
-      /[^\d+]/g,
-      ""
-    );
+  const normalized =
+    value
+      .trim()
+      .replace(
+        /[^\d+]/g,
+        ""
+      );
+
+  /*
+   * E.164:
+   * - optional leading +
+   * - maximum 15 digits
+   * - first digit cannot be 0
+   */
+  if (
+    !/^\+?[1-9]\d{0,14}$/.test(
+      normalized
+    )
+  ) {
+    return "";
+  }
+
+  return normalized;
 }
 
 //--------------------------------------------------

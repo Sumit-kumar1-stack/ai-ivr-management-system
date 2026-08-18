@@ -108,14 +108,34 @@ describe(
       () => {
         vi.clearAllMocks();
 
+        /*
+         * getTwilioEnvironment() is intentionally strict.
+         * Keep every required Twilio setting explicit so
+         * each test fails only for the condition it targets.
+         */
+        vi.stubEnv(
+          "TWILIO_ACCOUNT_SID",
+          "AC123456789012345678901234567890"
+        );
+
         vi.stubEnv(
           "TWILIO_AUTH_TOKEN",
           "test-twilio-auth-token"
         );
 
         vi.stubEnv(
+          "TWILIO_PHONE_NUMBER",
+          "+14155550100"
+        );
+
+        vi.stubEnv(
           "TWILIO_PUBLIC_BASE_URL",
           "https://public.example.com"
+        );
+
+        vi.stubEnv(
+          "TWILIO_MEDIA_PUBLIC_URL",
+          "https://media.example.com"
         );
 
         vi.stubEnv(
@@ -205,7 +225,7 @@ describe(
             request
           )
         ).rejects.toThrow(
-          "TWILIO_AUTH_TOKEN is not configured"
+          "TWILIO_AUTH_TOKEN is missing from the environment"
         );
 
         expect(
@@ -215,15 +235,10 @@ describe(
     );
 
     it(
-      "throws when no trusted public URL is configured",
+      "throws when TWILIO_PUBLIC_BASE_URL is missing",
       async () => {
         vi.stubEnv(
           "TWILIO_PUBLIC_BASE_URL",
-          ""
-        );
-
-        vi.stubEnv(
-          "APP_URL",
           ""
         );
 
@@ -238,7 +253,7 @@ describe(
             request
           )
         ).rejects.toThrow(
-          "TWILIO_PUBLIC_BASE_URL or APP_URL is not configured"
+          "TWILIO_PUBLIC_BASE_URL is missing from the environment"
         );
 
         expect(
@@ -478,11 +493,11 @@ describe(
     );
 
     it(
-      "normalizes trailing slashes from the configured public URL",
+      "accepts a configured public origin with a single root slash",
       async () => {
         vi.stubEnv(
           "TWILIO_PUBLIC_BASE_URL",
-          "https://public.example.com////"
+          "https://public.example.com/"
         );
 
         const request =
@@ -505,7 +520,7 @@ describe(
     );
 
     it(
-      "uses APP_URL when TWILIO_PUBLIC_BASE_URL is unavailable",
+      "does not fall back to APP_URL when TWILIO_PUBLIC_BASE_URL is unavailable",
       async () => {
         vi.stubEnv(
           "TWILIO_PUBLIC_BASE_URL",
@@ -514,7 +529,7 @@ describe(
 
         vi.stubEnv(
           "APP_URL",
-          "https://fallback.example.com/"
+          "https://fallback.example.com"
         );
 
         const request =
@@ -523,32 +538,22 @@ describe(
               "valid-signature",
           });
 
-        const result =
-          await validateTwilioWebhook(
+        await expect(
+          validateTwilioWebhook(
             request
-          );
-
-        expect(
-          result.validationUrl
-        ).toBe(
-          "https://fallback.example.com/api/twilio/status"
+          )
+        ).rejects.toThrow(
+          "TWILIO_PUBLIC_BASE_URL is missing from the environment"
         );
 
         expect(
           mocks.validateRequest
-        ).toHaveBeenCalledWith(
-          "test-twilio-auth-token",
-          "valid-signature",
-          "https://fallback.example.com/api/twilio/status",
-          expect.any(
-            Object
-          )
-        );
+        ).not.toHaveBeenCalled();
       }
     );
 
     it(
-      "uses only the origin when the configured URL contains a path",
+      "rejects a configured public URL containing a path",
       async () => {
         vi.stubEnv(
           "TWILIO_PUBLIC_BASE_URL",
@@ -561,16 +566,17 @@ describe(
               "valid-signature",
           });
 
-        const result =
-          await validateTwilioWebhook(
+        await expect(
+          validateTwilioWebhook(
             request
-          );
+          )
+        ).rejects.toThrow(
+          "TWILIO_PUBLIC_BASE_URL must contain only the public origin without a path, query, or fragment"
+        );
 
         expect(
-          result.validationUrl
-        ).toBe(
-          "https://public.example.com/api/twilio/status"
-        );
+          mocks.validateRequest
+        ).not.toHaveBeenCalled();
       }
     );
   }

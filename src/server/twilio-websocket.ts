@@ -50,6 +50,10 @@ import {
 } from "@/services/stt/providers/provider.factory";
 
 import {
+  GeminiLiveMediaService,
+} from "@/services/voice/gemini-live-media.service";
+
+import {
   VoiceWorker,
 } from "@/services/voice/voice-worker.service";
 
@@ -1069,14 +1073,23 @@ async function cleanupSocketResourcesInternal(
     );
   }
 
-  //----------------------------------------------
-  // Disconnect STT For Abnormal Termination
-  //----------------------------------------------
+//----------------------------------------------
+// Disconnect Voice Runtime For Abnormal
+// Termination
+//----------------------------------------------
 
+if (
+  callId &&
+  session
+) {
   if (
-    callId &&
-    session
+    session.voiceRuntime ===
+    "GEMINI_LIVE"
   ) {
+    GeminiLiveMediaService.close(
+      callId
+    );
+  } else {
     try {
       await STTProviderFactory
         .get()
@@ -1103,6 +1116,7 @@ async function cleanupSocketResourcesInternal(
       );
     }
   }
+}
 
   //----------------------------------------------
   // Close Telephony Session

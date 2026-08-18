@@ -526,29 +526,61 @@ export async function executeBusinessTool(
       "Business tool execution started"
     );
 
-    const result =
-      await definition.handler(
-        parsed.data,
-        {
-          callId,
+const result =
+  await definition.handler(
+    parsed.data,
+    {
+      callId,
 
-          tenantId:
-            undefined,
+      tenantId:
+        request.tenantId
+          ?.trim() ||
+        undefined,
 
-          idempotencyKey,
+      idempotencyKey,
 
-          requestedBy:
-            request.requestedBy,
+      requestedBy:
+        request.requestedBy,
 
-          signal:
-            controller.signal,
-        }
-      );
+      signal:
+        controller.signal,
+    }
+  );
 
-    const durationMs =
-      getDurationMs(
-        startedAt
-      );
+//------------------------------------------------
+// Late Completion Guard
+//
+// A provider/database operation may resolve after
+// its timeout signal fired.
+//
+// Never report that late completion as a successful
+// Gemini business-tool result.
+//------------------------------------------------
+
+if (
+  controller.signal
+    .aborted
+) {
+  const reason =
+    controller.signal
+      .reason;
+
+  if (
+    reason instanceof
+    Error
+  ) {
+    throw reason;
+  }
+
+  throw new Error(
+    "Business tool completed after cancellation"
+  );
+}
+
+const durationMs =
+  getDurationMs(
+    startedAt
+  );
 
     //------------------------------------------------
     // Handler Returned After Timeout/Abort

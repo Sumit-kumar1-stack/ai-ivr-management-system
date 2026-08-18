@@ -58,6 +58,22 @@ const TERMINAL_CALL_STATUSES:
   ];
 
 //--------------------------------------------------
+// Internal Concurrency Signal
+//--------------------------------------------------
+
+class CampaignFinalizationRaceLostError
+  extends Error {
+  constructor() {
+    super(
+      "Campaign run changed during finalization"
+    );
+
+    this.name =
+      "CampaignFinalizationRaceLostError";
+  }
+}
+
+//--------------------------------------------------
 // Finalize Campaign Run When Ready
 //--------------------------------------------------
 
@@ -698,58 +714,115 @@ export async function finalizeCampaignRunIfReady(
 // Persist Final Run State
 //------------------------------------------------
 
-const persistenceResult =
-  await prisma.$transaction(
-    async transaction => {
-      //------------------------------------------------
-      // Latest Run Also Owns Campaign State
-      //------------------------------------------------
+let persistenceResult: {
+  runUpdateCount: number;
+  campaignUpdateCount: number;
+};
 
-      if (
-        isLatestRun
-      ) {
-        /*
-         * Claim the campaign final transition first.
-         *
-         * If cancellation has already changed the
-         * campaign away from RUNNING, do not finalize
-         * the run either.
-         */
-
-        const campaignUpdate =
-          await transaction.campaign
-            .updateMany({
-              where: {
-                id:
-                  campaignRun.campaignId,
-
-                status:
-                  CampaignStatus.RUNNING,
-              },
-
-              data: {
-                status:
-                  finalCampaignStatus,
-
-                completedAt,
-              },
-            });
+try {
+  persistenceResult =
+    await prisma.$transaction(
+      async transaction => {
+        //------------------------------------------------
+        // Latest Run Also Owns Campaign State
+        //------------------------------------------------
 
         if (
-          campaignUpdate.count ===
-          0
+          isLatestRun
         ) {
+          /*
+           * Claim the campaign final transition first.
+           *
+           * If cancellation has already changed the
+           * campaign away from RUNNING, do not finalize
+           * the run either.
+           */
+
+          const campaignUpdate =
+            await transaction.campaign
+              .updateMany({
+                where: {
+                  id:
+                    campaignRun.campaignId,
+
+                  status:
+                    CampaignStatus.RUNNING,
+                },
+
+                data: {
+                  status:
+                    finalCampaignStatus,
+
+                  completedAt,
+                },
+              });
+
+          if (
+            campaignUpdate.count ===
+            0
+          ) {
+            return {
+              runUpdateCount:
+                0,
+
+              campaignUpdateCount:
+                0,
+            };
+          }
+
+          //------------------------------------------------
+          // Finalize Run
+          //------------------------------------------------
+
+          const runUpdate =
+            await transaction.campaignRun
+              .updateMany({
+                where: {
+                  id:
+                    campaignRun.id,
+
+                  status:
+                    CampaignRunStatus.RUNNING,
+                },
+
+                data: {
+                  status:
+                    finalRunStatus,
+
+                  completedAt,
+                },
+              });
+
+          /*
+           * Another process may finalize/cancel the run
+           * after we claimed the parent campaign.
+           *
+           * Throw a dedicated internal signal so Prisma
+           * rolls back the campaign update. We catch only
+           * this known race outside the transaction and
+           * convert it into a normal concurrent-skip
+           * result instead of surfacing an application
+           * error.
+           */
+
+          if (
+            runUpdate.count ===
+            0
+          ) {
+            throw new CampaignFinalizationRaceLostError();
+          }
+
           return {
             runUpdateCount:
-              0,
+              runUpdate.count,
 
             campaignUpdateCount:
-              0,
+              campaignUpdate.count,
           };
         }
 
         //------------------------------------------------
-        // Finalize Run
+        // Historical Run Only
         //------------------------------------------------
 
         const runUpdate =
@@ -771,63 +844,33 @@ const persistenceResult =
               },
             });
 
-        /*
-         * If another process changed the run while
-         * campaign update succeeded, abort this
-         * transaction so the campaign update rolls
-         * back as well.
-         */
-
-        if (
-          runUpdate.count ===
-          0
-        ) {
-          throw new Error(
-            "Campaign run changed during finalization"
-          );
-        }
-
         return {
           runUpdateCount:
             runUpdate.count,
 
           campaignUpdateCount:
-            campaignUpdate.count,
+            0,
         };
       }
+    );
+} catch (
+  error
+) {
+  if (
+    error instanceof
+    CampaignFinalizationRaceLostError
+  ) {
+    persistenceResult = {
+      runUpdateCount:
+        0,
 
-      //------------------------------------------------
-      // Historical Run Only
-      //------------------------------------------------
-
-      const runUpdate =
-        await transaction.campaignRun
-          .updateMany({
-            where: {
-              id:
-                campaignRun.id,
-
-              status:
-                CampaignRunStatus.RUNNING,
-            },
-
-            data: {
-              status:
-                finalRunStatus,
-
-              completedAt,
-            },
-          });
-
-      return {
-        runUpdateCount:
-          runUpdate.count,
-
-        campaignUpdateCount:
-          0,
-      };
-    }
-  );
+      campaignUpdateCount:
+        0,
+    };
+  } else {
+    throw error;
+  }
+}
 
 //------------------------------------------------
 // Did We Win The Finalization Race?
@@ -858,11 +901,20 @@ const currentRun =
           },
         });
 
+const currentRunIsTerminal =
+  currentRun?.status ===
+    CampaignRunStatus.COMPLETED ||
+  currentRun?.status ===
+    CampaignRunStatus.FAILED ||
+  currentRun?.status ===
+    CampaignRunStatus.CANCELLED;
+
 const effectiveRunStatus =
   finalized
     ? finalRunStatus
-    : currentRun?.status ??
-      campaignRun.status;
+    : currentRunIsTerminal
+      ? currentRun.status
+      : finalRunStatus;
 
 //------------------------------------------------
 // Log
@@ -945,7 +997,7 @@ return {
       : effectiveRunStatus ===
           CampaignRunStatus.CANCELLED
         ? "Campaign run was cancelled concurrently"
-        : "Campaign run state changed before finalization",
+        : "Campaign run was finalized by another process",
 
   runStatus:
     effectiveRunStatus,

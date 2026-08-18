@@ -5,6 +5,7 @@ import {
 
 import {
   OutboundMessageStatus,
+  Prisma,
 } from "@prisma/client";
 
 import {
@@ -20,6 +21,10 @@ import {
   createTwilioAuthErrorResponse,
   validateTwilioWebhook,
 } from "@/lib/twilio-webhook-auth";
+
+import {
+  updateOutboundMessageStatus,
+} from "@/services/messaging/outbound-message-status.service";
 
 //--------------------------------------------------
 // Logger
@@ -88,6 +93,10 @@ export async function POST(
       );
     }
 
+    //------------------------------------------------
+    // Message Ownership
+    //------------------------------------------------
+
     const current =
       await prisma
         .outboundMessage
@@ -95,6 +104,14 @@ export async function POST(
           where: {
             id:
               outboundMessageId,
+          },
+
+          select: {
+            id:
+              true,
+
+            providerMessageId:
+              true,
           },
         });
 
@@ -111,7 +128,54 @@ export async function POST(
     }
 
     //------------------------------------------------
-    // SID Ownership Guard
+    // SID Cannot Belong To Another Local Message
+    //------------------------------------------------
+
+    const sidOwner =
+      await prisma
+        .outboundMessage
+        .findUnique({
+          where: {
+            providerMessageId,
+          },
+
+          select: {
+            id:
+              true,
+          },
+        });
+
+    if (
+      sidOwner &&
+      sidOwner.id !==
+        outboundMessageId
+    ) {
+      log.warn(
+        {
+          event:
+            "twilio.sms.status_sid_owned_elsewhere",
+
+          outboundMessageId,
+
+          providerMessageId,
+
+          sidOwnerId:
+            sidOwner.id,
+        },
+        "SMS status callback SID belongs to another outbound message"
+      );
+
+      return new NextResponse(
+        "Forbidden",
+        {
+          status:
+            403,
+        }
+      );
+    }
+
+    //------------------------------------------------
+    // Existing SID Must Match
     //------------------------------------------------
 
     if (
@@ -125,6 +189,8 @@ export async function POST(
             "twilio.sms.status_sid_mismatch",
 
           outboundMessageId,
+
+          providerMessageId,
         },
         "SMS status callback SID mismatch"
       );
@@ -138,73 +204,169 @@ export async function POST(
       );
     }
 
+    //------------------------------------------------
+    // Bind SID If Provider Callback Wins The Race
+    //------------------------------------------------
+
+    if (
+      !current.providerMessageId
+    ) {
+      try {
+        await prisma
+          .outboundMessage
+          .updateMany({
+            where: {
+              id:
+                outboundMessageId,
+
+              providerMessageId:
+                null,
+            },
+
+            data: {
+              providerMessageId,
+            },
+          });
+      } catch (
+        error
+      ) {
+        if (
+          error instanceof
+            Prisma.PrismaClientKnownRequestError &&
+          error.code ===
+            "P2002"
+        ) {
+          return new NextResponse(
+            "Forbidden",
+            {
+              status:
+                403,
+            }
+          );
+        }
+
+        throw error;
+      }
+    }
+
+    //------------------------------------------------
+    // Forward-Only Durable Status Transition
+    //------------------------------------------------
+
     const mappedStatus =
       mapStatus(
         providerStatus
       );
 
-    const now =
-      new Date();
+    const result =
+      await updateOutboundMessageStatus({
+        providerMessageId,
 
-    await prisma
-      .outboundMessage
-      .update({
-        where: {
-          id:
-            outboundMessageId,
-        },
+        status:
+          mappedStatus,
 
-        data: {
-          providerMessageId,
+        occurredAt:
+          new Date(),
 
-          status:
-            mappedStatus,
+        errorCode:
+          errorCode ||
+          undefined,
 
-          ...(mappedStatus ===
-          OutboundMessageStatus.SENT
-            ? {
-                sentAt:
-                  now,
-              }
-            : {}),
-
-          ...(mappedStatus ===
-          OutboundMessageStatus.DELIVERED
-            ? {
-                deliveredAt:
-                  now,
-              }
-            : {}),
-
-          ...(mappedStatus ===
+        errorMessage:
+          mappedStatus ===
             OutboundMessageStatus.FAILED ||
           mappedStatus ===
             OutboundMessageStatus.UNDELIVERED
-            ? {
-                failedAt:
-                  now,
-
-                errorCode:
-                  errorCode ||
-                  providerStatus,
-
-                errorMessage:
-                  `Twilio message status: ${providerStatus}`,
-              }
-            : {}),
-        },
+            ? `Twilio message status: ${providerStatus}`
+            : undefined,
       });
+
+    if (
+      !result.found
+    ) {
+      log.warn(
+        {
+          event:
+            "twilio.sms.status_unknown_message",
+
+          outboundMessageId,
+
+          providerMessageId,
+        },
+        "SMS status callback could not resolve the outbound message"
+      );
+
+      return new NextResponse(
+        "Not Found",
+        {
+          status:
+            404,
+        }
+      );
+    }
+
+    //------------------------------------------------
+    // Duplicate / Regression
+    //------------------------------------------------
+
+    if (
+      !result.updated
+    ) {
+      log.debug(
+        {
+          event:
+            "twilio.sms.status_ignored",
+
+          outboundMessageId:
+            result
+              .outboundMessageId,
+
+          providerMessageId,
+
+          providerStatus,
+
+          mappedStatus,
+
+          currentStatus:
+            result
+              .currentStatus,
+        },
+        "SMS status callback was duplicate or out of order"
+      );
+
+      return new NextResponse(
+        "OK",
+        {
+          status:
+            200,
+        }
+      );
+    }
+
+    //------------------------------------------------
+    // Applied
+    //------------------------------------------------
 
     log.info(
       {
         event:
           "twilio.sms.status_updated",
 
-        outboundMessageId,
+        outboundMessageId:
+          result
+            .outboundMessageId,
+
+        providerMessageId,
 
         providerStatus,
 
-        mappedStatus,
+        previousStatus:
+          result
+            .previousStatus,
+
+        currentStatus:
+          result
+            .currentStatus,
       },
       "Twilio SMS status updated"
     );

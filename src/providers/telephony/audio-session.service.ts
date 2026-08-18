@@ -8,30 +8,49 @@ import {
   normalizeError,
 } from "@/lib/logger";
 
+import type {
+  CommunicationVoiceRuntime,
+} from "@/config/communication-plan";
+
 //--------------------------------------------------
 // Types
 //--------------------------------------------------
 
 export interface AudioSession {
-  callId: string;
+  callId:
+    string;
 
-  twilioCallSid: string;
+  twilioCallSid:
+    string;
 
-  streamSid: string;
+  streamSid:
+    string;
 
-  socket: WebSocket;
+  socket:
+    WebSocket;
 
-  createdAt: number;
+  voiceRuntime:
+    CommunicationVoiceRuntime;
+
+  createdAt:
+    number;
 }
 
 interface CreateAudioSessionInput {
-  callId: string;
+  callId:
+    string;
 
-  twilioCallSid: string;
+  twilioCallSid:
+    string;
 
-  streamSid: string;
+  streamSid:
+    string;
 
-  socket: WebSocket;
+  socket:
+    WebSocket;
+
+  voiceRuntime?:
+    CommunicationVoiceRuntime;
 }
 
 type CloseListener =
@@ -117,14 +136,17 @@ class AudioSessionManager {
       );
     }
 
-    const session:
-      AudioSession = {
-        ...input,
+const session:
+  AudioSession = {
+    ...input,
 
-        createdAt:
-          Date.now(),
-      };
+    voiceRuntime:
+      input.voiceRuntime ??
+      "CASCADED",
 
+    createdAt:
+      Date.now(),
+  };
     this.sessionsByStreamSid.set(
       session.streamSid,
       session

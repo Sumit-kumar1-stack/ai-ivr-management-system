@@ -94,6 +94,53 @@ enum OutboundCampaignPurpose {
   FOLLOW_UP
 }
 
+// ======================================================
+// OMNICHANNEL COMMUNICATION CAMPAIGN
+// ======================================================
+
+enum CommunicationTier {
+  STANDARD
+  PREMIUM
+}
+
+enum CommunicationChannel {
+  SMS
+  WHATSAPP
+  AI_VOICE
+  IVR
+}
+
+enum CommunicationFallbackPolicy {
+  NONE
+  WHATSAPP_TO_SMS
+  OMNICHANNEL
+}
+
+enum CommunicationCampaignStatus {
+  DRAFT
+  READY
+  SCHEDULED
+  QUEUED
+  RUNNING
+  DISPATCHED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum CommunicationRecipientStatus {
+  PENDING
+  PROCESSING
+  DISPATCHED
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
+// ======================================================
+// EXISTING VOICE CAMPAIGN
+// ======================================================
+
 model Campaign {
   id          String  @id @default(cuid())
   name        String
@@ -120,10 +167,165 @@ model Campaign {
   calls    Call[]
   runs     CampaignRun[]
 
+  // ----------------------------------------------------
+  // OmniConnect child-campaign relationships
+  // ----------------------------------------------------
+
+  communicationVoiceParent CommunicationCampaign? @relation("CommunicationVoiceCampaign")
+  communicationIvrParent   CommunicationCampaign? @relation("CommunicationIvrCampaign")
+
   @@index([status])
   @@index([scheduledAt])
   @@index([createdAt])
 }
+
+// ======================================================
+// COMMUNICATION CAMPAIGN
+// ======================================================
+
+model CommunicationCampaign {
+  id String @id @default(cuid())
+
+  name String
+
+  // ----------------------------------------------------
+  // Audience boundary
+  // ----------------------------------------------------
+
+  audienceSourceId   String?
+  audienceSourceName String
+  recipientCount     Int     @default(0)
+
+  // ----------------------------------------------------
+  // Subscription snapshot
+  // ----------------------------------------------------
+
+  tier CommunicationTier @default(STANDARD)
+
+  // ----------------------------------------------------
+  // Channels
+  // ----------------------------------------------------
+
+  channels CommunicationChannel[]
+
+  smartChanneling Boolean @default(false)
+
+  fallbackPolicy CommunicationFallbackPolicy @default(NONE)
+
+  // ----------------------------------------------------
+  // Lifecycle
+  // ----------------------------------------------------
+
+  status CommunicationCampaignStatus @default(DRAFT)
+
+  launchImmediately Boolean @default(true)
+
+  scheduledAt DateTime?
+
+  // ----------------------------------------------------
+  // AI Voice child campaign
+  // ----------------------------------------------------
+
+  voiceCampaignId String?   @unique
+  voiceCampaign   Campaign? @relation("CommunicationVoiceCampaign", fields: [voiceCampaignId], references: [id], onDelete: SetNull)
+
+  // ----------------------------------------------------
+  // Classic IVR child campaign
+  // ----------------------------------------------------
+
+  ivrCampaignId String?   @unique
+  ivrCampaign   Campaign? @relation("CommunicationIvrCampaign", fields: [ivrCampaignId], references: [id], onDelete: SetNull)
+
+  // ----------------------------------------------------
+  // Operator-selected source IVR flow
+  // ----------------------------------------------------
+
+  ivrFlowId String?
+  ivrFlow   IVRFlow? @relation("CommunicationSelectedIvrFlow", fields: [ivrFlowId], references: [id], onDelete: SetNull)
+
+  // ----------------------------------------------------
+  // Runtime IVR snapshot
+  // ----------------------------------------------------
+
+  ivrRuntimeFlowId String?  @unique
+  ivrRuntimeFlow   IVRFlow? @relation("CommunicationRuntimeIvrFlow", fields: [ivrRuntimeFlowId], references: [id], onDelete: SetNull)
+
+  // ----------------------------------------------------
+  // Communication execution
+  // ----------------------------------------------------
+
+  recipients        CommunicationCampaignRecipient[]
+  messages          OutboundMessage[]
+  usageReservations CommunicationCampaignUsage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([tier])
+  @@index([scheduledAt])
+  @@index([ivrFlowId])
+  @@index([createdAt])
+}
+
+model CommunicationCampaignUsage {
+  id String @id @default(cuid())
+
+  campaignId String
+  campaign   CommunicationCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  // Subscription tier snapshot used for quota accounting.
+  tier CommunicationTier
+
+  // UTC calendar day whose allowance this launch consumes.
+  usageDate DateTime @db.Date
+
+  recipientCount Int
+
+  reservedAt DateTime  @default(now())
+  releasedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([campaignId, usageDate])
+  @@index([tier, usageDate, releasedAt])
+  @@index([campaignId])
+}
+
+model CommunicationCampaignRecipient {
+  id String @id @default(cuid())
+
+  campaignId String
+
+  campaign CommunicationCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  externalRecipientId String?
+
+  fullName String?
+
+  phone String
+
+  language String @default("English")
+
+  status CommunicationRecipientStatus @default(PENDING)
+
+  lastError String?
+
+  messages OutboundMessage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([campaignId, phone])
+  @@index([campaignId])
+  @@index([phone])
+  @@index([status])
+}
+
+// ======================================================
+// CAMPAIGN CONTACT
+// ======================================================
 
 model CampaignContact {
   id String @id @default(cuid())
@@ -140,6 +342,10 @@ model CampaignContact {
   @@index([campaignId])
   @@index([contactId])
 }
+
+// ======================================================
+// CAMPAIGN RUN
+// ======================================================
 
 model CampaignRun {
   id         String            @id @default(cuid())
@@ -185,6 +391,14 @@ model IVRFlow {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  // ----------------------------------------------------
+  // OmniConnect IVR relationships
+  // ----------------------------------------------------
+
+  selectedByCommunicationCampaigns CommunicationCampaign[] @relation("CommunicationSelectedIvrFlow")
+
+  runtimeForCommunicationCampaign CommunicationCampaign? @relation("CommunicationRuntimeIvrFlow")
 
   @@index([campaignId])
   @@index([isPublished])
@@ -613,6 +827,14 @@ model OutboundMessage {
 
   callId String?
 
+  communicationCampaignId String?
+
+  communicationCampaign CommunicationCampaign? @relation(fields: [communicationCampaignId], references: [id], onDelete: SetNull)
+
+  communicationRecipientId String?
+
+  communicationRecipient CommunicationCampaignRecipient? @relation(fields: [communicationRecipientId], references: [id], onDelete: SetNull)
+
   channel MessagingChannel
 
   provider String
@@ -640,6 +862,8 @@ model OutboundMessage {
   updatedAt DateTime @updatedAt
 
   @@index([callId])
+  @@index([communicationCampaignId])
+  @@index([communicationRecipientId])
   @@index([channel])
   @@index([recipient])
   @@index([status])

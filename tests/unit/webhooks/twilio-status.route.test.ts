@@ -418,6 +418,15 @@ describe(
 
           eventPublished:
             false,
+
+          retryScheduled:
+            false,
+
+          terminalCleanup:
+            false,
+
+          terminalTransition:
+            false,
         });
       }
     );
@@ -625,12 +634,15 @@ describe(
 
           eventPublished:
             false,
+
+          terminalCleanup:
+            false,
         });
       }
     );
 
     //------------------------------------------------
-    // Internal Failure
+    // Failure Handling
     //------------------------------------------------
 
     it(
@@ -682,7 +694,7 @@ describe(
     );
 
     //------------------------------------------------
-    // Call Ordering
+    // Authentication Order
     //------------------------------------------------
 
     it(

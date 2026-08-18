@@ -9,6 +9,11 @@ import {
 } from "./call-retry.worker";
 
 import {
+  closeCommunicationCampaignWorker,
+  initializeCommunicationCampaignWorker,
+} from "./communication-campaign.worker";
+
+import {
   closeStaleCallCleanup,
   initializeStaleCallCleanup,
 } from "@/services/calls/stale-call-cleanup.service";
@@ -20,6 +25,10 @@ import {
 import {
   CampaignQueueService,
 } from "@/services/campaigns/campaign-queue.service";
+
+import {
+  CommunicationCampaignQueueService,
+} from "@/services/communication/communication-campaign-queue.service";
 
 import {
   createWorkerLogger,
@@ -84,10 +93,16 @@ export function initializeWorkers():
 
   try {
     //----------------------------------------
-    // Campaign Processing Worker
+    // Existing Voice Campaign Worker
     //----------------------------------------
 
     initializeCampaignWorker();
+
+    //----------------------------------------
+    // OmniConnect Communication Campaign
+    //----------------------------------------
+
+    initializeCommunicationCampaignWorker();
 
     //----------------------------------------
     // Delayed Call Retry Worker
@@ -101,6 +116,10 @@ export function initializeWorkers():
 
     initializeStaleCallCleanup();
 
+    //----------------------------------------
+    // Ready
+    //----------------------------------------
+
     workersInitialized =
       true;
 
@@ -110,6 +129,9 @@ export function initializeWorkers():
           "workers.initialize.completed",
 
         campaignWorker:
+          true,
+
+        communicationCampaignWorker:
           true,
 
         callRetryWorker:
@@ -206,20 +228,24 @@ async function closeWorkersInternal():
   );
 
   /*
-   * Change the state immediately so the readiness
-   * endpoint no longer reports workers as ready.
+   * Immediately move readiness to false.
+   * Once shutdown begins, this worker process
+   * must no longer advertise itself as ready.
    */
   workersInitialized =
     false;
 
   const errors:
     Array<{
-      resource: string;
+      resource:
+        string;
 
-      error: ReturnType<
-        typeof normalizeError
-      >;
-    }> = [];
+      error:
+        ReturnType<
+          typeof normalizeError
+        >;
+    }> =
+      [];
 
   //----------------------------------------
   // Stop Scheduled Cleanup
@@ -250,7 +276,35 @@ async function closeWorkersInternal():
   }
 
   //----------------------------------------
-  // Close Campaign Worker
+  // Close Communication Campaign Worker
+  //----------------------------------------
+
+  try {
+    await closeCommunicationCampaignWorker();
+
+    log.info(
+      {
+        event:
+          "workers.communication_campaign_worker.closed",
+      },
+      "Communication campaign worker closed"
+    );
+  } catch (
+    error
+  ) {
+    errors.push({
+      resource:
+        "communication-campaign-worker",
+
+      error:
+        normalizeError(
+          error
+        ),
+    });
+  }
+
+  //----------------------------------------
+  // Close Existing Campaign Worker
   //----------------------------------------
 
   try {
@@ -306,7 +360,36 @@ async function closeWorkersInternal():
   }
 
   //----------------------------------------
-  // Close Campaign Queue
+  // Close Communication Campaign Queue
+  //----------------------------------------
+
+  try {
+    await CommunicationCampaignQueueService
+      .close();
+
+    log.info(
+      {
+        event:
+          "workers.communication_campaign_queue.closed",
+      },
+      "Communication campaign queue closed"
+    );
+  } catch (
+    error
+  ) {
+    errors.push({
+      resource:
+        "communication-campaign-queue",
+
+      error:
+        normalizeError(
+          error
+        ),
+    });
+  }
+
+  //----------------------------------------
+  // Close Existing Campaign Queue
   //----------------------------------------
 
   try {
@@ -399,6 +482,10 @@ async function closeWorkersInternal():
         .join(", ")}`
     );
   }
+
+  //----------------------------------------
+  // Completed
+  //----------------------------------------
 
   log.info(
     {

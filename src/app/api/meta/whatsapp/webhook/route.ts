@@ -22,6 +22,10 @@ import {
   updateOutboundMessageStatus,
 } from "@/services/messaging/outbound-message-status.service";
 
+import {
+  CommunicationCampaignQueueService,
+} from "@/services/communication/communication-campaign-queue.service";
+
 //--------------------------------------------------
 // Logger
 //--------------------------------------------------
@@ -352,6 +356,52 @@ async function processStatus(
             500
           ),
     });
+
+  //------------------------------------------------
+  // Premium WhatsApp -> SMS Fallback
+  //------------------------------------------------
+
+  if (
+    result.found &&
+    result.outboundMessageId &&
+    (
+      result.currentStatus ===
+        OutboundMessageStatus.FAILED ||
+      result.currentStatus ===
+        OutboundMessageStatus.UNDELIVERED
+    )
+  ) {
+    /*
+     * Trigger even when result.updated is false.
+     *
+     * Meta can retry the same FAILED callback after
+     * the database transition committed but before
+     * the fallback queue operation completed.
+     *
+     * The fallback BullMQ job ID plus the durable SMS
+     * idempotency key keep repeated processing safe.
+     */
+    await CommunicationCampaignQueueService
+      .enqueueWhatsAppSmsFallback(
+        result.outboundMessageId
+      );
+
+    log.info(
+      {
+        event:
+          "meta.whatsapp.sms_fallback_queued",
+
+        outboundMessageId:
+          result.outboundMessageId,
+
+        providerMessageId,
+
+        currentStatus:
+          result.currentStatus,
+      },
+      "WhatsApp failure queued SMS fallback evaluation"
+    );
+  }
 
   //------------------------------------------------
   // Unknown Message
