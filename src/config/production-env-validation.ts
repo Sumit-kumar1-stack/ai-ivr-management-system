@@ -62,25 +62,33 @@ const KNOWN_OPTIONAL_VARIABLES =
     "NEXT_PUBLIC_APP_URL",
     "LOG_LEVEL",
     "PORT",
+
     "TWILIO_MEDIA_PORT",
     "WORKER_HEALTH_PORT",
     "SHUTDOWN_TIMEOUT_MS",
     "SOCKET_ALLOWED_ORIGINS",
+
     "CAMPAIGN_CALL_CONCURRENCY",
     "CALL_RETRY_CONCURRENCY",
     "COMMUNICATION_CAMPAIGN_CONCURRENCY",
+
     "DEEPGRAM_AUDIO_BUFFER_MAX_BYTES",
+
     "GEMINI_TEXT_MODEL",
     "GEMINI_LIVE_MODEL",
     "GEMINI_TTS_MODEL",
     "GEMINI_TTS_VOICE",
     "GEMINI_TTS_STYLE",
+
     "TWILIO_MESSAGING_SERVICE_SID",
     "MESSAGING_BUSINESS_NAME",
+
     "STALE_CALL_TIMEOUT_MINUTES",
     "STALE_CALL_CHECK_INTERVAL_MS",
+
     "ENABLE_POST_TURN_ANALYSIS",
     "ENABLE_POST_CALL_ACTIONS",
+
     "HUMAN_TRANSFER_ENABLED",
     "HUMAN_TRANSFER_DESTINATION",
     "HUMAN_TRANSFER_TIMEZONE",
@@ -88,6 +96,9 @@ const KNOWN_OPTIONAL_VARIABLES =
     "HUMAN_TRANSFER_END_HOUR",
     "HUMAN_TRANSFER_ANNOUNCEMENT",
     "HUMAN_TRANSFER_TIMEOUT_SECONDS",
+
+    "WHATSAPP_ENABLED",
+
     "META_WA_TEMPLATE_LANGUAGE",
     "META_WHATSAPP_API_VERSION",
     "META_GRAPH_API_VERSION",
@@ -158,10 +169,11 @@ export function validateProductionEnvironment(
       checks
     );
 
-  checkMessaging(
-    env,
-    checks
-  );
+  const whatsappEnabled =
+    checkMessaging(
+      env,
+      checks
+    );
 
   checkHumanTransfer(
     env,
@@ -201,6 +213,7 @@ export function validateProductionEnvironment(
     checkDiscoveredEnvironmentReferences(
       env,
       tier,
+      whatsappEnabled,
       discoveredEnvironmentReferences,
       checks
     );
@@ -839,12 +852,108 @@ function checkMessaging(
   env: NodeJS.ProcessEnv,
   checks:
     ProductionEnvironmentCheck[]
-): void {
+): boolean {
+  const rawWhatsappEnabled =
+    readEnvironmentValue(
+      env,
+      "WHATSAPP_ENABLED"
+    );
+
+  const whatsappEnabled =
+    parseBoolean(
+      rawWhatsappEnabled
+    );
+
+  if (
+    rawWhatsappEnabled &&
+    whatsappEnabled ===
+      null
+  ) {
+    addCheck(
+      checks,
+      "WHATSAPP_ENABLED",
+      "FAIL",
+      "must be true or false"
+    );
+
+    return false;
+  }
+
+  if (
+    whatsappEnabled !==
+    true
+  ) {
+    addCheck(
+      checks,
+      "WHATSAPP_ENABLED",
+      "PASS",
+      "WhatsApp channel disabled; Meta credentials are not required"
+    );
+
+    addCheck(
+      checks,
+      "META_APP_SECRET",
+      "PASS",
+      "not required while WhatsApp is disabled"
+    );
+
+    addCheck(
+      checks,
+      "META_WHATSAPP_ACCESS_TOKEN",
+      "PASS",
+      "not required while WhatsApp is disabled"
+    );
+
+    addCheck(
+      checks,
+      "META_WHATSAPP_PHONE_NUMBER_ID",
+      "PASS",
+      "not required while WhatsApp is disabled"
+    );
+
+    addCheck(
+      checks,
+      "META_WHATSAPP_VERIFY_TOKEN",
+      "PASS",
+      "not required while WhatsApp is disabled"
+    );
+
+    addOptionalDefaultCheck(
+      env,
+      checks,
+      "MESSAGING_BUSINESS_NAME",
+      "default business label will be used in transactional messages"
+    );
+
+    return false;
+  }
+
+  addCheck(
+    checks,
+    "WHATSAPP_ENABLED",
+    "PASS",
+    "WhatsApp channel enabled"
+  );
+
   checkRequiredSecret(
     env,
     checks,
     "META_APP_SECRET",
     "required to authenticate Meta WhatsApp webhook signatures"
+  );
+
+  checkRequiredSecret(
+    env,
+    checks,
+    "META_WHATSAPP_ACCESS_TOKEN",
+    "required when WhatsApp messaging is enabled"
+  );
+
+  checkRequiredSecret(
+    env,
+    checks,
+    "META_WHATSAPP_PHONE_NUMBER_ID",
+    "required when WhatsApp messaging is enabled"
   );
 
   checkRequiredSecret(
@@ -860,6 +969,8 @@ function checkMessaging(
     "MESSAGING_BUSINESS_NAME",
     "default business label will be used in transactional messages"
   );
+
+  return true;
 }
 
 function checkHumanTransfer(
@@ -1133,6 +1244,8 @@ function checkDiscoveredEnvironmentReferences(
     "STANDARD" |
     "PREMIUM" |
     null,
+  whatsappEnabled:
+    boolean,
   discovered:
     string[],
   checks:
@@ -1143,8 +1256,14 @@ function checkDiscoveredEnvironmentReferences(
       ...REQUIRED_BASE_VARIABLES,
       ...KNOWN_OPTIONAL_VARIABLES,
       ...PRODUCTION_FORBIDDEN_VARIABLES,
+
       "NODE_ENV",
+
+      "WHATSAPP_ENABLED",
+
       "META_APP_SECRET",
+      "META_WHATSAPP_ACCESS_TOKEN",
+      "META_WHATSAPP_PHONE_NUMBER_ID",
       "META_WHATSAPP_VERIFY_TOKEN",
     ]);
 
@@ -1169,12 +1288,16 @@ function checkDiscoveredEnvironmentReferences(
         "META_WA_TEMPLATE_"
       )
     ) {
-      addOptionalDefaultCheck(
-        env,
-        checks,
-        name,
-        "application/template default will be used"
-      );
+      if (
+        whatsappEnabled
+      ) {
+        addOptionalDefaultCheck(
+          env,
+          checks,
+          name,
+          "application/template default will be used"
+        );
+      }
 
       continue;
     }
@@ -1184,6 +1307,12 @@ function checkDiscoveredEnvironmentReferences(
         "META_"
       )
     ) {
+      if (
+        !whatsappEnabled
+      ) {
+        continue;
+      }
+
       const value =
         readEnvironmentValue(
           env,

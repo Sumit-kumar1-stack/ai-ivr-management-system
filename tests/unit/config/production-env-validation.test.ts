@@ -49,8 +49,17 @@ const BASE_ENV:
     COMMUNICATION_TIER:
       "STANDARD",
 
+    WHATSAPP_ENABLED:
+      "false",
+
     META_APP_SECRET:
       "meta-production-test-secret",
+
+    META_WHATSAPP_ACCESS_TOKEN:
+      "meta-production-access-token",
+
+    META_WHATSAPP_PHONE_NUMBER_ID:
+      "123456789012345",
 
     META_WHATSAPP_VERIFY_TOKEN:
       "meta-production-verify-token",
@@ -58,8 +67,10 @@ const BASE_ENV:
 
 function validate(
   overrides:
-    Partial<NodeJS.ProcessEnv> =
-      {}
+    NodeJS.ProcessEnv = {
+      NODE_ENV:
+        "production",
+    }
 ) {
   return validateProductionEnvironment(
     {
@@ -101,6 +112,9 @@ describe(
       () => {
         const report =
           validate({
+            NODE_ENV:
+              "production",
+
             DATABASE_URL:
               "postgresql://user:password@127.0.0.1:5432/app",
           });
@@ -131,6 +145,9 @@ describe(
       () => {
         const report =
           validate({
+            NODE_ENV:
+              "production",
+
             TEST_DESTINATION_NUMBER:
               "+14155550124",
           });
@@ -161,6 +178,9 @@ describe(
       () => {
         const report =
           validate({
+            NODE_ENV:
+              "production",
+
             COMMUNICATION_CAMPAIGN_CONCURRENCY:
               "3",
           });
@@ -191,6 +211,9 @@ describe(
       () => {
         const report =
           validate({
+            NODE_ENV:
+              "production",
+
             COMMUNICATION_TIER:
               "PREMIUM",
 
@@ -223,6 +246,9 @@ describe(
       () => {
         const report =
           validate({
+            NODE_ENV:
+              "production",
+
             COMMUNICATION_TIER:
               "PREMIUM",
           });
@@ -253,6 +279,9 @@ describe(
       () => {
         const report =
           validate({
+            NODE_ENV:
+              "production",
+
             TWILIO_PUBLIC_BASE_URL:
               "http://localhost:3000",
           });
@@ -279,11 +308,23 @@ describe(
     );
 
     it(
-      "rejects missing Meta webhook authentication settings",
+      "rejects missing Meta settings when WhatsApp is enabled",
       () => {
         const report =
           validate({
+            NODE_ENV:
+              "production",
+
+            WHATSAPP_ENABLED:
+              "true",
+
             META_APP_SECRET:
+              "",
+
+            META_WHATSAPP_ACCESS_TOKEN:
+              "",
+
+            META_WHATSAPP_PHONE_NUMBER_ID:
               "",
 
             META_WHATSAPP_VERIFY_TOKEN:
@@ -317,7 +358,92 @@ describe(
         expect(
           failedNames
         ).toContain(
+          "META_WHATSAPP_ACCESS_TOKEN"
+        );
+
+        expect(
+          failedNames
+        ).toContain(
+          "META_WHATSAPP_PHONE_NUMBER_ID"
+        );
+
+        expect(
+          failedNames
+        ).toContain(
           "META_WHATSAPP_VERIFY_TOKEN"
+        );
+      }
+    );
+
+    it(
+      "allows missing Meta settings when WhatsApp is disabled",
+      () => {
+        const report =
+          validate({
+            NODE_ENV:
+              "production",
+
+            WHATSAPP_ENABLED:
+              "false",
+
+            META_APP_SECRET:
+              "",
+
+            META_WHATSAPP_ACCESS_TOKEN:
+              "",
+
+            META_WHATSAPP_PHONE_NUMBER_ID:
+              "",
+
+            META_WHATSAPP_VERIFY_TOKEN:
+              "",
+          });
+
+        expect(
+          report.healthy
+        ).toBe(
+          true
+        );
+
+        expect(
+          report.checks
+        ).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              name:
+                "WHATSAPP_ENABLED",
+              level:
+                "PASS",
+            }),
+
+            expect.objectContaining({
+              name:
+                "META_APP_SECRET",
+              level:
+                "PASS",
+            }),
+
+            expect.objectContaining({
+              name:
+                "META_WHATSAPP_ACCESS_TOKEN",
+              level:
+                "PASS",
+            }),
+
+            expect.objectContaining({
+              name:
+                "META_WHATSAPP_PHONE_NUMBER_ID",
+              level:
+                "PASS",
+            }),
+
+            expect.objectContaining({
+              name:
+                "META_WHATSAPP_VERIFY_TOKEN",
+              level:
+                "PASS",
+            }),
+          ])
         );
       }
     );
