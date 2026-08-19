@@ -84,6 +84,50 @@ const recipientBatchSchema =
   });
 
 //--------------------------------------------------
+// Replace Snapshot
+//--------------------------------------------------
+
+const replaceRecipientBatchSchema =
+  recipientBatchSchema
+    .extend({
+      campaignName:
+        z
+          .string()
+          .trim()
+          .min(
+            3
+          )
+          .max(
+            120
+          )
+          .optional(),
+
+      audienceSourceId:
+        z
+          .string()
+          .trim()
+          .min(
+            1
+          )
+          .max(
+            200
+          )
+          .optional(),
+
+      audienceSourceName:
+        z
+          .string()
+          .trim()
+          .min(
+            1
+          )
+          .max(
+            255
+          )
+          .optional(),
+    });
+
+//--------------------------------------------------
 // Input
 //--------------------------------------------------
 
@@ -93,7 +137,129 @@ export type CommunicationRecipientInput =
   >;
 
 //--------------------------------------------------
-// Ingest
+// List
+//--------------------------------------------------
+
+export async function listCommunicationRecipients(
+  campaignId:
+    string
+) {
+  const id =
+    campaignId
+      .trim();
+
+  if (
+    !id
+  ) {
+    throw new Error(
+      "Communication campaign ID is required"
+    );
+  }
+
+  const campaign =
+    await prisma
+      .communicationCampaign
+      .findUnique({
+        where: {
+          id,
+        },
+
+        select: {
+          id:
+            true,
+        },
+      });
+
+  if (
+    !campaign
+  ) {
+    throw new Error(
+      "Communication campaign not found"
+    );
+  }
+
+  const [
+    recipients,
+    total,
+  ] =
+    await Promise.all([
+      prisma
+        .communicationCampaignRecipient
+        .findMany({
+          where: {
+            campaignId:
+              id,
+          },
+
+          orderBy: {
+            createdAt:
+              "asc",
+          },
+
+          select: {
+            id:
+              true,
+
+            externalRecipientId:
+              true,
+
+            fullName:
+              true,
+
+            phone:
+              true,
+
+            language:
+              true,
+
+            status:
+              true,
+
+            lastError:
+              true,
+
+            createdAt:
+              true,
+
+            updatedAt:
+              true,
+          },
+        }),
+
+      prisma
+        .communicationCampaignRecipient
+        .count({
+          where: {
+            campaignId:
+              id,
+          },
+        }),
+    ]);
+
+  return {
+    recipients:
+      recipients.map(
+        recipient => ({
+          ...recipient,
+
+          createdAt:
+            recipient
+              .createdAt
+              .toISOString(),
+
+          updatedAt:
+            recipient
+              .updatedAt
+              .toISOString(),
+        })
+      ),
+
+    total,
+  };
+}
+
+//--------------------------------------------------
+// Ingest / Append
 //--------------------------------------------------
 
 export async function ingestCommunicationRecipients(
@@ -120,16 +286,230 @@ export async function ingestCommunicationRecipients(
       rawInput
     );
 
-  //------------------------------------------------
-  // Campaign
-  //------------------------------------------------
+  await assertCampaignRecipientsEditable(
+    id
+  );
 
+  const recipients =
+    normalizeAndDeduplicateRecipients(
+      input.recipients
+    );
+
+  const inserted =
+    await prisma
+      .communicationCampaignRecipient
+      .createMany({
+        data:
+          recipients.map(
+            recipient => ({
+              campaignId:
+                id,
+
+              externalRecipientId:
+                recipient
+                  .externalRecipientId,
+
+              fullName:
+                recipient
+                  .fullName,
+
+              phone:
+                recipient.phone,
+
+              language:
+                recipient.language,
+            })
+          ),
+
+        skipDuplicates:
+          true,
+      });
+
+  const total =
+    await prisma
+      .communicationCampaignRecipient
+      .count({
+        where: {
+          campaignId:
+            id,
+        },
+      });
+
+  await prisma
+    .communicationCampaign
+    .update({
+      where: {
+        id,
+      },
+
+      data: {
+        recipientCount:
+          total,
+      },
+    });
+
+  return {
+    inserted:
+      inserted.count,
+
+    duplicates:
+      recipients.length -
+      inserted.count,
+
+    total,
+  };
+}
+
+//--------------------------------------------------
+// Replace Audience Snapshot
+//--------------------------------------------------
+
+export async function replaceCommunicationRecipients(
+  campaignId:
+    string,
+
+  rawInput:
+    unknown
+) {
+  const id =
+    campaignId
+      .trim();
+
+  if (
+    !id
+  ) {
+    throw new Error(
+      "Communication campaign ID is required"
+    );
+  }
+
+  const input =
+    replaceRecipientBatchSchema
+      .parse(
+        rawInput
+      );
+
+  await assertCampaignRecipientsEditable(
+    id
+  );
+
+  const recipients =
+    normalizeAndDeduplicateRecipients(
+      input.recipients
+    );
+
+  const result =
+    await prisma
+      .$transaction(
+        async transaction => {
+          await transaction
+            .communicationCampaignRecipient
+            .deleteMany({
+              where: {
+                campaignId:
+                  id,
+              },
+            });
+
+          const inserted =
+            await transaction
+              .communicationCampaignRecipient
+              .createMany({
+                data:
+                  recipients.map(
+                    recipient => ({
+                      campaignId:
+                        id,
+
+                      externalRecipientId:
+                        recipient
+                          .externalRecipientId,
+
+                      fullName:
+                        recipient
+                          .fullName,
+
+                      phone:
+                        recipient.phone,
+
+                      language:
+                        recipient.language,
+                    })
+                  ),
+
+                skipDuplicates:
+                  true,
+              });
+
+          await transaction
+            .communicationCampaign
+            .update({
+              where: {
+                id,
+              },
+
+              data: {
+                recipientCount:
+                  inserted.count,
+
+                ...(input.campaignName
+                  ? {
+                      name:
+                        input.campaignName,
+                    }
+                  : {}),
+
+                ...(input.audienceSourceId
+                  ? {
+                      audienceSourceId:
+                        input.audienceSourceId,
+                    }
+                  : {}),
+
+                ...(input.audienceSourceName
+                  ? {
+                      audienceSourceName:
+                        input.audienceSourceName,
+                    }
+                  : {}),
+              },
+            });
+
+          return {
+            inserted:
+              inserted.count,
+          };
+        }
+      );
+
+  return {
+    inserted:
+      result.inserted,
+
+    duplicates:
+      recipients.length -
+      result.inserted,
+
+    total:
+      result.inserted,
+  };
+}
+
+//--------------------------------------------------
+// Editable Guard
+//--------------------------------------------------
+
+async function assertCampaignRecipientsEditable(
+  campaignId:
+    string
+): Promise<void> {
   const campaign =
     await prisma
       .communicationCampaign
       .findUnique({
         where: {
-          id,
+          id:
+            campaignId,
         },
 
         select: {
@@ -159,11 +539,16 @@ export async function ingestCommunicationRecipients(
       `Recipients cannot be changed while campaign status is ${campaign.status}`
     );
   }
+}
 
-  //------------------------------------------------
-  // Normalize + Deduplicate Batch
-  //------------------------------------------------
+//--------------------------------------------------
+// Normalize + Deduplicate
+//--------------------------------------------------
 
+function normalizeAndDeduplicateRecipients(
+  inputRecipients:
+    CommunicationRecipientInput[]
+) {
   const recipientMap =
     new Map<
       string,
@@ -184,7 +569,7 @@ export async function ingestCommunicationRecipients(
 
   for (
     const recipient
-    of input.recipients
+    of inputRecipients
   ) {
     const phone =
       normalizeMessagingPhoneNumber(
@@ -220,80 +605,7 @@ export async function ingestCommunicationRecipients(
     );
   }
 
-  const recipients =
-    [
-      ...recipientMap.values(),
-    ];
-
-  //------------------------------------------------
-  // Store Snapshot
-  //------------------------------------------------
-
-  const inserted =
-    await prisma
-      .communicationCampaignRecipient
-      .createMany({
-        data:
-          recipients.map(
-            recipient => ({
-              campaignId:
-                id,
-
-              externalRecipientId:
-                recipient
-                  .externalRecipientId,
-
-              fullName:
-                recipient
-                  .fullName,
-
-              phone:
-                recipient.phone,
-
-              language:
-                recipient.language,
-            })
-          ),
-
-        skipDuplicates:
-          true,
-      });
-
-  //------------------------------------------------
-  // Actual Recipient Count
-  //------------------------------------------------
-
-  const total =
-    await prisma
-      .communicationCampaignRecipient
-      .count({
-        where: {
-          campaignId:
-            id,
-        },
-      });
-
-  await prisma
-    .communicationCampaign
-    .update({
-      where: {
-        id,
-      },
-
-      data: {
-        recipientCount:
-          total,
-      },
-    });
-
-  return {
-    inserted:
-      inserted.count,
-
-    duplicates:
-      recipients.length -
-      inserted.count,
-
-    total,
-  };
+  return [
+    ...recipientMap.values(),
+  ];
 }

@@ -81,7 +81,7 @@ const navigation = [
       "Campaigns",
 
     href:
-      "/communication/campaigns/new/channels",
+      "/communication/campaigns/new/audience",
 
     icon:
       Megaphone,

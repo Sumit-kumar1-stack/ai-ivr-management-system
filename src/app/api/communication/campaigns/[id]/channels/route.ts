@@ -8,6 +8,10 @@ import {
 } from "next/server";
 
 import {
+  ZodError,
+} from "zod";
+
+import {
   requireRole,
 } from "@/lib/auth";
 
@@ -16,16 +20,9 @@ import {
 } from "@/lib/auth-response";
 
 import {
-  launchCommunicationCampaign,
-} from "@/services/communication/communication-launch.service";
-
-import {
+  updateCommunicationCampaignChannels,
   assertCommunicationCampaignAccess,
 } from "@/services/communication/communication-campaign.service";
-
-import {
-  isCommunicationUsageLimitError,
-} from "@/services/communication/communication-usage-limit.service";
 
 interface RouteContext {
   params:
@@ -40,8 +37,8 @@ const ROLES = [
   UserRole.ADMIN,
 ] as const;
 
-export async function POST(
-  _request:
+export async function PUT(
+  request:
     NextRequest,
 
   context:
@@ -62,9 +59,13 @@ export async function POST(
       currentUser
     );
 
-    const result =
-      await launchCommunicationCampaign(
-        id
+    const body =
+      await request.json();
+
+    const campaign =
+      await updateCommunicationCampaignChannels(
+        id,
+        body
       );
 
     return NextResponse.json(
@@ -73,12 +74,9 @@ export async function POST(
           true,
 
         data:
-          result,
+          campaign,
       },
       {
-        status:
-          202,
-
         headers: {
           "Cache-Control":
             "no-store",
@@ -99,53 +97,24 @@ export async function POST(
       return authResponse;
     }
 
-    //------------------------------------------------
-    // Plan Limit
-    //------------------------------------------------
-
     if (
-      isCommunicationUsageLimitError(
-        error
-      )
+      error instanceof
+      ZodError
     ) {
-      const status =
-        error.code ===
-          "COMMUNICATION_LAUNCH_CONFLICT"
-          ? 409
-          : 429;
-
       return NextResponse.json(
         {
           success:
             false,
 
-          code:
-            error.code,
-
           message:
-            error.message,
+            "Invalid communication channel selection",
 
-          limit: {
-            tier:
-              error.tier,
-
-            allowed:
-              error.limit,
-
-            current:
-              error.current,
-
-            requested:
-              error.requested,
-          },
+          issues:
+            error.issues,
         },
         {
-          status,
-
-          headers: {
-            "Cache-Control":
-              "no-store",
-          },
+          status:
+            400,
         }
       );
     }
@@ -154,18 +123,7 @@ export async function POST(
       error instanceof
         Error
         ? error.message
-        : "Communication campaign launch failed";
-
-    const status =
-      message.includes(
-        "not found"
-      )
-        ? 404
-        : message.includes(
-              "cannot be launched"
-            )
-          ? 409
-          : 400;
+        : "Communication channels could not be saved";
 
     return NextResponse.json(
       {
@@ -175,12 +133,19 @@ export async function POST(
         message,
       },
       {
-        status,
-
-        headers: {
-          "Cache-Control":
-            "no-store",
-        },
+        status:
+          message.includes(
+            "not found"
+          )
+            ? 404
+            : message.includes(
+                  "cannot be edited"
+                ) ||
+                message.includes(
+                  "changed while"
+                )
+              ? 409
+              : 400,
       }
     );
   }

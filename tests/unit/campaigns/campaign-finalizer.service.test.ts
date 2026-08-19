@@ -95,35 +95,46 @@ vi.mock(
 
 vi.mock(
   "@/lib/logger",
-  () => ({
-    createCampaignRunLogger:
-      vi.fn(
-        () =>
-          mocks.logger
-      ),
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/lib/logger")
+      >();
 
-    getDurationMs:
-      vi.fn(
-        () =>
-          10
-      ),
+    return {
+      ...actual,
 
-    normalizeError:
-      vi.fn(
-        (
-          error: unknown
-        ) => ({
-          message:
-            error instanceof Error
-              ? error.message
-              : String(
-                  error
-                ),
-        })
-      ),
-  })
+      createCampaignRunLogger:
+        vi.fn(
+          () =>
+            mocks.logger
+        ),
+
+      createServerLogger:
+        vi.fn(
+          () =>
+            mocks.logger
+        ),
+
+      getDurationMs:
+        vi.fn(
+          () => 10
+        ),
+
+      normalizeError:
+        vi.fn(
+          (
+            error: unknown
+          ) => ({
+            message:
+              error instanceof Error
+                ? error.message
+                : String(error),
+          })
+        ),
+    };
+  }
 );
-
 //--------------------------------------------------
 // Import Service After Mocks
 //--------------------------------------------------

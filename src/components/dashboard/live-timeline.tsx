@@ -423,6 +423,11 @@ export default function LiveTimeline() {
     <Card
       className="
         overflow-hidden
+        border-slate-200/80
+        shadow-sm
+        shadow-slate-100/50
+        bg-white
+        rounded-xl
       "
     >
       <CardHeader
@@ -435,7 +440,7 @@ export default function LiveTimeline() {
         "
       >
         <div>
-          <CardTitle>
+          <CardTitle className="text-slate-800 text-xs uppercase tracking-wider font-bold">
             Live Timeline
           </CardTitle>
 

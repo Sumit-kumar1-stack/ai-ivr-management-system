@@ -24,20 +24,15 @@ export function DataTable<TData>({
 
   return (
     <div className="overflow-x-auto">
-
-      <div className="rounded-lg border overflow-hidden">
-
-        <table className="w-full min-w-[900px]">
-
-          <thead className="bg-gray-100">
-
+      <div className="rounded-xl border border-slate-200/80 overflow-hidden bg-white">
+        <table className="w-full min-w-[900px] border-collapse text-sm">
+          <thead className="bg-slate-50 border-b border-slate-200/80">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
-
                 {headerGroup.headers.map((header) => (
                   <th
                     key={header.id}
-                    className="p-3 text-left font-semibold whitespace-nowrap"
+                    className="px-6 py-3.5 text-left font-bold text-slate-500 text-[10px] uppercase tracking-wider whitespace-nowrap"
                   >
                     {flexRender(
                       header.column.columnDef.header,
@@ -45,28 +40,19 @@ export function DataTable<TData>({
                     )}
                   </th>
                 ))}
-
               </tr>
             ))}
-
           </thead>
-
-          <tbody>
-
+          <tbody className="divide-y divide-slate-100">
             {table.getRowModel().rows.map((row) => (
               <tr
                 key={row.id}
-                className="
-                  border-t
-                  transition-colors
-                  hover:bg-gray-50
-                "
+                className="transition-colors hover:bg-slate-50/40"
               >
-
                 {row.getVisibleCells().map((cell) => (
                   <td
                     key={cell.id}
-                    className="p-3 whitespace-nowrap"
+                    className="px-6 py-4 whitespace-nowrap text-slate-700 font-medium"
                   >
                     {flexRender(
                       cell.column.columnDef.cell,
@@ -74,16 +60,11 @@ export function DataTable<TData>({
                     )}
                   </td>
                 ))}
-
               </tr>
             ))}
-
           </tbody>
-
         </table>
-
       </div>
-
     </div>
   );
 }

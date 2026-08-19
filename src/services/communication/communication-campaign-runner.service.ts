@@ -26,6 +26,10 @@ import {
   assertCommunicationCampaignEntitlements,
 } from "./communication-entitlement.service";
 
+import {
+  tryFinalizeCommunicationCampaign,
+} from "./communication-campaign-finalizer.service";
+
 //--------------------------------------------------
 // Result
 //--------------------------------------------------
@@ -668,6 +672,18 @@ try {
             : CommunicationCampaignStatus.FAILED,
       },
     });
+
+  //------------------------------------------------
+  // Parent Reconciliation
+  //
+  // Immediate failures can settle without any later
+  // provider callback. A normal active campaign will
+  // simply remain DISPATCHED here.
+  //------------------------------------------------
+
+  await tryFinalizeCommunicationCampaign(
+    campaign.id
+  );
 
   return {
     communicationCampaignId:

@@ -2,8 +2,8 @@ import {
   redirect,
 } from "next/navigation";
 
-export default function CommunicationPage() {
+export default function CommunicationHomePage() {
   redirect(
-    "/communication/campaigns/new/channels"
+    "/communication/campaigns/new/audience"
   );
 }

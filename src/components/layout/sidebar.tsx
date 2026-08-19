@@ -8,16 +8,16 @@ import {
 
 import {
   LayoutDashboard,
-  Users,
   Megaphone,
   Contact,
   Phone,
-  Bot,
   BookOpen,
   BarChart3,
   Workflow,
   Settings,
 } from "lucide-react";
+
+import type { CommunicationPlan } from "@/config/communication-plan";
 
 const menu = [
   {
@@ -26,19 +26,9 @@ const menu = [
     icon: LayoutDashboard,
   },
   {
-    label: "Users",
-    href: "/users",
-    icon: Users,
-  },
-  {
     label: "Campaigns",
     href: "/campaigns",
     icon: Megaphone,
-  },
-  {
-    label: "Contacts",
-    href: "/contacts",
-    icon: Contact,
   },
   {
     label: "Calls",
@@ -46,9 +36,14 @@ const menu = [
     icon: Phone,
   },
   {
-    label: "Agents",
-    href: "/agents",
-    icon: Bot,
+    label: "Contacts",
+    href: "/contacts",
+    icon: Contact,
+  },
+  {
+    label: "IVR",
+    href: "/ivr",
+    icon: Workflow,
   },
   {
     label: "Knowledge",
@@ -61,18 +56,17 @@ const menu = [
     icon: BarChart3,
   },
   {
-    label: "IVR Builder",
-    href: "/ivr",
-    icon: Workflow,
-  },
-  {
     label: "Settings",
     href: "/settings",
     icon: Settings,
   },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({
+  plan,
+}: {
+  plan?: CommunicationPlan;
+}) {
   const pathname =
     usePathname();
 
@@ -82,38 +76,82 @@ export default function Sidebar() {
         min-h-screen
         w-64
         border-r
-        bg-white
-        p-5
+        border-slate-200/80
+        bg-slate-50/60
+        p-6
       "
     >
-      <div className="mb-8">
+      <div className="mb-8 px-2 flex items-center gap-3">
+        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600 text-white font-bold text-lg shadow-sm shadow-blue-500/20">
+          A
+        </div>
         <Link
           href="/dashboard"
           className="block"
         >
           <h2
             className="
-              text-2xl
+              text-lg
               font-bold
-              text-blue-600
+              tracking-tight
+              text-slate-900
             "
           >
-            AI IVR
+            OmniIVR
           </h2>
 
           <p
             className="
-              text-sm
-              text-gray-500
+              text-[10px]
+              font-bold
+              uppercase
+              tracking-wider
+              text-slate-400
             "
           >
-            Management System
+            Control Center
           </p>
         </Link>
       </div>
 
+      {plan && (
+        <div
+          className="
+            mb-6
+            rounded-xl
+            border
+            border-blue-100/80
+            bg-blue-50/50
+            p-3
+          "
+        >
+          <p
+            className="
+              text-[9px]
+              font-bold
+              uppercase
+              tracking-widest
+              text-blue-500/80
+            "
+          >
+            Communication Plan
+          </p>
+
+          <p
+            className="
+              mt-1
+              text-[11px]
+              font-bold
+              text-blue-700
+            "
+          >
+            {plan.label}
+          </p>
+        </div>
+      )}
+
       <nav aria-label="Dashboard navigation">
-        <ul className="space-y-2">
+        <ul className="space-y-1">
           {menu.map(
             (
               item
@@ -122,15 +160,13 @@ export default function Sidebar() {
                 item.icon;
 
               const isActive =
-                pathname ===
-                  item.href ||
-                (
-                  item.href !==
-                    "/dashboard" &&
-                  pathname.startsWith(
-                    `${item.href}/`
-                  )
-                );
+                pathname === item.href ||
+                (item.href !== "/dashboard" &&
+                  pathname.startsWith(`${item.href}/`)) ||
+                (item.href === "/ivr" &&
+                  pathname.startsWith("/ivr-builder")) ||
+                (item.href === "/campaigns" &&
+                  pathname.startsWith("/communication/campaigns"));
 
               return (
                 <li
@@ -152,33 +188,35 @@ export default function Sidebar() {
                       items-center
                       gap-3
                       rounded-lg
-                      px-4
-                      py-3
+                      px-3
+                      py-2.5
+                      text-sm
+                      font-semibold
                       transition-all
-                      duration-200
+                      duration-150
                       ${
                         isActive
                           ? `
                             bg-blue-600
                             text-white
                             shadow-sm
+                            shadow-blue-500/10
                           `
                           : `
-                            text-gray-700
-                            hover:bg-blue-50
-                            hover:text-blue-600
-                            hover:shadow-sm
+                            text-slate-600
+                            hover:bg-slate-200/50
+                            hover:text-slate-900
                           `
                       }
                     `}
                   >
                     <Icon
                       size={
-                        20
+                        18
                       }
                     />
 
-                    <span className="font-medium">
+                    <span>
                       {
                         item.label
                       }

@@ -10,15 +10,15 @@ export default function LiveActiveCalls() {
   );
 
   return (
-    <div className="rounded-xl border p-6">
-      <h2 className="mb-5 font-bold">
-        Live Calls
+    <div className="bg-white rounded-xl border border-slate-200/80 p-6 shadow-sm shadow-slate-100/50">
+      <h2 className="mb-5 font-bold text-slate-800 text-xs uppercase tracking-wider">
+        Live Active Calls
       </h2>
 
-      <div className="space-y-5">
+      <div className="space-y-4">
         {calls.length === 0 ? (
-          <div className="rounded-lg border border-dashed p-6 text-center text-muted-foreground">
-            No Active Calls
+          <div className="rounded-lg border border-dashed border-slate-200 p-6 text-center text-sm text-slate-400 bg-slate-50/50">
+            No active calls at this moment
           </div>
         ) : (
           calls.map((call) => (

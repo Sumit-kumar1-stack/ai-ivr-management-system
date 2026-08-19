@@ -451,7 +451,14 @@ export default function CampaignSummaryScreen() {
 
   const launchAllowed =
     campaignEditable &&
-    ivrConfigured;
+    ivrConfigured &&
+    Boolean(
+      campaign &&
+      campaign.recipientCount >
+        0 &&
+      campaign.channels.length >
+        0
+    );
 
   //--------------------------------------------------
   // Stored Plan Snapshot
@@ -463,6 +470,48 @@ export default function CampaignSummaryScreen() {
           campaign.tier
         )
       : null;
+
+  //--------------------------------------------------
+  // Deterministic Wizard Navigation
+  //--------------------------------------------------
+
+  function goToChannels():
+    void {
+    if (
+      campaignId
+    ) {
+      router.push(
+        `/communication/campaigns/new/channels?campaign=${encodeURIComponent(
+          campaignId
+        )}`
+      );
+
+      return;
+    }
+
+    router.push(
+      "/communication/campaigns/new/audience"
+    );
+  }
+
+  function goToAudience():
+    void {
+    if (
+      campaignId
+    ) {
+      router.push(
+        `/communication/campaigns/new/audience?campaign=${encodeURIComponent(
+          campaignId
+        )}`
+      );
+
+      return;
+    }
+
+    router.push(
+      "/communication/campaigns/new/audience"
+    );
+  }
 
   //--------------------------------------------------
   // Persist Schedule
@@ -1054,17 +1103,34 @@ export default function CampaignSummaryScreen() {
               p-7
             "
           >
-            <p
-              className="
-                text-[11px]
-                font-bold
-                uppercase
-                tracking-[0.12em]
-                text-[#777c86]
-              "
+            <div
+              className="flex items-center justify-between gap-4"
             >
-              Selected Audience
-            </p>
+              <p
+                className="
+                  text-[11px]
+                  font-bold
+                  uppercase
+                  tracking-[0.12em]
+                  text-[#777c86]
+                "
+              >
+                Selected Audience
+              </p>
+
+              {campaignEditable && (
+                <button
+                  type="button"
+                  onClick={
+                    () =>
+                      goToAudience()
+                  }
+                  className="text-[12px] font-bold text-[#0066cc] transition hover:text-[#004e9f]"
+                >
+                  Edit Audience
+                </button>
+              )}
+            </div>
 
             <h3
               className="
@@ -1231,7 +1297,7 @@ export default function CampaignSummaryScreen() {
                 type="button"
                 onClick={
                   () =>
-                    router.back()
+                    goToChannels()
                 }
                 className="
                   text-[13px]
@@ -1902,7 +1968,7 @@ export default function CampaignSummaryScreen() {
                 if (
                   campaignEditable
                 ) {
-                  router.back();
+                  goToChannels();
                 }
               }
             }

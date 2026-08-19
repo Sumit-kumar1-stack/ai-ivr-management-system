@@ -5,6 +5,10 @@ import {
 } from "@prisma/client";
 
 import {
+  isWhatsAppDeploymentEnabled,
+} from "@/config/communication-deployment-capabilities";
+
+import {
   prisma,
 } from "@/lib/prisma";
 
@@ -270,6 +274,31 @@ export async function dispatchCommunicationWhatsApp(
   input:
     CampaignMessageInput
 ): Promise<CommunicationMessageDispatchResult> {
+  //------------------------------------------------
+  // Deployment Availability
+  //------------------------------------------------
+
+  if (
+    !isWhatsAppDeploymentEnabled()
+  ) {
+    return {
+      success:
+        false,
+
+      duplicate:
+        false,
+
+      outboundMessageId:
+        null,
+
+      code:
+        "WHATSAPP_PROVIDER_DISABLED",
+
+      message:
+        "WhatsApp is not enabled for this deployment.",
+    };
+  }
+
   //------------------------------------------------
   // Consent
   //------------------------------------------------

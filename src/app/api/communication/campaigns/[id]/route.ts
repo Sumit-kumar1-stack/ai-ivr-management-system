@@ -21,6 +21,7 @@ import {
 
 import {
   getCommunicationCampaign,
+  assertCommunicationCampaignAccess,
   updateCommunicationCampaignSchedule,
 } from "@/services/communication/communication-campaign.service";
 
@@ -57,7 +58,7 @@ export async function GET(
     RouteContext
 ): Promise<NextResponse> {
   try {
-    await requireRole(
+    const currentUser = await requireRole(
       COMMUNICATION_ROLES
     );
 
@@ -68,7 +69,8 @@ export async function GET(
 
     const campaign =
       await getCommunicationCampaign(
-        id
+        id,
+        currentUser
       );
 
     if (
@@ -125,7 +127,7 @@ export async function PATCH(
     RouteContext
 ): Promise<NextResponse> {
   try {
-    await requireRole(
+    const currentUser = await requireRole(
       COMMUNICATION_ROLES
     );
 
@@ -133,6 +135,11 @@ export async function PATCH(
       id,
     } =
       await context.params;
+
+    await assertCommunicationCampaignAccess(
+      id,
+      currentUser
+    );
 
     const body =
       await request.json();

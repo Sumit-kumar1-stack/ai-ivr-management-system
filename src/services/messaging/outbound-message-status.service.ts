@@ -11,6 +11,10 @@ import {
   createServerLogger,
 } from "@/lib/logger";
 
+import {
+  tryFinalizeCommunicationCampaign,
+} from "@/services/communication/communication-campaign-finalizer.service";
+
 //--------------------------------------------------
 // Logger
 //--------------------------------------------------
@@ -263,6 +267,9 @@ export async function updateOutboundMessageStatus(
 
             failedAt:
               true,
+
+            communicationCampaignId:
+              true,
           },
         });
 
@@ -473,6 +480,11 @@ export async function updateOutboundMessageStatus(
             1,
         },
         "Outbound message status transitioned"
+      );
+
+      await tryFinalizeCommunicationCampaign(
+        existing
+          .communicationCampaignId
       );
 
       return {

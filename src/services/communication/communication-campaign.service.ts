@@ -2,6 +2,7 @@ import {
   CommunicationCampaignStatus,
   CommunicationChannel,
   CommunicationFallbackPolicy,
+  UserRole,
   CommunicationTier,
 } from "@prisma/client";
 
@@ -18,12 +19,120 @@ import {
 } from "@/lib/prisma";
 
 import {
+  assertCommunicationDeploymentChannelsAvailable,
+} from "@/config/communication-deployment-capabilities";
+
+import {
   getCommunicationPlan,
+  getCommunicationPlanForTier,
 } from "@/config/communication-plan";
 
 import type {
   CommunicationCampaignDTO,
 } from "@/types/communication-campaign";
+
+import {
+  assertCommunicationCampaignEntitlements,
+} from "@/services/communication/communication-entitlement.service";
+import type {
+  AuthenticatedUser,
+} from "@/lib/auth";
+import type {
+  Prisma,
+} from "@prisma/client";
+
+type CommunicationCampaignListRecord =
+  Pick<
+    CommunicationCampaignRecord,
+    | "id"
+    | "name"
+    | "audienceSourceId"
+    | "audienceSourceName"
+    | "recipientCount"
+    | "tier"
+    | "channels"
+    | "smartChanneling"
+    | "fallbackPolicy"
+    | "status"
+    | "launchImmediately"
+    | "scheduledAt"
+    | "voiceCampaignId"
+    | "ivrCampaignId"
+    | "ivrFlowId"
+    | "ivrRuntimeFlowId"
+    | "createdAt"
+    | "updatedAt"
+  >;
+
+export type CommunicationCampaignAccessUser =
+  Pick<
+    AuthenticatedUser,
+    "id" | "role"
+  >;
+
+function buildCommunicationCampaignScope(
+  user:
+    CommunicationCampaignAccessUser
+): Prisma.CommunicationCampaignWhereInput {
+  const scope:
+    Prisma.CommunicationCampaignWhereInput =
+      {};
+
+  if (
+    user.role !==
+    UserRole.SUPER_ADMIN
+  ) {
+    scope.ownerUserId =
+      user.id;
+  }
+
+  return scope;
+}
+
+export async function assertCommunicationCampaignAccess(
+  campaignId:
+    string,
+
+  user:
+    CommunicationCampaignAccessUser
+): Promise<void> {
+  const id =
+    campaignId.trim();
+
+  if (
+    !id
+  ) {
+    throw new Error(
+      "Communication campaign ID is required"
+    );
+  }
+
+  const campaign =
+    await prisma
+      .communicationCampaign
+      .findFirst({
+        where: {
+          id,
+
+          ...buildCommunicationCampaignScope(
+            user
+          ),
+        },
+
+        select: {
+          id:
+            true,
+        },
+      });
+
+  if (
+    !campaign
+  ) {
+    throw new Error(
+      "Communication campaign not found"
+    );
+  }
+}
 
 //--------------------------------------------------
 // Channel Input
@@ -88,6 +197,30 @@ const createCommunicationCampaignSchema =
           5_000_000
         ),
 
+    //------------------------------------------------
+    // Drafts created at Step 1 intentionally have no
+    // selected channels yet. Step 2 persists channels.
+    //------------------------------------------------
+
+    channels:
+      z
+        .array(
+          channelSchema
+        )
+        .max(
+          4
+        )
+        .default(
+          []
+        ),
+  });
+
+//--------------------------------------------------
+// Channel Update Schema
+//--------------------------------------------------
+
+const updateChannelsSchema =
+  z.object({
     channels:
       z
         .array(
@@ -145,6 +278,15 @@ export type CreateCommunicationCampaignInput =
   >;
 
 //--------------------------------------------------
+// Channel Update Input
+//--------------------------------------------------
+
+export type UpdateCommunicationChannelsInput =
+  z.infer<
+    typeof updateChannelsSchema
+  >;
+
+//--------------------------------------------------
 // Schedule Input
 //--------------------------------------------------
 
@@ -154,12 +296,101 @@ export type UpdateCommunicationScheduleInput =
   >;
 
 //--------------------------------------------------
+// List Campaigns
+//--------------------------------------------------
+
+export async function getCommunicationCampaigns(
+  user:
+    CommunicationCampaignAccessUser
+) {
+  const campaigns =
+    await prisma
+      .communicationCampaign
+      .findMany({
+        where: buildCommunicationCampaignScope(
+          user
+        ),
+
+        orderBy: {
+          createdAt:
+            "desc",
+        },
+
+        select: {
+          id:
+            true,
+
+          name:
+            true,
+
+          audienceSourceId:
+            true,
+
+          audienceSourceName:
+            true,
+
+          recipientCount:
+            true,
+
+          tier:
+            true,
+
+          channels:
+            true,
+
+          smartChanneling:
+            true,
+
+          fallbackPolicy:
+            true,
+
+          status:
+            true,
+
+          launchImmediately:
+            true,
+
+          scheduledAt:
+            true,
+
+          voiceCampaignId:
+            true,
+
+          ivrCampaignId:
+            true,
+
+          ivrFlowId:
+            true,
+
+          ivrRuntimeFlowId:
+            true,
+
+          createdAt:
+            true,
+
+          updatedAt:
+            true,
+        },
+      });
+
+  return campaigns.map(
+    campaign =>
+      toDTO(
+        campaign
+      )
+  );
+}
+
+//--------------------------------------------------
 // Create Draft
 //--------------------------------------------------
 
 export async function createCommunicationCampaign(
   rawInput:
-    unknown
+    unknown,
+
+  user:
+    CommunicationCampaignAccessUser
 ): Promise<CommunicationCampaignDTO> {
   const input =
     createCommunicationCampaignSchema
@@ -179,7 +410,7 @@ export async function createCommunicationCampaign(
     ) as CommunicationChannel[];
 
   //------------------------------------------------
-  // Current Entitlement
+  // Current Entitlement Snapshot
   //------------------------------------------------
 
   const plan =
@@ -207,6 +438,26 @@ export async function createCommunicationCampaign(
       plan.features
         .omnichannelFallback
     );
+
+  //------------------------------------------------
+  // If the draft already contains channels, validate
+  // them now. An empty Step-1 draft is validated once
+  // Step 2 persists its real channel selection.
+  //------------------------------------------------
+
+  if (
+    channels.length >
+    0
+  ) {
+    assertCommunicationCampaignEntitlements({
+      tier,
+      channels,
+      smartChanneling,
+      fallbackPolicy,
+      recipientCount:
+        input.recipientCount,
+    });
+  }
 
   //------------------------------------------------
   // Persist
@@ -249,6 +500,9 @@ export async function createCommunicationCampaign(
 
           scheduledAt:
             null,
+
+          ownerUserId:
+            user.id,
         },
       });
 
@@ -263,7 +517,10 @@ export async function createCommunicationCampaign(
 
 export async function getCommunicationCampaign(
   campaignId:
-    string
+    string,
+
+  user:
+    CommunicationCampaignAccessUser
 ): Promise<CommunicationCampaignDTO | null> {
   const id =
     campaignId
@@ -278,9 +535,13 @@ export async function getCommunicationCampaign(
   const campaign =
     await prisma
       .communicationCampaign
-      .findUnique({
+      .findFirst({
         where: {
           id,
+
+          ...buildCommunicationCampaignScope(
+            user
+          ),
         },
       });
 
@@ -289,6 +550,189 @@ export async function getCommunicationCampaign(
         campaign
       )
     : null;
+}
+
+//--------------------------------------------------
+// Update Channels
+//--------------------------------------------------
+
+export async function updateCommunicationCampaignChannels(
+  campaignId:
+    string,
+
+  rawInput:
+    unknown
+): Promise<CommunicationCampaignDTO> {
+  const id =
+    campaignId
+      .trim();
+
+  if (
+    !id
+  ) {
+    throw new Error(
+      "Communication campaign ID is required"
+    );
+  }
+
+  const input =
+    updateChannelsSchema
+      .parse(
+        rawInput
+      );
+
+  const channels =
+    Array.from(
+      new Set(
+        input.channels
+      )
+    ) as CommunicationChannel[];
+
+  //------------------------------------------------
+  // Deployment Availability
+  //------------------------------------------------
+
+  assertCommunicationDeploymentChannelsAvailable(
+    channels
+  );
+
+  //------------------------------------------------
+  // Stored Draft Snapshot
+  //--------------------------------------------------
+
+  const existing =
+    await prisma
+      .communicationCampaign
+      .findUnique({
+        where: {
+          id,
+        },
+
+        select: {
+          id:
+            true,
+
+          status:
+            true,
+
+          tier:
+            true,
+
+          recipientCount:
+            true,
+        },
+      });
+
+  if (
+    !existing
+  ) {
+    throw new Error(
+      "Communication campaign was not found"
+    );
+  }
+
+  if (
+    existing.status !==
+      CommunicationCampaignStatus.DRAFT &&
+    existing.status !==
+      CommunicationCampaignStatus.READY
+  ) {
+    throw new Error(
+      `Communication campaign cannot be edited while status is ${existing.status}`
+    );
+  }
+
+  //------------------------------------------------
+  // Entitlements From Stored Tier
+  //--------------------------------------------------
+
+  const plan =
+    getCommunicationPlanForTier(
+      existing.tier
+    );
+
+  const smartChanneling =
+    plan.features
+      .smartChanneling &&
+    channels.length >
+      1;
+
+  const fallbackPolicy =
+    resolveFallbackPolicy(
+      channels,
+      plan.features
+        .omnichannelFallback
+    );
+
+  assertCommunicationCampaignEntitlements({
+    tier:
+      existing.tier,
+
+    channels,
+
+    smartChanneling,
+
+    fallbackPolicy,
+
+    recipientCount:
+      existing.recipientCount,
+  });
+
+  //------------------------------------------------
+  // Guarded Update
+  //--------------------------------------------------
+
+  const updated =
+    await prisma
+      .communicationCampaign
+      .updateMany({
+        where: {
+          id,
+
+          status: {
+            in: [
+              CommunicationCampaignStatus.DRAFT,
+              CommunicationCampaignStatus.READY,
+            ],
+          },
+        },
+
+        data: {
+          channels,
+          smartChanneling,
+          fallbackPolicy,
+        },
+      });
+
+  if (
+    updated.count ===
+    0
+  ) {
+    throw new Error(
+      "Communication campaign changed while channels were being saved"
+    );
+  }
+
+  const campaign =
+    await prisma
+      .communicationCampaign
+      .findUnique({
+        where: {
+          id,
+        },
+      });
+
+  if (
+    !campaign
+  ) {
+    throw new Error(
+      "Communication campaign disappeared after channel update"
+    );
+  }
+
+  return toDTO(
+    campaign
+  );
 }
 
 //--------------------------------------------------
@@ -343,7 +787,7 @@ export async function updateCommunicationCampaignSchedule(
 
   //------------------------------------------------
   // Guard Editable State
-  //------------------------------------------------
+  //--------------------------------------------------
 
   const updated =
     await prisma
@@ -402,7 +846,7 @@ export async function updateCommunicationCampaignSchedule(
 
   //------------------------------------------------
   // Reload
-  //------------------------------------------------
+  //--------------------------------------------------
 
   const campaign =
     await prisma
@@ -445,9 +889,8 @@ function resolveFallbackPolicy(
 
   //------------------------------------------------
   // Exact first production fallback:
-  //
-  // WhatsApp → SMS
-  //------------------------------------------------
+  // WhatsApp -> SMS
+  //--------------------------------------------------
 
   if (
     channels.includes(
@@ -460,11 +903,6 @@ function resolveFallbackPolicy(
     return CommunicationFallbackPolicy.WHATSAPP_TO_SMS;
   }
 
-  //------------------------------------------------
-  // More advanced Premium routing is enabled later
-  // when orchestration workers are connected.
-  //------------------------------------------------
-
   return CommunicationFallbackPolicy.NONE;
 }
 
@@ -474,7 +912,7 @@ function resolveFallbackPolicy(
 
 function toDTO(
   campaign:
-    CommunicationCampaignRecord
+    CommunicationCampaignListRecord
 ): CommunicationCampaignDTO {
   return {
     id:
@@ -532,15 +970,15 @@ function toDTO(
 
     ivrCampaignId:
       campaign
-       .ivrCampaignId,
+        .ivrCampaignId,
 
     ivrFlowId:
       campaign
-       .ivrFlowId,
+        .ivrFlowId,
 
     ivrRuntimeFlowId:
       campaign
-       .ivrRuntimeFlowId,
+        .ivrRuntimeFlowId,
 
     createdAt:
       campaign

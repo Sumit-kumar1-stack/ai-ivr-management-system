@@ -19,6 +19,10 @@ import {
   canUseCommunicationFallback,
 } from "./communication-entitlement.service";
 
+import {
+  tryFinalizeCommunicationCampaign,
+} from "./communication-campaign-finalizer.service";
+
 //--------------------------------------------------
 // Result
 //--------------------------------------------------
@@ -313,6 +317,10 @@ if (
         },
       });
 
+    await tryFinalizeCommunicationCampaign(
+      campaign.id
+    );
+
     return {
       handled:
         true,
@@ -369,6 +377,10 @@ if (
             ),
       },
     });
+
+  await tryFinalizeCommunicationCampaign(
+    campaign.id
+  );
 
   return {
     handled:

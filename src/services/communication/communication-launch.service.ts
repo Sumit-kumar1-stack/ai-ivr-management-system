@@ -13,6 +13,10 @@ import {
 } from "@/lib/prisma";
 
 import {
+  assertCommunicationDeploymentChannelsAvailable,
+} from "@/config/communication-deployment-capabilities";
+
+import {
   CommunicationCampaignQueueService,
 } from "./communication-campaign-queue.service";
 
@@ -146,6 +150,14 @@ export async function launchCommunicationCampaign(
       "Communication campaign has no selected channels"
     );
   }
+
+  //------------------------------------------------
+  // Deployment Availability Gate
+  //------------------------------------------------
+
+  assertCommunicationDeploymentChannelsAvailable(
+    campaign.channels
+  );
 
   //------------------------------------------------
   // Runtime Entitlement Gate

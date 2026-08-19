@@ -2,31 +2,45 @@ import type {
   ReactNode,
 } from "react";
 
-import OmniBankShell from "@/components/omnibank/omnibank-shell";
+import {
+  redirect,
+} from "next/navigation";
+
+import DashboardShell from "@/components/layout/dashboard-shell";
 
 import {
   getCommunicationPlan,
 } from "@/config/communication-plan";
+
+import {
+  getCurrentUser,
+} from "@/lib/auth";
 
 interface CommunicationLayoutProps {
   children:
     ReactNode;
 }
 
-export default function CommunicationLayout({
+export default async function CommunicationLayout({
   children,
 }: CommunicationLayoutProps) {
+  const user =
+    await getCurrentUser();
+
+  if (
+    !user
+  ) {
+    redirect(
+      "/login"
+    );
+  }
+
   const plan =
     getCommunicationPlan();
 
   return (
-    <OmniBankShell
-      plan={
-        plan
-      }
-      activeSection="campaigns"
-    >
+    <DashboardShell plan={plan}>
       {children}
-    </OmniBankShell>
+    </DashboardShell>
   );
 }

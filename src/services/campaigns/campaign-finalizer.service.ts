@@ -14,6 +14,10 @@ import {
   normalizeError,
 } from "@/lib/logger";
 
+import {
+  finalizeCommunicationCampaignForChildCampaign,
+} from "@/services/communication/communication-campaign-finalizer.service";
+
 //--------------------------------------------------
 // Finalizer Result
 //--------------------------------------------------
@@ -974,6 +978,46 @@ log.info(
     ? "Campaign run finalized from call outcomes"
     : "Campaign run finalization lost a concurrent state transition"
 );
+
+//------------------------------------------------
+// Parent Communication Campaign Reconciliation
+//
+// Child Campaign is independently durable. Parent
+// reconciliation is best-effort here and is also
+// retried by messaging/insights reconciliation hooks.
+//------------------------------------------------
+
+if (
+  isLatestRun &&
+  (
+    currentRunIsTerminal ||
+    finalized
+  )
+) {
+  try {
+    await finalizeCommunicationCampaignForChildCampaign(
+      campaignRun.campaignId
+    );
+  } catch (
+    parentError
+  ) {
+    log.warn(
+      {
+        event:
+          "campaign.communication_parent_reconciliation_failed",
+
+        childCampaignId:
+          campaignRun.campaignId,
+
+        error:
+          normalizeError(
+            parentError
+          ),
+      },
+      "Child campaign finalized but communication parent reconciliation was deferred"
+    );
+  }
+}
 
 //------------------------------------------------
 // Result

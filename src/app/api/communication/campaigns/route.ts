@@ -21,6 +21,7 @@ import {
 
 import {
   createCommunicationCampaign,
+  getCommunicationCampaigns,
 } from "@/services/communication/communication-campaign.service";
 
 //--------------------------------------------------
@@ -33,6 +34,74 @@ const COMMUNICATION_ROLES = [
 ] as const;
 
 //--------------------------------------------------
+// GET
+//--------------------------------------------------
+
+export async function GET(): Promise<NextResponse> {
+  try {
+    const currentUser = await requireRole(
+      COMMUNICATION_ROLES
+    );
+
+    const campaigns =
+      await getCommunicationCampaigns(
+        currentUser
+      );
+
+    return NextResponse.json(
+      {
+        success:
+          true,
+
+        data:
+          campaigns,
+      },
+      {
+        headers: {
+          "Cache-Control":
+            "no-store",
+        },
+      }
+    );
+  } catch (
+    error
+  ) {
+    const authResponse =
+      createAuthErrorResponse(
+        error
+      );
+
+    if (
+      authResponse
+    ) {
+      return authResponse;
+    }
+
+    console.error(
+      "Communication campaigns fetch failed",
+      error
+    );
+
+    return NextResponse.json(
+      {
+        success:
+          false,
+
+        message:
+          error instanceof
+            Error
+            ? error.message
+            : "Communication campaigns could not be fetched",
+      },
+      {
+        status:
+          500,
+      }
+    );
+  }
+}
+
+//--------------------------------------------------
 // POST
 //--------------------------------------------------
 
@@ -41,7 +110,7 @@ export async function POST(
     NextRequest
 ): Promise<NextResponse> {
   try {
-    await requireRole(
+    const currentUser = await requireRole(
       COMMUNICATION_ROLES
     );
 
@@ -50,7 +119,8 @@ export async function POST(
 
     const campaign =
       await createCommunicationCampaign(
-        body
+        body,
+        currentUser
       );
 
     return NextResponse.json(

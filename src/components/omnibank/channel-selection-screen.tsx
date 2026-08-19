@@ -15,16 +15,27 @@ import {
 } from "lucide-react";
 
 import {
+  useEffect,
   useState,
 } from "react";
 
 import {
   useRouter,
+  useSearchParams,
 } from "next/navigation";
+
+import type {
+  CommunicationDeploymentCapabilities,
+} from "@/config/communication-deployment-capabilities";
 
 import type {
   CommunicationPlan,
 } from "@/config/communication-plan";
+
+import type {
+  CommunicationCampaignDTO,
+  CommunicationChannel,
+} from "@/types/communication-campaign";
 
 //--------------------------------------------------
 // Channel Types
@@ -115,6 +126,20 @@ const channels =
 interface ChannelSelectionScreenProps {
   plan:
     CommunicationPlan;
+
+  deploymentCapabilities:
+    CommunicationDeploymentCapabilities;
+}
+
+interface CampaignApiResponse {
+  success:
+    boolean;
+
+  data?:
+    CommunicationCampaignDTO;
+
+  message?:
+    string;
 }
 
 //--------------------------------------------------
@@ -123,18 +148,24 @@ interface ChannelSelectionScreenProps {
 
 export default function ChannelSelectionScreen({
   plan,
+  deploymentCapabilities,
 }: ChannelSelectionScreenProps) {
   const router =
     useRouter();
+
+  const searchParams =
+    useSearchParams();
+
+  const campaignId =
+    searchParams.get(
+      "campaign"
+    );
 
   const [
     selectedChannels,
     setSelectedChannels,
   ] =
-    useState<ChannelId[]>([
-      "sms",
-      "whatsapp",
-    ]);
+    useState<ChannelId[]>([]);
 
   const [
     saving,
@@ -167,21 +198,118 @@ export default function ChannelSelectionScreen({
     );
 
   const [
-    savedCampaignId,
-    setSavedCampaignId,
+    loadingCampaign,
+    setLoadingCampaign,
   ] =
-    useState<
-      string |
-      null
-    >(
-      null
+    useState(
+      Boolean(
+        campaignId
+      )
     );
 
-  const demoRecipientCount =
-    Math.min(
-      42_850,
-      plan.limits.dailyRecipients
+  const visibleSaveError =
+    saveError ??
+    (
+      campaignId
+        ? null
+        : "Choose the campaign audience in Step 1 before selecting channels."
     );
+
+  //--------------------------------------------------
+  // Load Existing Campaign Draft
+  //--------------------------------------------------
+
+  useEffect(
+    () => {
+      if (
+        !campaignId
+      ) {
+        return;
+      }
+
+      let active =
+        true;
+
+      async function loadCampaign():
+        Promise<void> {
+        try {
+          const response =
+            await fetch(
+              `/api/communication/campaigns/${encodeURIComponent(
+                campaignId ??
+                  ""
+              )}`,
+              {
+                cache:
+                  "no-store",
+              }
+            );
+
+          const payload =
+            await response
+              .json() as
+              CampaignApiResponse;
+
+          if (
+            !response.ok ||
+            !payload.success ||
+            !payload.data
+          ) {
+            throw new Error(
+              payload.message ??
+              "Communication campaign could not be loaded"
+            );
+          }
+
+          if (
+            !active
+          ) {
+            return;
+          }
+
+          setSelectedChannels(
+            payload
+              .data
+              .channels
+              .map(
+                mapApiChannelToUi
+              )
+          );
+        } catch (
+          loadError
+        ) {
+          if (
+            active
+          ) {
+            setSaveError(
+              loadError instanceof
+                Error
+                ? loadError.message
+                : "Communication campaign could not be loaded"
+            );
+          }
+        } finally {
+          if (
+            active
+          ) {
+            setLoadingCampaign(
+              false
+            );
+          }
+        }
+      }
+
+      void loadCampaign();
+
+      return () => {
+        active =
+          false;
+      };
+    },
+    [
+      campaignId,
+    ]
+  );
 
   //--------------------------------------------------
   // Channel Entitlement
@@ -198,7 +326,12 @@ export default function ChannelSelectionScreen({
         return plan.features.sms;
 
       case "whatsapp":
-        return plan.features.whatsapp;
+        return (
+          plan.features.whatsapp &&
+          deploymentCapabilities
+            .whatsapp
+            .enabled
+        );
 
       case "ai-voice":
         return plan.features.aiVoice;
@@ -206,6 +339,41 @@ export default function ChannelSelectionScreen({
       case "ivr":
         return plan.features.ivr;
     }
+  }
+
+  //--------------------------------------------------
+  // Channel Availability Reason
+  //--------------------------------------------------
+
+  function getChannelUnavailableReason(
+    channelId:
+      ChannelId
+  ): string | null {
+    if (
+      channelId ===
+        "whatsapp" &&
+      plan.features.whatsapp &&
+      !deploymentCapabilities
+        .whatsapp
+        .enabled
+    ) {
+      return (
+        deploymentCapabilities
+          .whatsapp
+          .reason ??
+        "WhatsApp provider is unavailable for this deployment"
+      );
+    }
+
+    if (
+      !isChannelAvailable(
+        channelId
+      )
+    ) {
+      return "Not included in this plan";
+    }
+
+    return null;
   }
 
   //--------------------------------------------------
@@ -233,10 +401,6 @@ export default function ChannelSelectionScreen({
       null
     );
 
-    setSavedCampaignId(
-      null
-    );
-
     setSelectedChannels(
       current =>
         current.includes(
@@ -255,7 +419,7 @@ export default function ChannelSelectionScreen({
   }
 
   //--------------------------------------------------
-  // Save Draft
+  // Save Channels
   //--------------------------------------------------
 
   async function saveCampaignDraft(
@@ -265,31 +429,18 @@ export default function ChannelSelectionScreen({
     if (
       selectedChannels.length ===
         0 ||
-      saving
+      saving ||
+      loadingCampaign
     ) {
       return;
     }
 
-    //------------------------------------------------
-    // Reuse The Draft Created By "Save as Draft"
-    //------------------------------------------------
-
     if (
-      savedCampaignId
+      !campaignId
     ) {
-      if (
-        navigateToSummary
-      ) {
-        router.push(
-          `/communication/campaigns/new/summary?campaign=${encodeURIComponent(
-            savedCampaignId
-          )}`
-        );
-      } else {
-        setSavedMessage(
-          "Campaign draft is already saved."
-        );
-      }
+      setSaveError(
+        "Campaign audience is missing. Return to Step 1 and save at least one recipient."
+      );
 
       return;
     }
@@ -309,39 +460,17 @@ export default function ChannelSelectionScreen({
     try {
       const apiChannels =
         selectedChannels.map(
-          channel => {
-            switch (
-              channel
-            ) {
-              case "sms":
-                return "SMS";
-
-              case "whatsapp":
-                return "WHATSAPP";
-
-              case "ai-voice":
-                return "AI_VOICE";
-
-              case "ivr":
-                return "IVR";
-            }
-          }
+          mapUiChannelToApi
         );
-
-      //------------------------------------------------
-      // Demo Audience Boundary
-      //
-      // The existing flow uses this stand-alone audience
-      // snapshot until the team-owned CSV/eKYC selector is
-      // connected to this step.
-      //------------------------------------------------
 
       const response =
         await fetch(
-          "/api/communication/campaigns",
+          `/api/communication/campaigns/${encodeURIComponent(
+            campaignId
+          )}/channels`,
           {
             method:
-              "POST",
+              "PUT",
 
             headers: {
               "Content-Type":
@@ -350,18 +479,6 @@ export default function ChannelSelectionScreen({
 
             body:
               JSON.stringify({
-                name:
-                  "Q4 High-Yield Outreach",
-
-                audienceSourceId:
-                  "demo-q4-high-net-worth",
-
-                audienceSourceName:
-                  "Q4_High_Net_Worth_Individuals.csv",
-
-                recipientCount:
-                  demoRecipientCount,
-
                 channels:
                   apiChannels,
               }),
@@ -370,40 +487,26 @@ export default function ChannelSelectionScreen({
 
       const payload =
         await response
-          .json() as {
-            success?:
-              boolean;
-
-            data?: {
-              id?:
-                string;
-            };
-
-            message?:
-              string;
-          };
+          .json() as
+          CampaignApiResponse;
 
       if (
         !response.ok ||
         !payload.success ||
-        !payload.data?.id
+        !payload.data
       ) {
         throw new Error(
           payload.message ??
-          "Campaign draft could not be saved"
+          "Campaign channels could not be saved"
         );
       }
-
-      setSavedCampaignId(
-        payload.data.id
-      );
 
       if (
         navigateToSummary
       ) {
         router.push(
           `/communication/campaigns/new/summary?campaign=${encodeURIComponent(
-            payload.data.id
+            campaignId
           )}`
         );
 
@@ -411,7 +514,7 @@ export default function ChannelSelectionScreen({
       }
 
       setSavedMessage(
-        "Campaign draft saved."
+        "Campaign channel selection saved."
       );
     } catch (
       error
@@ -420,13 +523,34 @@ export default function ChannelSelectionScreen({
         error instanceof
           Error
           ? error.message
-          : "Campaign draft could not be saved"
+          : "Campaign channels could not be saved"
       );
     } finally {
       setSaving(
         false
       );
     }
+  }
+
+  //--------------------------------------------------
+  // Loading
+  //--------------------------------------------------
+
+  if (
+    loadingCampaign
+  ) {
+    return (
+      <div
+        className="flex min-h-[70vh] items-center justify-center gap-3 text-sm text-slate-500"
+      >
+        <Loader2
+          className="animate-spin"
+          size={19}
+        />
+
+        Loading campaign channels...
+      </div>
+    );
   }
 
   //--------------------------------------------------
@@ -631,6 +755,11 @@ export default function ChannelSelectionScreen({
                   channel.id
                 );
 
+              const unavailableReason =
+                getChannelUnavailableReason(
+                  channel.id
+                );
+
               const active =
                 selectedChannels.includes(
                   channel.id
@@ -723,16 +852,18 @@ export default function ChannelSelectionScreen({
                     {channel.description}
                   </p>
 
-                  {!available && (
+                  {!available &&
+                    unavailableReason && (
                     <p
                       className="
                         mt-4
                         text-[11px]
                         font-bold
+                        leading-4
                         text-[#b3261e]
                       "
                     >
-                      Not included in this plan
+                      {unavailableReason}
                     </p>
                   )}
 
@@ -964,7 +1095,7 @@ export default function ChannelSelectionScreen({
           </div>
         </section>
 
-        {saveError && (
+        {visibleSaveError && (
           <div
             className="
               mt-6
@@ -978,7 +1109,7 @@ export default function ChannelSelectionScreen({
               text-red-700
             "
           >
-            {saveError}
+            {visibleSaveError}
           </div>
         )}
 
@@ -1034,7 +1165,13 @@ export default function ChannelSelectionScreen({
             }
             onClick={
               () =>
-                router.back()
+                router.push(
+                  campaignId
+                    ? `/communication/campaigns/new/audience?campaign=${encodeURIComponent(
+                        campaignId
+                      )}`
+                    : "/communication/campaigns/new/audience"
+                )
             }
             className="
               flex
@@ -1069,6 +1206,8 @@ export default function ChannelSelectionScreen({
               type="button"
               disabled={
                 saving ||
+                loadingCampaign ||
+                !campaignId ||
                 selectedChannels.length ===
                   0
               }
@@ -1100,6 +1239,8 @@ export default function ChannelSelectionScreen({
               type="button"
               disabled={
                 saving ||
+                loadingCampaign ||
+                !campaignId ||
                 selectedChannels.length ===
                   0
               }
@@ -1399,6 +1540,52 @@ function StepLine() {
       "
     />
   );
+}
+
+//--------------------------------------------------
+// Channel Mapping
+//--------------------------------------------------
+
+function mapUiChannelToApi(
+  channel:
+    ChannelId
+): CommunicationChannel {
+  switch (
+    channel
+  ) {
+    case "sms":
+      return "SMS";
+
+    case "whatsapp":
+      return "WHATSAPP";
+
+    case "ai-voice":
+      return "AI_VOICE";
+
+    case "ivr":
+      return "IVR";
+  }
+}
+
+function mapApiChannelToUi(
+  channel:
+    CommunicationChannel
+): ChannelId {
+  switch (
+    channel
+  ) {
+    case "SMS":
+      return "sms";
+
+    case "WHATSAPP":
+      return "whatsapp";
+
+    case "AI_VOICE":
+      return "ai-voice";
+
+    case "IVR":
+      return "ivr";
+  }
 }
 
 //--------------------------------------------------

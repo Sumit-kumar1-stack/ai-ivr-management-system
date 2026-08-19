@@ -8,6 +8,10 @@ import {
   getCurrentUser,
 } from "@/lib/auth";
 
+import {
+  getCommunicationPlan,
+} from "@/config/communication-plan";
+
 
 export default async function DashboardLayout({
   children,
@@ -28,9 +32,10 @@ export default async function DashboardLayout({
     );
   }
 
+  const plan = getCommunicationPlan();
 
   return (
-    <DashboardShell>
+    <DashboardShell plan={plan}>
       {children}
     </DashboardShell>
   );

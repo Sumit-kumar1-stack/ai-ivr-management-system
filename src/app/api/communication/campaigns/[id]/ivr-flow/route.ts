@@ -24,6 +24,10 @@ import {
   bindCommunicationIvrFlow,
 } from "@/services/communication/communication-ivr-binding.service";
 
+import {
+  assertCommunicationCampaignAccess,
+} from "@/services/communication/communication-campaign.service";
+
 //--------------------------------------------------
 // Input
 //--------------------------------------------------
@@ -72,7 +76,7 @@ export async function PUT(
     RouteContext
 ): Promise<NextResponse> {
   try {
-    await requireRole(
+    const currentUser = await requireRole(
       ROLES
     );
 
@@ -80,6 +84,11 @@ export async function PUT(
       id,
     } =
       await context.params;
+
+    await assertCommunicationCampaignAccess(
+      id,
+      currentUser
+    );
 
     const body =
       inputSchema.parse(

@@ -16,8 +16,12 @@ import {
 } from "@/lib/auth-response";
 
 import {
-  getCommunicationCampaignDetails,
-} from "@/services/communication/communication-campaign-details.service";
+  getCommunicationCampaignInsights,
+} from "@/services/communication/communication-insights.service";
+
+import {
+  tryFinalizeCommunicationCampaign,
+} from "@/services/communication/communication-campaign-finalizer.service";
 
 import {
   assertCommunicationCampaignAccess,
@@ -92,14 +96,19 @@ export async function GET(
         25
       );
 
+    // Keep reads self-healing if a provider callback
+    // completed while another reconciliation hook was
+    // unavailable or lost a process restart.
+    await tryFinalizeCommunicationCampaign(id);
+
     const data =
-      await getCommunicationCampaignDetails(
-        id,
-        {
-          page,
-          pageSize,
-        }
-      );
+      await getCommunicationCampaignInsights({
+        campaignId:
+          id,
+
+        page,
+        pageSize,
+      });
 
     return NextResponse.json(
       {
@@ -133,7 +142,7 @@ export async function GET(
       error instanceof
         Error
         ? error.message
-        : "Communication campaign details could not be loaded";
+        : "Communication campaign insights could not be loaded";
 
     return NextResponse.json(
       {

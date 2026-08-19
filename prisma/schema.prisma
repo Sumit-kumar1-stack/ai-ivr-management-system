@@ -28,6 +28,8 @@ model User {
   isActive  Boolean   @default(true)
   lastLogin DateTime?
 
+  communicationCampaigns CommunicationCampaign[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -188,6 +190,9 @@ model CommunicationCampaign {
 
   name String
 
+  ownerUserId String?
+  ownerUser   User? @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+
   // ----------------------------------------------------
   // Audience boundary
   // ----------------------------------------------------
@@ -265,6 +270,7 @@ model CommunicationCampaign {
   @@index([tier])
   @@index([scheduledAt])
   @@index([ivrFlowId])
+  @@index([ownerUserId])
   @@index([createdAt])
 }
 

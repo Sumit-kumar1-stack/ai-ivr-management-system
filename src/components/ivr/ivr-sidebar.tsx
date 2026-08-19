@@ -36,17 +36,17 @@ export default function IVRSidebar() {
   }
 
   return (
-    <div className="w-72 border-r bg-gray-50 p-4 overflow-y-auto">
+    <div className="w-72 border-r border-slate-200/80 bg-slate-50/50 p-5 overflow-y-auto">
 
-      <h3 className="mb-3 text-lg font-semibold">
+      <h3 className="mb-3 text-[10px] font-bold uppercase tracking-wider text-slate-400">
         Saved Flows
       </h3>
 
       <div className="mb-8 space-y-2">
 
         {flows.length === 0 && (
-          <p className="text-sm text-gray-500">
-            No saved flows
+          <p className="text-xs text-slate-400 py-2">
+            No saved flows found
           </p>
         )}
 
@@ -56,10 +56,10 @@ export default function IVRSidebar() {
             onClick={() =>
               setSelectedFlow(flow.id)
             }
-            className={`w-full rounded border p-2 text-left transition ${
+            className={`w-full rounded-lg border text-xs font-semibold p-2.5 text-left transition ${
               selectedFlow === flow.id
-                ? "border-blue-600 bg-blue-50"
-                : "bg-white hover:bg-gray-100"
+                ? "border-blue-600 bg-blue-50/60 text-blue-700 shadow-sm"
+                : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-900"
             }`}
           >
             {flow.name}
@@ -68,11 +68,11 @@ export default function IVRSidebar() {
 
       </div>
 
-      <h3 className="mb-4 text-lg font-semibold">
-        Nodes
+      <h3 className="mb-4 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+        Draggable Nodes
       </h3>
 
-      <div className="space-y-3">
+      <div className="space-y-2.5">
 
         {nodes.map((node) => (
           <div
@@ -81,7 +81,7 @@ export default function IVRSidebar() {
             onDragStart={(e) =>
               dragStart(e, node)
             }
-            className="cursor-grab rounded-lg border bg-white p-3 shadow transition hover:bg-gray-100 active:cursor-grabbing"
+            className="cursor-grab rounded-lg border border-slate-200/80 bg-white p-3 text-xs font-semibold text-slate-700 shadow-sm shadow-slate-100/50 transition hover:bg-slate-50 hover:text-slate-900 active:cursor-grabbing"
           >
             {node}
           </div>
