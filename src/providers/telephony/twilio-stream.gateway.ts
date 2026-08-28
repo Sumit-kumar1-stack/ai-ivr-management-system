@@ -45,6 +45,32 @@ import {
   resolveCommunicationVoiceRuntime,
 } from "@/services/communication/communication-entitlement.service";
 
+import {
+  resolveTenantBillingContextForTenant,
+} from "@/services/billing/tenant-subscription.service";
+
+import {
+  getCallSecuritySession,
+} from "@/services/security/call-security-session.service";
+
+import {
+  routeRealtimeCallInput,
+} from "@/services/conversations/realtime-input.service";
+
+import {
+  CascadedTurnLatency,
+} from "@/services/voice-runtime/cascaded-turn-latency.service";
+
+import { StandardRuntimeUsage } from "@/services/voice-runtime/standard-runtime-usage.service";
+
+import {
+  IVRFlowSessionService,
+} from "@/services/ivr/ivr-flow-session.service";
+
+import {
+  selectRuntime,
+} from "@/services/ivr/ivr-runtime-selector.service";
+
 //--------------------------------------------------
 // Types
 //--------------------------------------------------
@@ -63,7 +89,7 @@ type TwilioStartEvent = {
     callSid?:
       string;
 
-    customParameters?: {
+      customParameters?: {
       callId?:
         string;
 
@@ -71,6 +97,9 @@ type TwilioStartEvent = {
         string;
 
       direction?:
+        string;
+
+      mediaFormat?:
         string;
 
       [key: string]:
@@ -105,6 +134,12 @@ type TwilioMarkEvent = {
   };
 };
 
+type TwilioDtmfEvent = {
+  event: "dtmf";
+  streamSid?: string;
+  dtmf?: { digit?: string };
+};
+
 type TwilioStopEvent = {
   event:
     "stop";
@@ -122,6 +157,7 @@ type TwilioEvent =
   | TwilioConnectedEvent
   | TwilioStartEvent
   | TwilioMediaEvent
+  | TwilioDtmfEvent
   | TwilioMarkEvent
   | TwilioStopEvent;
 
@@ -230,6 +266,11 @@ export class TwilioStreamGateway {
         return;
       }
 
+      case "dtmf": {
+        await this.handleDtmf(event);
+        return;
+      }
+
       //--------------------------------------------
       // Playback Mark
       //--------------------------------------------
@@ -326,6 +367,36 @@ export class TwilioStreamGateway {
           ?.twilioCallSid ||
         ""
       ).trim();
+
+    serviceLog.info(
+      {
+        event:
+          "twilio.stream.start_received",
+
+        streamSidPresent:
+          Boolean(
+            streamSid
+          ),
+
+        twilioCallSidPresent:
+          Boolean(
+            twilioCallSid
+          ),
+
+        internalCallIdPresent:
+          Boolean(
+            internalCallId
+          ),
+
+        customParameterCount:
+          Object.keys(
+            event.start
+              .customParameters ??
+            {}
+          ).length,
+      },
+      "Twilio stream start event received"
+    );
 
     //----------------------------------------------
     // Require Internal Application Call ID
@@ -478,11 +549,39 @@ export class TwilioStreamGateway {
           status:
             true,
 
+          provider:
+            true,
+
           providerCallId:
             true,
 
           direction:
             true,
+
+          tenantId:
+            true,
+
+          inboundProfileId:
+            true,
+
+          requestedRuntime:
+            true,
+
+          ivrFlowVersion: {
+            select: {
+              id: true,
+              flowId: true,
+              versionNumber: true,
+              nodes: true,
+              edges: true,
+            },
+          },
+
+          inboundProfile: {
+            select: {
+              voiceRuntime: true,
+            },
+          },
 
           campaign: {
             select: {
@@ -493,6 +592,12 @@ export class TwilioStreamGateway {
 
                   tier:
                     true,
+
+                  ownerUser: {
+                    select: {
+                      tenantId: true,
+                    },
+                  },
                 },
               },
             },
@@ -688,13 +793,148 @@ export class TwilioStreamGateway {
         .campaign
         .communicationVoiceParent;
 
-    const voiceRuntime =
-      communicationVoiceParent
-        ? resolveCommunicationVoiceRuntime(
-            communicationVoiceParent
-              .tier
-          )
-        : "CASCADED";
+    const billingContext =
+      call.tenantId
+        ? await resolveTenantBillingContextForTenant(call.tenantId).catch(() => null)
+        : null;
+
+    type RuntimeFlowNode = {
+      id: string;
+      data?: {
+        nodeKind?: string | null;
+        runtimeMode?: string | null;
+        runtimeDefault?: string | null;
+        inputExperience?: string | null;
+      };
+    };
+
+    const runtimeFlowNodes =
+      Array.isArray(call.ivrFlowVersion?.nodes)
+        ? (call.ivrFlowVersion.nodes as RuntimeFlowNode[])
+        : [];
+
+    const startNode =
+      runtimeFlowNodes.find(node => node.data?.nodeKind === "START") ?? null;
+
+    const selectedRuntimeFromProfile =
+      normalizeCommunicationRuntime(call.inboundProfile?.voiceRuntime);
+
+    const runtimeSelection =
+      call.ivrFlowVersion
+        ? selectRuntime({
+            tenant: {
+              tenantId: call.tenantId ?? null,
+              premiumVoiceEnabled: billingContext?.premiumVoiceEnabled ?? false,
+            },
+            provider: call.provider,
+            flow: {
+              id: call.ivrFlowVersion.flowId,
+              versionId: call.ivrFlowVersion.id,
+              runtimeMode: runtimeModeLabel(startNode?.data?.runtimeMode),
+              runtimeDefault: normalizeCommunicationRuntime(startNode?.data?.runtimeDefault),
+              nodes: runtimeFlowNodes,
+            },
+            profile: {
+              voiceRuntime: normalizeInboundProfileRuntime(call.inboundProfile?.voiceRuntime),
+              defaultRuntime: selectedRuntimeFromProfile,
+            },
+            policy: {
+              defaultRuntime: selectedRuntimeFromProfile ?? "STANDARD",
+            },
+          })
+        : null;
+
+    const selectedRuntime =
+      runtimeSelection?.selectedRuntime ??
+      normalizeCommunicationRuntime(call.requestedRuntime) ??
+      (communicationVoiceParent ? normalizeCommunicationRuntime(resolveCommunicationVoiceRuntime(communicationVoiceParent.tier)) : null) ??
+      "STANDARD";
+
+    const requestedRuntime =
+      toCommunicationRuntime(selectedRuntime);
+
+    let effectiveRuntime =
+      requestedRuntime;
+
+    let fallbackUsed =
+      false;
+
+    let fallbackReason:
+      string | null =
+        null;
+
+    log.info(
+      {
+        event: "ivr.runtime.selected",
+        callId: internalCallId,
+        tenantId:
+          call.tenantId ??
+          communicationVoiceParent?.ownerUser?.tenantId ??
+          null,
+        flowId:
+          call.ivrFlowVersion?.flowId ??
+          null,
+        versionId:
+          call.ivrFlowVersion?.id ??
+          null,
+        configuredMode:
+          runtimeModeLabel(startNode?.data?.runtimeMode) ??
+          "AUTO",
+        selectedRuntime,
+        reasonCode:
+          runtimeSelection?.reasonCode ??
+          "LEGACY_RUNTIME",
+        reasonText:
+          runtimeSelection?.reasonText ??
+          "Existing persisted runtime configuration was used.",
+        provider: call.provider,
+      },
+      "IVR runtime selected at call entry"
+    );
+
+    await IVRFlowSessionService.set(
+      internalCallId,
+      {
+        flowId:
+          call.ivrFlowVersion?.id ??
+          internalCallId,
+        currentNodeId: null,
+        previousNodeId: null,
+        lastTrigger: null,
+        lastValue: null,
+        selectedRuntime,
+        runtimeReasonCode:
+          runtimeSelection?.reasonCode ??
+          "LEGACY_RUNTIME",
+        runtimeReasonText:
+          runtimeSelection?.reasonText ??
+          "Existing persisted runtime configuration was used.",
+        inputExperience:
+          startNode?.data?.inputExperience === "STAGED_HYBRID"
+            ? "STAGED_HYBRID"
+            : startNode?.data?.inputExperience === "KEYPAD"
+            ? "KEYPAD"
+            : "VOICE",
+        conversationMode:
+          requestedRuntime === "GEMINI_LIVE"
+            ? "REALTIME_AI"
+            : "ENTRY_IVR",
+        inputStage:
+          requestedRuntime === "GEMINI_LIVE"
+            ? "REALTIME_AI"
+            : "ENTRY_IVR",
+        fallbackNodeId:
+          null,
+      }
+    );
+
+    persistRuntimeSelection({
+      callId: internalCallId,
+      requestedRuntime,
+      effectiveRuntime,
+      fallbackUsed,
+      fallbackReason,
+    });
 
     //----------------------------------------------
     // Premium Runtime Audit
@@ -709,16 +949,13 @@ export class TwilioStreamGateway {
      * pipeline.
      */
 
-    if (
-      voiceRuntime ===
-      "GEMINI_LIVE"
-    ) {
+    if (requestedRuntime === "GEMINI_LIVE") {
       log.info(
         {
           event:
             "twilio.stream.premium_runtime_selected",
 
-          voiceRuntime,
+          requestedRuntime,
 
           communicationCampaignId:
             communicationVoiceParent
@@ -818,8 +1055,8 @@ export class TwilioStreamGateway {
             },
             "Previous STT session could not be disconnected"
           );
-        }
       }
+    }
 
       //--------------------------------------------
       // Close Previous Audio Session
@@ -870,18 +1107,51 @@ export class TwilioStreamGateway {
     // Register Audio Session
     //----------------------------------------------
 
-    AudioSessionService.create({
+    const audioSession =
+      AudioSessionService.create({
       callId:
         internalCallId,
 
       twilioCallSid,
 
+      mediaFormat:
+        event.start.customParameters?.mediaFormat === "PCM_8K"
+          ? "PCM_8K"
+          : "MULAW_8K",
+
       streamSid,
 
       socket,
 
-      voiceRuntime,
+      voiceRuntime:
+        effectiveRuntime,
+
+      requestedRuntime,
+
+      effectiveRuntime,
+
+      fallbackUsed,
+
+      fallbackReason,
     });
+
+    if (
+      effectiveRuntime ===
+      "CASCADED"
+    ) {
+      CascadedTurnLatency.registerCall(
+        internalCallId,
+        {
+          tenantId:
+            call.tenantId,
+
+          inboundProfileId:
+            call.inboundProfileId,
+
+          fallbackUsed,
+        }
+      );
+    }
 
     //----------------------------------------------
     // Stream Started
@@ -901,7 +1171,13 @@ export class TwilioStreamGateway {
         direction:
           call.direction,
 
-        voiceRuntime,
+        requestedRuntime,
+
+        effectiveRuntime,
+
+        fallbackUsed,
+
+        fallbackReason,
 
         existingConversationMessageCount:
           existingMessageCount,
@@ -921,9 +1197,12 @@ export class TwilioStreamGateway {
     //----------------------------------------------
 
     if (
-      voiceRuntime ===
+      requestedRuntime ===
       "GEMINI_LIVE"
     ) {
+      let conversationEstablished =
+        false;
+
       try {
         //------------------------------------------
         // Connect Native-Audio Session
@@ -959,6 +1238,28 @@ export class TwilioStreamGateway {
           }
         );
 
+        await EventPublisher.publish(
+          AppEvent.AI_SESSION_STARTED,
+          {
+            callId:
+              internalCallId,
+
+            runtime:
+              "GEMINI_LIVE",
+
+            requestedRuntime,
+
+            effectiveRuntime:
+              "GEMINI_LIVE",
+
+            actorType:
+              "SYSTEM",
+
+            timestamp:
+              Date.now(),
+          }
+        );
+
         //------------------------------------------
         // Start / Resume Premium Conversation
         //------------------------------------------
@@ -967,6 +1268,9 @@ export class TwilioStreamGateway {
           .beginConversation(
             internalCallId
           );
+
+        conversationEstablished =
+          true;
 
         //------------------------------------------
         // Premium Runtime Ready
@@ -977,7 +1281,16 @@ export class TwilioStreamGateway {
             event:
               "twilio.stream.gemini_live_initialized",
 
-            voiceRuntime,
+            requestedRuntime,
+
+            effectiveRuntime:
+              "GEMINI_LIVE",
+
+            fallbackUsed:
+              false,
+
+            fallbackReason:
+              null,
 
             newConversation:
               existingMessageCount ===
@@ -998,54 +1311,278 @@ export class TwilioStreamGateway {
         error
       ) {
         //------------------------------------------
-        // Fail Closed
+        // Fail Closed or Fallback
         //
-        // Never fall from Premium into Standard STT
-        // when Gemini Live initialization fails.
+        // Premium may fall back to the existing
+        // CASCADED runtime only before a live
+        // conversational Gemini session exists.
         //------------------------------------------
 
-        log.error(
-          {
-            event:
-              "twilio.stream.gemini_live_initialization_failed",
+        if (
+          !conversationEstablished
+        ) {
+          let securitySession:
+            Awaited<
+              ReturnType<
+                typeof getCallSecuritySession
+              >
+            > |
+            null =
+              null;
 
-            error:
-              normalizeError(
-                error
-              ),
-          },
-          "Gemini Live initialization failed"
-        );
+          try {
+            securitySession =
+              await getCallSecuritySession(
+                internalCallId
+              );
+          } catch {
+            securitySession =
+              null;
+          }
 
-        ConversationStateService.setState(
-          internalCallId,
-          "ENDED"
-        );
+          const conversationState =
+            ConversationStateService
+              .getState(
+                internalCallId
+              );
 
-        GeminiLiveMediaService.close(
-          internalCallId
-        );
+          const canFallbackSafely =
+            isPremiumCascadedFallbackEnabled() &&
+            Boolean(
+              securitySession
+            ) &&
+            conversationState !==
+              "ENDED";
 
-        AudioSessionService.close(
-          streamSid
-        );
+          if (
+            !canFallbackSafely
+          ) {
+            const fallbackReason =
+              !securitySession
+                ? "security_session_unavailable"
+                : "conversation_already_ended";
 
-        socket.close(
-          1011,
-          "Gemini Live initialization failed"
-        );
+            log.error(
+              {
+                event:
+                  "twilio.stream.gemini_live_fallback_blocked",
 
-        return;
+                requestedRuntime,
+
+                effectiveRuntime:
+                  "GEMINI_LIVE",
+
+                fallbackUsed:
+                  false,
+
+                fallbackReason,
+
+                authenticationLevel:
+                  securitySession
+                    ?.authenticationLevel ??
+                  null,
+
+                riskLevel:
+                  securitySession?.riskLevel ??
+                  null,
+
+                allowedActionCount:
+                  securitySession
+                    ?.allowedActions.length ??
+                  0,
+
+                conversationState,
+
+                error:
+                  normalizeError(
+                    error
+                  ),
+              },
+              "Gemini Live initialization failed; fallback blocked to preserve security state"
+            );
+
+            ConversationStateService.setState(
+              internalCallId,
+              "ENDED"
+            );
+
+            GeminiLiveMediaService.close(
+              internalCallId
+            );
+
+            AudioSessionService.close(
+              streamSid
+            );
+
+            socket.close(
+              1011,
+              "Premium fallback blocked"
+            );
+
+            return;
+          }
+
+          fallbackUsed =
+            true;
+
+          fallbackReason =
+            normalizeError(
+              error
+            ).message;
+
+          effectiveRuntime =
+            "CASCADED";
+
+          audioSession.voiceRuntime =
+            effectiveRuntime;
+
+          audioSession.effectiveRuntime =
+            effectiveRuntime;
+
+          audioSession.fallbackUsed =
+            true;
+
+          audioSession.fallbackReason =
+            fallbackReason;
+
+          persistRuntimeSelection({
+            callId: internalCallId,
+            requestedRuntime,
+            effectiveRuntime,
+            fallbackUsed,
+            fallbackReason,
+          });
+
+          void EventPublisher.publish(
+            AppEvent.FALLBACK_TRIGGERED,
+            {
+              callId:
+                internalCallId,
+
+              requestedRuntime,
+
+              effectiveRuntime,
+
+              fallbackUsed,
+
+              fallbackReason,
+
+              actorType:
+                "SYSTEM",
+
+              timestamp:
+                Date.now(),
+            }
+          );
+
+          void EventPublisher.publish(
+            AppEvent.PROVIDER_CHANGED,
+            {
+              callId:
+                internalCallId,
+
+              requestedRuntime,
+
+              effectiveRuntime,
+
+              fallbackUsed,
+
+              fallbackReason,
+
+              actorType:
+                "SYSTEM",
+
+              timestamp:
+                Date.now(),
+            }
+          );
+
+          log.warn(
+            {
+              event:
+                "twilio.stream.gemini_live_fallback_to_cascaded",
+
+              requestedRuntime,
+
+              effectiveRuntime,
+
+              fallbackUsed,
+
+              fallbackReason,
+
+              error:
+                normalizeError(
+                  error
+                ),
+            },
+            "Gemini Live initialization failed; falling back to cascaded runtime"
+          );
+
+          GeminiLiveMediaService.close(
+            internalCallId
+          );
+        } else {
+          log.error(
+            {
+              event:
+                "twilio.stream.gemini_live_initialization_failed",
+
+              requestedRuntime,
+
+              effectiveRuntime:
+                "GEMINI_LIVE",
+
+              fallbackUsed:
+                false,
+
+              fallbackReason:
+                null,
+
+              error:
+                normalizeError(
+                  error
+                ),
+            },
+            "Gemini Live initialization failed"
+          );
+
+          ConversationStateService.setState(
+            internalCallId,
+            "ENDED"
+          );
+
+          GeminiLiveMediaService.close(
+            internalCallId
+          );
+
+            AudioSessionService.close(
+              streamSid
+            );
+
+          socket.close(
+            1011,
+            "Gemini Live initialization failed"
+          );
+
+          return;
+        }
       }
 
       //--------------------------------------------
       // CRITICAL
       //
-      // Premium must never enter the Standard
-      // Deepgram/STT branch below.
+      // Premium only enters the Standard branch when
+      // early Gemini initialization failed and the
+      // fallback was explicitly selected above.
       //--------------------------------------------
 
-      return;
+      if (
+        effectiveRuntime ===
+        "GEMINI_LIVE"
+      ) {
+        return;
+      }
+
     }
 
     //----------------------------------------------
@@ -1053,6 +1590,22 @@ export class TwilioStreamGateway {
     //----------------------------------------------
 
     try {
+      log.info(
+        {
+          event:
+            "twilio.stream.cascaded_pipeline_init_started",
+
+          requestedRuntime,
+
+          effectiveRuntime,
+
+          fallbackUsed,
+
+          fallbackReason,
+        },
+        "Cascaded voice pipeline initialization started"
+      );
+
       await STTProviderFactory
         .get()
         .connect(
@@ -1065,6 +1618,14 @@ export class TwilioStreamGateway {
         {
           event:
             "twilio.stream.stt_connection_failed",
+
+          requestedRuntime,
+
+          effectiveRuntime,
+
+          fallbackUsed,
+
+          fallbackReason,
 
           error:
             normalizeError(
@@ -1091,6 +1652,22 @@ export class TwilioStreamGateway {
       return;
     }
 
+    log.info(
+      {
+        event:
+          "twilio.stream.cascaded_pipeline_init_completed",
+
+        requestedRuntime,
+
+        effectiveRuntime,
+
+        fallbackUsed,
+
+        fallbackReason,
+      },
+      "Cascaded voice pipeline initialization completed"
+    );
+
     //----------------------------------------------
     // Standard Audio Connection Ready
     //----------------------------------------------
@@ -1100,6 +1677,27 @@ export class TwilioStreamGateway {
       {
         callId:
           internalCallId,
+
+        timestamp:
+          Date.now(),
+      }
+    );
+
+    await EventPublisher.publish(
+      AppEvent.AI_SESSION_STARTED,
+      {
+        callId:
+          internalCallId,
+
+        runtime:
+          "CASCADED",
+
+        requestedRuntime,
+
+        effectiveRuntime,
+
+        actorType:
+          "SYSTEM",
 
         timestamp:
           Date.now(),
@@ -1190,7 +1788,13 @@ export class TwilioStreamGateway {
         event:
           "twilio.stream.initialized",
 
-        voiceRuntime,
+        requestedRuntime,
+
+        effectiveRuntime,
+
+        fallbackUsed,
+
+        fallbackReason,
 
         conversationState:
           ConversationStateService
@@ -1331,6 +1935,15 @@ export class TwilioStreamGateway {
       return;
     }
 
+    if (
+      session.voiceRuntime ===
+      "CASCADED"
+    ) {
+      CascadedTurnLatency.markAudioFirstReceived(
+        session.callId
+      );
+    }
+
     //----------------------------------------------
     // PREMIUM — Twilio → Gemini Live
     //----------------------------------------------
@@ -1380,6 +1993,11 @@ export class TwilioStreamGateway {
     //----------------------------------------------
 
     try {
+      StandardRuntimeUsage.recordSttAudio(
+        session.callId,
+        audio.length
+      );
+
       await STTProviderFactory
         .get()
         .sendAudio(
@@ -1405,6 +2023,21 @@ export class TwilioStreamGateway {
         "Failed to send Twilio audio to STT"
       );
     }
+  }
+
+  private static async handleDtmf(event: TwilioDtmfEvent): Promise<void> {
+    const streamSid = event.streamSid?.trim();
+    const digit = event.dtmf?.digit?.trim();
+    const session = streamSid ? AudioSessionService.get(streamSid) : null;
+
+    if (!session || !digit || ["TERMINATING", "ENDED"].includes(ConversationStateService.getState(session.callId))) return;
+    await routeRealtimeCallInput({
+      type: "DTMF",
+      callId: session.callId,
+      provider: "TWILIO",
+      digit,
+      timestamp: Date.now(),
+    });
   }
 
   //------------------------------------------------
@@ -1576,6 +2209,80 @@ export class TwilioStreamGateway {
       "Twilio media stream stopped"
     );
   }
+}
+
+//--------------------------------------------------
+// Premium Fallback Policy
+//--------------------------------------------------
+
+function isPremiumCascadedFallbackEnabled(): boolean {
+  const value = process.env.PREMIUM_CASCADED_FALLBACK_ENABLED?.trim().toLowerCase();
+  return value !== "false" && value !== "0";
+}
+
+function normalizeInboundProfileRuntime(value: string | null | undefined): "CASCADED" | "GEMINI_LIVE" | null {
+  const normalized = typeof value === "string" ? value.trim().toUpperCase() : "";
+  if (normalized === "CASCADED" || normalized === "GEMINI_LIVE") {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeCommunicationRuntime(value: string | null | undefined): "STANDARD" | "PREMIUM" | null {
+  const normalized = typeof value === "string" ? value.trim().toUpperCase() : "";
+  if (normalized === "CASCADED" || normalized === "STANDARD") {
+    return "STANDARD";
+  }
+  if (normalized === "GEMINI_LIVE" || normalized === "PREMIUM") {
+    return "PREMIUM";
+  }
+  return null;
+}
+
+function toCommunicationRuntime(value: "STANDARD" | "PREMIUM"): "CASCADED" | "GEMINI_LIVE" {
+  return value === "PREMIUM" ? "GEMINI_LIVE" : "CASCADED";
+}
+
+function runtimeModeLabel(value: unknown): "STANDARD" | "PREMIUM" | "AUTO" | null {
+  const normalized = typeof value === "string" ? value.trim().toUpperCase() : "";
+  if (normalized === "STANDARD" || normalized === "PREMIUM" || normalized === "AUTO") {
+    return normalized;
+  }
+  return null;
+}
+
+//--------------------------------------------------
+// Persist Runtime Evidence Without Affecting Audio Setup
+//--------------------------------------------------
+
+function persistRuntimeSelection(
+  input: {
+    callId: string;
+    requestedRuntime: "CASCADED" | "GEMINI_LIVE";
+    effectiveRuntime: "CASCADED" | "GEMINI_LIVE";
+    fallbackUsed: boolean;
+    fallbackReason: string | null;
+  }
+): void {
+  void prisma.call.updateMany({
+    where: {
+      id: input.callId,
+    },
+    data: {
+      requestedRuntime: input.requestedRuntime,
+      effectiveRuntime: input.effectiveRuntime,
+      fallbackUsed: input.fallbackUsed,
+      fallbackReason: input.fallbackReason,
+    },
+  }).catch(error => {
+    createCallLogger(input.callId).warn(
+      {
+        event: "premium.runtime.persistence_failed",
+        error: normalizeError(error),
+      },
+      "Runtime evidence could not be persisted"
+    );
+  });
 }
 
 //--------------------------------------------------

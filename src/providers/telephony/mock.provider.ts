@@ -66,6 +66,23 @@ function sleep(ms:number){
 
 export class MockProvider 
 extends BaseTelephonyProvider {
+  readonly name = "mock" as const;
+  readonly capabilities = {
+    supportsInbound: false,
+    supportsOutbound: true,
+    supportsDtmf: false,
+    supportsXmlInput: false,
+    supportsRealtimeDtmfDuringMedia: false,
+    supportsTransfer: false,
+    supportsRecording: false,
+    supportsRealtimeMedia: false,
+    supportsBidirectionalMedia: false,
+    supportsBargeIn: false,
+    supportsStatusCallbacks: false,
+    supportsStreamingTts: false,
+    supportsGeminiLive: false,
+    supportsCallControlUpdate: false,
+  } as const;
 
 
 

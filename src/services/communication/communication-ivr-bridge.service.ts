@@ -142,7 +142,8 @@ export async function startCommunicationIvrCampaign(
 
   const contactIds =
     await ensureCommunicationContacts(
-      campaign.recipients
+      campaign.recipients,
+      campaign.ownerUserId
     );
 
   //------------------------------------------------

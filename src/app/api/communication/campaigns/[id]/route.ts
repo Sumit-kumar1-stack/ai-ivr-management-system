@@ -1,8 +1,4 @@
 import {
-  UserRole,
-} from "@prisma/client";
-
-import {
   NextRequest,
   NextResponse,
 } from "next/server";
@@ -12,8 +8,13 @@ import {
 } from "zod";
 
 import {
-  requireRole,
+  requireAnyCampaignCapabilities,
+  requireCampaignCapability,
 } from "@/lib/auth";
+
+import {
+  CAMPAIGN_CAPABILITIES,
+} from "@/services/communication/campaign-capabilities";
 
 import {
   createAuthErrorResponse,
@@ -23,6 +24,7 @@ import {
   getCommunicationCampaign,
   assertCommunicationCampaignAccess,
   updateCommunicationCampaignSchedule,
+  deleteCommunicationCampaign,
 } from "@/services/communication/communication-campaign.service";
 
 //--------------------------------------------------
@@ -38,15 +40,6 @@ interface RouteContext {
 }
 
 //--------------------------------------------------
-// Roles
-//--------------------------------------------------
-
-const COMMUNICATION_ROLES = [
-  UserRole.SUPER_ADMIN,
-  UserRole.ADMIN,
-] as const;
-
-//--------------------------------------------------
 // GET
 //--------------------------------------------------
 
@@ -58,9 +51,10 @@ export async function GET(
     RouteContext
 ): Promise<NextResponse> {
   try {
-    const currentUser = await requireRole(
-      COMMUNICATION_ROLES
-    );
+    const currentUser =
+      await requireAnyCampaignCapabilities(
+        CAMPAIGN_CAPABILITIES
+      );
 
     const {
       id,
@@ -127,9 +121,10 @@ export async function PATCH(
     RouteContext
 ): Promise<NextResponse> {
   try {
-    const currentUser = await requireRole(
-      COMMUNICATION_ROLES
-    );
+    const currentUser =
+      await requireCampaignCapability(
+        "CAMPAIGN_EDIT"
+      );
 
     const {
       id,
@@ -147,7 +142,8 @@ export async function PATCH(
     const campaign =
       await updateCommunicationCampaignSchedule(
         id,
-        body
+        body,
+        currentUser
       );
 
     return NextResponse.json(
@@ -231,6 +227,10 @@ function handleError(
           )
         ? 409
         : message.includes(
+              "cannot be deleted"
+            )
+          ? 409
+        : message.includes(
               "must be in the future"
             )
           ? 400
@@ -252,4 +252,61 @@ function handleError(
       status,
     }
   );
+}
+
+//--------------------------------------------------
+// DELETE
+//--------------------------------------------------
+
+export async function DELETE(
+  _request:
+    NextRequest,
+
+  context:
+    RouteContext
+): Promise<NextResponse> {
+  try {
+    const currentUser =
+      await requireAnyCampaignCapabilities(
+        ["CAMPAIGN_EDIT", "CAMPAIGN_DELETE"]
+      );
+
+    const {
+      id,
+    } =
+      await context.params;
+
+    await assertCommunicationCampaignAccess(
+      id,
+      currentUser
+    );
+
+    const result =
+      await deleteCommunicationCampaign(
+        id,
+        currentUser
+      );
+
+    return NextResponse.json(
+      {
+        success:
+          true,
+
+        data:
+          result,
+      },
+      {
+        headers: {
+          "Cache-Control":
+            "no-store",
+        },
+      }
+    );
+  } catch (
+    error
+  ) {
+    return handleError(
+      error
+    );
+  }
 }

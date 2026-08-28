@@ -1,14 +1,16 @@
 import {
-  UserRole,
-} from "@prisma/client";
-
-import {
   NextRequest,
   NextResponse,
 } from "next/server";
 
 import {
-  requireRole,
+  createRateLimitResponse,
+  ensureRateLimit,
+  readClientAddress,
+} from "@/lib/abuse-control";
+
+import {
+  requireCampaignCapability,
 } from "@/lib/auth";
 
 import {
@@ -35,11 +37,6 @@ interface RouteContext {
     }>;
 }
 
-const ROLES = [
-  UserRole.SUPER_ADMIN,
-  UserRole.ADMIN,
-] as const;
-
 export async function POST(
   _request:
     NextRequest,
@@ -48,9 +45,10 @@ export async function POST(
     RouteContext
 ): Promise<NextResponse> {
   try {
-    const currentUser = await requireRole(
-      ROLES
-    );
+    const currentUser =
+      await requireCampaignCapability(
+        "CAMPAIGN_LAUNCH"
+      );
 
     const {
       id,
@@ -62,9 +60,34 @@ export async function POST(
       currentUser
     );
 
+    await ensureRateLimit({
+      scope:
+        "communication-launch",
+
+      limit:
+        3,
+
+      windowMs:
+        15 *
+        60 *
+        1000,
+
+      keyParts: [
+        currentUser.id,
+
+        id,
+
+        readClientAddress(
+          _request
+        ),
+      ],
+      failurePolicy: "FAIL_CLOSED",
+    });
+
     const result =
       await launchCommunicationCampaign(
-        id
+        id,
+        currentUser
       );
 
     return NextResponse.json(
@@ -88,6 +111,17 @@ export async function POST(
   } catch (
     error
   ) {
+    const rateLimitResponse =
+      createRateLimitResponse(
+        error
+      );
+
+    if (
+      rateLimitResponse
+    ) {
+      return rateLimitResponse;
+    }
+
     const authResponse =
       createAuthErrorResponse(
         error
@@ -161,6 +195,10 @@ export async function POST(
         "not found"
       )
         ? 404
+        : message.includes(
+              "not authorized"
+            )
+          ? 403
         : message.includes(
               "cannot be launched"
             )

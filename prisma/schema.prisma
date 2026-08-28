@@ -17,26 +17,453 @@ enum UserRole {
   AGENT
 }
 
+enum AccountStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  LOCKED
+  DEACTIVATED
+}
+
+enum TenantStatus {
+  PENDING
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  TERMINATED
+}
+
+enum TenantInvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  SUSPENDED
+  EXPIRED
+}
+
+enum SubscriptionPlanTier {
+  STANDARD
+  PREMIUM
+  ENTERPRISE
+}
+
+enum SubscriptionEventStatus {
+  RECEIVED
+  APPLIED
+  IGNORED
+  FAILED
+}
+
+enum AuditEventOutcome {
+  SUCCEEDED
+  DENIED
+  FAILED
+  SKIPPED
+}
+
+enum ApiKeyStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+enum WebhookEndpointStatus {
+  ACTIVE
+  PAUSED
+  REVOKED
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+}
+
+enum CallAuthenticationLevel {
+  AUTH_LEVEL_0
+  AUTH_LEVEL_1
+  AUTH_LEVEL_2
+  AUTH_LEVEL_3
+}
+
+enum CallRiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
 model User {
-  id        String    @id @default(cuid())
+  id        String        @id @default(cuid())
   fullName  String
-  email     String    @unique
+  email     String        @unique
   password  String
-  role      UserRole  @default(ADMIN)
+  role      UserRole      @default(ADMIN)
+  campaignCapabilities String[] @default([])
   phone     String?
   avatar    String?
-  isActive  Boolean   @default(true)
+  tenantId  String?
+  tenant    Tenant?       @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  accountStatus AccountStatus @default(ACTIVE)
+  emailVerifiedAt DateTime?
+  invitedAt DateTime?
+  invitedByUserId String?
+  invitedByUser User?     @relation("UserInvitedBy", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+  onboardingCompletedAt DateTime?
+  isActive  Boolean       @default(true)
   lastLogin DateTime?
 
+  createdTenants Tenant[] @relation("TenantCreatedBy")
+  createdTenantInvitations TenantInvitation[] @relation("TenantInvitationCreatedBy")
+  acceptedTenantInvitations TenantInvitation[] @relation("TenantInvitationAcceptedBy")
+  invitedUsers User[] @relation("UserInvitedBy")
+
   communicationCampaigns CommunicationCampaign[]
+  communicationCampaignsSubmitted CommunicationCampaign[] @relation("CommunicationCampaignSubmittedBy")
+  communicationCampaignsApproved CommunicationCampaign[] @relation("CommunicationCampaignApprovedBy")
+  communicationCampaignsArchived CommunicationCampaign[] @relation("CommunicationCampaignArchivedBy")
+  auditEvents AuditEvent[] @relation("AuditEventActor")
+  apiKeys ApiKey[]
+  webhookEndpoints WebhookEndpoint[]
+  campaigns Campaign[]
+  ivrFlows IVRFlow[]
+  ivrFlowVersions IVRFlowVersion[] @relation("IVRFlowVersionCreatedBy")
+  approvedIvrFlowVersions IVRFlowVersion[] @relation("IVRFlowVersionApprovedBy")
+  publishedIvrFlowVersions IVRFlowVersion[] @relation("IVRFlowVersionPublishedBy")
+  knowledgeDocuments KnowledgeDocument[]
+  contacts Contact[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([accountStatus])
+}
+
+model Tenant {
+  id          String        @id @default(cuid())
+  name        String
+  slug        String        @unique
+  status      TenantStatus  @default(PENDING)
+  ownerUserId String?
+  ownerUser   User?         @relation("TenantCreatedBy", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  activatedAt DateTime?
+  trialEndsAt DateTime?
+  suspendedAt DateTime?
+  terminatedAt DateTime?
+
+  members     User[]
+  invitations TenantInvitation[]
+  subscription TenantSubscription?
+  paymentEvents TenantPaymentEvent[]
+  auditEvents AuditEvent[]
+  apiKeys ApiKey[]
+  webhookEndpoints WebhookEndpoint[]
+  webhookDeliveries WebhookDelivery[]
+  contacts Contact[]
+  calls Call[]
+  standardRuntimeUsage StandardRuntimeUsage[]
+  inboundProfiles InboundProfile[]
+  inboundNumbers InboundNumber[]
+  ivrFlows IVRFlow[]
+  ivrFlowVersions IVRFlowVersion[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([ownerUserId])
+}
+
+model TenantInvitation {
+  id              String                @id @default(cuid())
+  tenantId        String
+  tenant          Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  email           String
+  fullName        String?
+  role            UserRole              @default(ADMIN)
+  status          TenantInvitationStatus @default(PENDING)
+  tokenHash       String                @unique
+  createdByUserId String?
+  createdByUser   User?                 @relation("TenantInvitationCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  acceptedByUserId String?
+  acceptedByUser  User?                 @relation("TenantInvitationAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  invitedAt       DateTime              @default(now())
+  acceptedAt      DateTime?
+  expiresAt       DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([email])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+model TenantSubscription {
+  id String @id @default(cuid())
+
+  tenantId String @unique
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  provider String?
+  providerCustomerId String?
+  providerSubscriptionId String? @unique
+  providerPriceId String?
+  contractReference String?
+
+  planTier SubscriptionPlanTier @default(STANDARD)
+  status SubscriptionStatus @default(TRIALING)
+  entitlements String[] @default([])
+
+  currentPeriodStart DateTime?
+  currentPeriodEnd DateTime?
+  trialEndsAt DateTime?
+  activatedAt DateTime?
+  suspendedAt DateTime?
+  cancelledAt DateTime?
+  expiredAt DateTime?
+
+  lastProviderEventId String?
+  lastProviderEventType String?
+
+  paymentEvents TenantPaymentEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([planTier])
+  @@index([providerSubscriptionId])
+}
+
+model TenantPaymentEvent {
+  id String @id @default(cuid())
+
+  tenantId String
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  subscriptionId String?
+  subscription TenantSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  provider String
+  providerEventId String @unique
+  eventType String
+  status SubscriptionEventStatus @default(RECEIVED)
+  payload Json
+  signatureVerified Boolean @default(false)
+
+  receivedAt DateTime @default(now())
+  processedAt DateTime?
+  appliedAt DateTime?
+  skippedReason String?
+  errorMessage String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([subscriptionId])
+  @@index([provider])
+  @@index([eventType])
+  @@index([status])
+}
+
+model AuditEvent {
+  id String @id @default(cuid())
+
+  tenantId String
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  actorUserId String?
+  actorUser User? @relation("AuditEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorRole UserRole?
+  actorType String? @default("USER")
+
+  entityType String
+  entityId String?
+  resourceType String?
+  resourceId String?
+  action String
+  outcome AuditEventOutcome
+  result String?
+  reason String?
+  ipAddress String?
+  correlationId String?
+
+  beforeState Json?
+  afterState Json?
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([actorUserId])
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([outcome])
+  @@index([resourceType, resourceId])
+  @@index([correlationId])
+  @@index([createdAt])
+}
+
+model ApiKey {
+  id String @id @default(cuid())
+
+  tenantId String
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdByUserId String?
+  createdByUser User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  name String
+  prefix String
+  hash String @unique
+  scopes String[] @default([])
+  status ApiKeyStatus @default(ACTIVE)
+  expiresAt DateTime?
+  revokedAt DateTime?
+  lastUsedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([prefix])
+  @@index([expiresAt])
+  @@index([createdByUserId])
+}
+
+model WebhookEndpoint {
+  id String @id @default(cuid())
+
+  tenantId String
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdByUserId String?
+  createdByUser User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  name String
+  url String
+  description String?
+  secretHash String
+  secretPrefix String
+  events String[] @default([])
+  status WebhookEndpointStatus @default(ACTIVE)
+  lastDeliveredAt DateTime?
+
+  deliveries WebhookDelivery[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([createdByUserId])
+}
+
+model WebhookDelivery {
+  id String @id @default(cuid())
+
+  tenantId String
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  endpointId String
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  eventName String
+  status WebhookDeliveryStatus @default(PENDING)
+  attemptCount Int @default(0)
+  requestPayload Json
+  responseStatus Int?
+  responseBody String?
+  errorMessage String?
+  deliveredAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([endpointId])
+  @@index([eventName])
+  @@index([status])
+  @@index([createdAt])
 }
 
 // ======================================================
 // CONTACT
 // ======================================================
+
+model InboundProfile {
+  id String @id @default(cuid())
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name String
+  active Boolean @default(true)
+  defaultLanguage String @default("English")
+  // Runtime is selected by an authorized tenant configuration and pinned to a Call.
+  // It is never accepted from the inbound webhook or media stream.
+  voiceRuntime String @default("CASCADED")
+
+  ivrFlowId String?
+  ivrFlow   IVRFlow? @relation(fields: [ivrFlowId], references: [id], onDelete: SetNull)
+
+  ivrFlowVersionId String?
+  ivrFlowVersion   IVRFlowVersion? @relation("InboundProfileFlowVersion", fields: [ivrFlowVersionId], references: [id], onDelete: SetNull)
+
+  // An empty scope deliberately means that no knowledge can be retrieved.
+  knowledgeDocumentIds Json?
+  callbackEnabled Boolean @default(true)
+  transferEnabled Boolean @default(false)
+
+  numbers InboundNumber[]
+  calls Call[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, name])
+  @@index([tenantId, active])
+  @@index([ivrFlowId])
+  @@index([ivrFlowVersionId])
+}
+
+model InboundNumber {
+  id String @id @default(cuid())
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  inboundProfileId String
+  inboundProfile   InboundProfile @relation(fields: [inboundProfileId], references: [id], onDelete: Cascade)
+
+  provider String
+  providerNumber String
+  providerNumberSid String?
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([provider, providerNumber])
+  @@unique([provider, providerNumberSid])
+  @@index([tenantId, active])
+  @@index([inboundProfileId, active])
+}
 
 enum ContactStatus {
   PENDING
@@ -49,12 +476,18 @@ enum ContactStatus {
 model Contact {
   id       String        @id @default(cuid())
   fullName String
-  phone    String        @unique
+  phone    String
   email    String?
   company  String?
   language String        @default("English")
   status   ContactStatus @default(PENDING)
   notes    String?
+
+  ownerUserId String?
+  ownerUser   User? @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -64,6 +497,9 @@ model Contact {
 
   @@index([status])
   @@index([createdAt])
+  @@index([ownerUserId])
+  @@index([tenantId])
+  @@unique([tenantId, phone])
 }
 
 // ======================================================
@@ -128,6 +564,19 @@ enum CommunicationCampaignStatus {
   COMPLETED
   FAILED
   CANCELLED
+  ARCHIVED
+}
+
+enum CommunicationCampaignApprovalStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum CampaignActionType {
+  MOCK
+  WEBHOOK
 }
 
 enum CommunicationRecipientStatus {
@@ -147,6 +596,9 @@ model Campaign {
   id          String  @id @default(cuid())
   name        String
   description String?
+
+  ownerUserId String?
+  ownerUser   User? @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
 
   systemKey String? @unique
 
@@ -168,6 +620,7 @@ model Campaign {
   contacts CampaignContact[]
   calls    Call[]
   runs     CampaignRun[]
+  knowledgeDocuments CampaignKnowledgeDocument[]
 
   // ----------------------------------------------------
   // OmniConnect child-campaign relationships
@@ -179,6 +632,7 @@ model Campaign {
   @@index([status])
   @@index([scheduledAt])
   @@index([createdAt])
+  @@index([ownerUserId])
 }
 
 // ======================================================
@@ -190,8 +644,28 @@ model CommunicationCampaign {
 
   name String
 
+  description String?
+
+  prompt String?
+
+  knowledgeDocumentIds Json?
+
   ownerUserId String?
   ownerUser   User? @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+
+  submittedByUserId String?
+  submittedByUser   User? @relation("CommunicationCampaignSubmittedBy", fields: [submittedByUserId], references: [id], onDelete: SetNull)
+  submittedAt       DateTime?
+
+  approvedByUserId String?
+  approvedByUser   User? @relation("CommunicationCampaignApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  approvedAt       DateTime?
+  approvalReason   String?
+  approvalStatus   CommunicationCampaignApprovalStatus @default(DRAFT)
+  approvalRequired Boolean @default(false)
+  currentRevision  Int @default(1)
+  approvedRevision Int?
+  attemptedContactCount Int @default(0)
 
   // ----------------------------------------------------
   // Audience boundary
@@ -223,6 +697,10 @@ model CommunicationCampaign {
 
   status CommunicationCampaignStatus @default(DRAFT)
 
+  archivedAt DateTime?
+  archivedByUserId String?
+  archivedByUser User? @relation("CommunicationCampaignArchivedBy", fields: [archivedByUserId], references: [id], onDelete: SetNull)
+
   launchImmediately Boolean @default(true)
 
   scheduledAt DateTime?
@@ -248,6 +726,10 @@ model CommunicationCampaign {
   ivrFlowId String?
   ivrFlow   IVRFlow? @relation("CommunicationSelectedIvrFlow", fields: [ivrFlowId], references: [id], onDelete: SetNull)
 
+  // Exact immutable version approved for this campaign revision.
+  ivrFlowVersionId String?
+  ivrFlowVersion   IVRFlowVersion? @relation("CommunicationFlowVersion", fields: [ivrFlowVersionId], references: [id], onDelete: SetNull)
+
   // ----------------------------------------------------
   // Runtime IVR snapshot
   // ----------------------------------------------------
@@ -262,16 +744,56 @@ model CommunicationCampaign {
   recipients        CommunicationCampaignRecipient[]
   messages          OutboundMessage[]
   usageReservations CommunicationCampaignUsage[]
+  actions           CampaignAction[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([status])
+  @@index([approvalStatus])
   @@index([tier])
   @@index([scheduledAt])
   @@index([ivrFlowId])
+  @@index([ivrFlowVersionId])
   @@index([ownerUserId])
+  @@index([submittedByUserId])
+  @@index([approvedByUserId])
+  @@index([archivedByUserId])
   @@index([createdAt])
+}
+
+model CampaignAction {
+  id String @id @default(cuid())
+
+  communicationCampaignId String
+
+  communicationCampaign CommunicationCampaign @relation(fields: [communicationCampaignId], references: [id], onDelete: Cascade)
+
+  name String
+
+  actionCode String
+
+  type CampaignActionType @default(MOCK)
+
+  endpoint String?
+
+  integrationRef String?
+
+  requiredAuthLevel CallAuthenticationLevel @default(AUTH_LEVEL_0)
+
+  requiresConfirmation Boolean @default(false)
+
+  timeoutMs Int @default(10000)
+
+  enabled Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([communicationCampaignId, actionCode])
+  @@index([communicationCampaignId])
+  @@index([actionCode])
+  @@index([enabled])
 }
 
 model CommunicationCampaignUsage {
@@ -385,15 +907,32 @@ model CampaignRun {
 model IVRFlow {
   id String @id @default(cuid())
 
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
   name        String
   description String?
   campaignId  String?
+  ownerUserId String?
+  ownerUser   User? @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
 
   nodes Json
   edges Json
 
   isPublished Boolean @default(false)
   version     Int     @default(1)
+  lifecycle   IVRFlowLifecycle @default(DRAFT)
+  validationStatus IVRFlowValidationStatus @default(NOT_VALIDATED)
+  validatedAt DateTime?
+  submittedAt DateTime?
+  submittedByUserId String?
+  approvedAt DateTime?
+  approvedByUserId String?
+  rejectedAt DateTime?
+  rejectedByUserId String?
+  rejectionReason String?
+  updatedByUserId String?
+  archivedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -405,14 +944,90 @@ model IVRFlow {
   selectedByCommunicationCampaigns CommunicationCampaign[] @relation("CommunicationSelectedIvrFlow")
 
   runtimeForCommunicationCampaign CommunicationCampaign? @relation("CommunicationRuntimeIvrFlow")
+  inboundProfiles InboundProfile[]
+  versions IVRFlowVersion[]
 
   @@index([campaignId])
   @@index([isPublished])
+  @@index([ownerUserId])
+  @@index([tenantId])
+  @@index([tenantId, lifecycle])
+}
+
+enum IVRFlowLifecycle {
+  DRAFT
+  VALIDATED
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  PUBLISHED
+  ARCHIVED
+}
+
+enum IVRFlowValidationStatus {
+  NOT_VALIDATED
+  VALID
+  INVALID
+}
+
+enum IVRFlowVersionStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model IVRFlowVersion {
+  id String @id @default(cuid())
+
+  flowId String
+  flow   IVRFlow @relation(fields: [flowId], references: [id], onDelete: Cascade)
+
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+  versionNumber Int
+  status        IVRFlowVersionStatus @default(DRAFT)
+  nodes         Json
+  edges         Json
+  contentHash   String
+
+  createdByUserId String?
+  createdByUser   User? @relation("IVRFlowVersionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  approvedByUserId String?
+  approvedByUser User? @relation("IVRFlowVersionApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  publishedByUserId String?
+  publishedByUser User? @relation("IVRFlowVersionPublishedBy", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+  validationStatus IVRFlowValidationStatus @default(NOT_VALIDATED)
+  validatedAt DateTime?
+  publishedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  inboundProfiles InboundProfile[] @relation("InboundProfileFlowVersion")
+  communicationCampaigns CommunicationCampaign[] @relation("CommunicationFlowVersion")
+  calls Call[]
+
+  @@unique([flowId, versionNumber])
+  @@index([tenantId, status])
+  @@index([flowId, status])
 }
 
 // ======================================================
 // KNOWLEDGE BASE
 // ======================================================
+
+enum KnowledgeDocumentClassification {
+  PUBLIC_PRODUCT_INFO
+  INTERNAL
+  CUSTOMER_PERSONAL
+  SENSITIVE
+  RESTRICTED
+}
+
+enum KnowledgeDocumentStatus {
+  ACTIVE
+  ARCHIVED
+}
 
 model KnowledgeDocument {
   id String @id @default(cuid())
@@ -422,12 +1037,36 @@ model KnowledgeDocument {
   mimeType     String
   size         Int
   path         String
+  classification KnowledgeDocumentClassification @default(INTERNAL)
+  status         KnowledgeDocumentStatus         @default(ACTIVE)
+  archivedAt     DateTime?
+
+  ownerUserId String?
+  ownerUser   User? @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
 
   uploadedAt DateTime @default(now())
 
   chunks KnowledgeChunk[]
+  campaignLinks CampaignKnowledgeDocument[]
 
   @@index([uploadedAt])
+  @@index([ownerUserId])
+}
+
+model CampaignKnowledgeDocument {
+  id String @id @default(cuid())
+
+  campaignId String
+  knowledgeDocumentId String
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  knowledgeDocument KnowledgeDocument @relation(fields: [knowledgeDocumentId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([campaignId, knowledgeDocumentId])
+  @@index([campaignId])
+  @@index([knowledgeDocumentId])
 }
 
 model KnowledgeChunk {
@@ -467,12 +1106,23 @@ enum CallStatus {
 
 model Call {
   id             String  @id @default(cuid())
+  provider       String  @default("TWILIO")
   providerCallId String? @unique
 
   direction CallDirection @default(OUTBOUND)
 
   callerNumber String?
   calledNumber String?
+
+  // Inbound calls receive tenancy only from the active inbound-number registry.
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+  inboundProfileId String?
+  inboundProfile   InboundProfile? @relation(fields: [inboundProfileId], references: [id], onDelete: SetNull)
+
+  ivrFlowVersionId String?
+  ivrFlowVersion   IVRFlowVersion? @relation(fields: [ivrFlowVersionId], references: [id], onDelete: SetNull)
 
   campaignId String
   campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
@@ -508,10 +1158,26 @@ model Call {
 
   language String
 
+  // Runtime evidence is set server-side when an inbound call is created and when
+  // either runtime is initialized. These fields are intentionally nullable for
+  // historical calls created before runtime observability was introduced.
+  requestedRuntime String?
+  effectiveRuntime String?
+  fallbackUsed Boolean @default(false)
+  fallbackReason String?
+
   status CallStatus @default(QUEUED)
+
+  authenticationLevel CallAuthenticationLevel @default(AUTH_LEVEL_0)
+  authenticationVerifiedAt DateTime?
+  riskLevel CallRiskLevel @default(LOW)
+  securityFlags Json?
 
   duration     Int?
   recordingUrl String?
+  recordingId String?
+  recordingStatus String?
+  recordingAvailableAt DateTime?
   transcript   String?
   summary      String?
 
@@ -535,6 +1201,7 @@ model Call {
   updatedAt DateTime @updatedAt
 
   conversation Conversation?
+  standardRuntimeUsage StandardRuntimeUsage[]
 
   @@unique([campaignRunId, contactId, attemptNumber])
   @@index([campaignId])
@@ -547,10 +1214,49 @@ model Call {
   @@index([direction])
   @@index([callerNumber])
   @@index([calledNumber])
+  @@index([tenantId])
+  @@index([inboundProfileId])
+  @@index([ivrFlowVersionId])
   @@index([status])
+  @@index([authenticationLevel])
+  @@index([riskLevel])
   @@index([requestedAt])
   @@index([answeredAt])
   @@index([completedAt])
+}
+
+// Provider-native units for Standard/Cascaded turns. This is intentionally
+// separate from subscription charging: it records evidence, never prices.
+model StandardRuntimeUsage {
+  id String @id @default(cuid())
+  tenantId String
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  callId String
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
+  turnId Int
+  runtime String @default("STANDARD")
+  startedAt DateTime @default(now())
+  completedAt DateTime?
+  sttProvider String?
+  sttAudioSeconds Float?
+  llmProvider String?
+  llmModel String?
+  llmInputTokens Int?
+  llmOutputTokens Int?
+  ttsProvider String?
+  ttsCharacters Int @default(0)
+  ttsAudioSeconds Float?
+  ttsRequestCount Int @default(0)
+  ragRetrievalCount Int @default(0)
+  rerankerCount Int @default(0)
+  rerankerTimeoutCount Int @default(0)
+  toolInvocationCount Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([callId, turnId])
+  @@index([tenantId, runtime, startedAt])
+  @@index([callId])
 }
 
 // ======================================================
@@ -610,14 +1316,33 @@ model ConversationMessage {
 
 enum CallEventType {
   STARTED
+  CALL_CREATED
   RINGING
   ANSWERED
+  CALL_TERMINATED
   THINKING
   SPEAKING
   LISTENING
   INTERRUPTED
   COMPLETED
   FAILED
+  CAMPAIGN_SELECTED
+  CUSTOMER_MATCHED
+  AI_SESSION_STARTED
+  INTENT_DETECTED
+  RAG_QUERY
+  DOCUMENT_ACCESSED
+  AUTH_REQUESTED
+  AUTH_SUCCEEDED
+  AUTH_FAILED
+  ACTION_REQUESTED
+  POLICY_ALLOWED
+  POLICY_DENIED
+  ACTION_EXECUTED
+  ACTION_FAILED
+  FALLBACK_TRIGGERED
+  PROVIDER_CHANGED
+  HUMAN_TRANSFER
 }
 
 model CallEvent {
@@ -645,6 +1370,9 @@ model CallEvent {
 // ======================================================
 
 enum CallbackRequestStatus {
+  PENDING
+  CONFIRMED
+  CLAIMED
   REQUESTED
   SCHEDULED
   COMPLETED
@@ -656,27 +1384,38 @@ model CallbackRequest {
   id String @id @default(cuid())
 
   callId String
+  originalCallId String?
+  tenantId String?
+  contactId String?
 
   phone String
 
   requestedAt DateTime @default(now())
 
   scheduledFor DateTime
+  preferredEnd DateTime?
 
   timezone String
 
   reason String?
+  intent String?
+  handoffSummary String?
 
-  status CallbackRequestStatus @default(REQUESTED)
+  status CallbackRequestStatus @default(PENDING)
 
   idempotencyKey String @unique
 
   requestedBy String
+  claimedAt DateTime?
+  completedAt DateTime?
+  failureReason String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([callId])
+  @@index([originalCallId])
+  @@index([tenantId, status])
   @@index([phone])
   @@index([scheduledFor])
   @@index([status])

@@ -34,6 +34,7 @@ interface ConversationMessagePayload {
   role: "USER" | "ASSISTANT";
   text: string;
   timestamp?: number;
+  tenantId?: string;
 }
 
 export function mapAppEventToDashboardEvent(
@@ -232,6 +233,9 @@ function mapConversationMessage(
 
       timestamp:
         payload.timestamp,
+
+      tenantId:
+        payload.tenantId,
     },
   };
 }

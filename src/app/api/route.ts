@@ -1,15 +1,7 @@
 import { NextResponse } from "next/server";
-import { buildKnowledgeContext } from "@/services/knowledge/rag.service";
 
+// The former unauthenticated RAG probe exposed indexed knowledge. Knowledge is
+// now accessed only through tenant-authorized application routes.
 export async function GET() {
-
-  const context =
-    await buildKnowledgeContext(
-      "What is loan interest?"
-    );
-
-  return NextResponse.json({
-    context,
-  });
-
+  return NextResponse.json({ success: false, message: "Not found" }, { status: 404 });
 }

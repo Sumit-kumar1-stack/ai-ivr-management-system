@@ -5,7 +5,7 @@ import {
 } from "@/lib/logger";
 
 import {
-  askAI,
+  askAIStream,
 } from "@/services/ai/llm.factory";
 
 //--------------------------------------------------
@@ -17,6 +17,7 @@ export interface RerankableKnowledgeChunk {
   score: number;
   documentId: string;
   chunkIndex: number;
+  classification: string;
 }
 
 //--------------------------------------------------
@@ -35,7 +36,8 @@ const log =
 export async function rerankKnowledge(
   question: string,
   chunks:
-    RerankableKnowledgeChunk[]
+    RerankableKnowledgeChunk[],
+  signal?: AbortSignal
 ): Promise<
   RerankableKnowledgeChunk[]
 > {
@@ -120,10 +122,17 @@ Answer:
   );
 
   try {
-    const response =
-      await askAI(
-        prompt
-      );
+    let response = "";
+    for await (const chunk of askAIStream(prompt, signal)) {
+      if (signal?.aborted) {
+        throw new DOMException("Knowledge reranking aborted", "AbortError");
+      }
+      response += chunk;
+    }
+
+    if (signal?.aborted) {
+      throw new DOMException("Knowledge reranking aborted", "AbortError");
+    }
 
     const indexes =
       parseCandidateIndexes(

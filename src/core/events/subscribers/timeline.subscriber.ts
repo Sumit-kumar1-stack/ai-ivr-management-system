@@ -14,10 +14,6 @@ import {
 } from "@/lib/logger";
 
 import {
-  CallTimelineService,
-} from "@/services/calls/call-timeline.service";
-
-import {
   runPostCallProcessing,
 } from "@/services/conversations/conversation-engine.service";
 
@@ -92,84 +88,6 @@ export class TimelineSubscriber {
     );
 
     //----------------------------------------------
-    // Call Started
-    //----------------------------------------------
-
-    EventSubscriber.on<CallPayload>(
-      AppEvent.CALL_STARTED,
-      async payload => {
-        await CallTimelineService.started(
-          payload.callId
-        );
-      }
-    );
-
-    //----------------------------------------------
-    // Call Ringing
-    //----------------------------------------------
-
-    EventSubscriber.on<CallPayload>(
-      AppEvent.CALL_RINGING,
-      async payload => {
-        await CallTimelineService.ringing(
-          payload.callId
-        );
-      }
-    );
-
-    //----------------------------------------------
-    // Call Answered
-    //----------------------------------------------
-
-    EventSubscriber.on<CallPayload>(
-      AppEvent.CALL_ANSWERED,
-      async payload => {
-        await CallTimelineService.answered(
-          payload.callId
-        );
-      }
-    );
-
-    //----------------------------------------------
-    // Voice Thinking
-    //----------------------------------------------
-
-    EventSubscriber.on<CallPayload>(
-      AppEvent.VOICE_THINKING,
-      async payload => {
-        await CallTimelineService.thinking(
-          payload.callId
-        );
-      }
-    );
-
-    //----------------------------------------------
-    // Voice Listening
-    //----------------------------------------------
-
-    EventSubscriber.on<CallPayload>(
-      AppEvent.VOICE_LISTENING,
-      async payload => {
-        await CallTimelineService.listening(
-          payload.callId
-        );
-      }
-    );
-
-    //----------------------------------------------
-    // Voice Interrupted
-    //----------------------------------------------
-
-    EventSubscriber.on<CallPayload>(
-      AppEvent.VOICE_INTERRUPTED,
-      async payload => {
-        await CallTimelineService.interrupted(
-          payload.callId
-        );
-      }
-    );
-
-    //----------------------------------------------
     // Call Completed
     //----------------------------------------------
 
@@ -183,31 +101,6 @@ export class TimelineSubscriber {
           createCallLogger(
             callId
           );
-
-        //------------------------------------------
-        // Save Timeline Completion
-        //------------------------------------------
-
-        try {
-          await CallTimelineService.completed(
-            callId
-          );
-        } catch (
-          error
-        ) {
-          log.error(
-            {
-              event:
-                "timeline.call_completion.failed",
-
-              error:
-                normalizeError(
-                  error
-                ),
-            },
-            "Failed to save completed call timeline event"
-          );
-        }
 
         //------------------------------------------
         // Prevent Duplicate Post-Call Processing

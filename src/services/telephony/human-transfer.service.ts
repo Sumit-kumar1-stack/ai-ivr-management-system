@@ -21,6 +21,12 @@ import type {
 import {
   registerHumanTransferAdapters,
 } from "./register-human-transfer-adapters.service";
+import {
+  prepareHumanTransferContinuity,
+} from "./human-transfer-continuity.service";
+import {
+  persistTransferLifecycle,
+} from "./agent-transfer-persistence.service";
 
 //--------------------------------------------------
 // Transfer
@@ -189,6 +195,8 @@ export async function transferHumanCall(
   //------------------------------------------------
 
   try {
+    prepareHumanTransferContinuity(request.callId);
+    await persistTransferLifecycle(request.callId, "TRANSFER_INITIATED", { provider: request.provider, strategy: request.strategy });
     log.info(
       {
         event:

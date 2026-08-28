@@ -24,6 +24,11 @@ import {
   normalizeError,
 } from "@/lib/logger";
 
+import {
+  assertCallOwnership,
+} from "@/services/security/tenant-access.service";
+import { PlivoProvider } from "@/providers/telephony/plivo.provider";
+
 export const runtime =
   "nodejs";
 
@@ -70,6 +75,9 @@ const ALLOWED_TWILIO_HOSTS =
     "api.twilio.com",
     "media.twiliocdn.com",
   ]);
+
+const EXOTEL_RECORDING_HOST =
+  "s3-ap-southeast-1.amazonaws.com";
 
 //--------------------------------------------------
 // Basic Authentication Header
@@ -165,6 +173,28 @@ function buildTwilioMediaUrl(
   return parsedUrl;
 }
 
+function buildExotelMediaUrl(
+  recordingUrl: string,
+  accountSid: string
+): URL {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(recordingUrl);
+  } catch {
+    throw new Error("Stored recording URL is invalid");
+  }
+  const accountPrefix = `/exotelrecordings/${encodeURIComponent(accountSid)}/`;
+  if (
+    parsedUrl.protocol !== "https:" ||
+    parsedUrl.hostname.toLowerCase() !== EXOTEL_RECORDING_HOST ||
+    !parsedUrl.pathname.startsWith(accountPrefix) ||
+    !/\.(mp3|wav)$/i.test(parsedUrl.pathname)
+  ) {
+    throw new Error("Recording URL is not a documented Exotel recording URL");
+  }
+  return parsedUrl;
+}
+
 //--------------------------------------------------
 // JSON Error Response
 //--------------------------------------------------
@@ -236,6 +266,11 @@ export async function GET(
       );
     }
 
+    await assertCallOwnership(
+      callId,
+      user
+    );
+
     //----------------------------------------
     // Load Recording Metadata
     //----------------------------------------
@@ -263,11 +298,16 @@ export async function GET(
           providerCallId:
             true,
 
+          provider:
+            true,
+
           attemptNumber:
             true,
 
           recordingUrl:
             true,
+
+          recordingId: true,
         },
       });
 
@@ -325,9 +365,7 @@ export async function GET(
         }
       );
 
-    if (
-      !call.recordingUrl
-    ) {
+    if (!call.recordingUrl) {
       log.warn(
         {
           event:
@@ -351,19 +389,26 @@ export async function GET(
     // Private Provider Credentials
     //----------------------------------------
 
+    const isExotel = call.provider === "EXOTEL";
+    const isPlivo = call.provider === "PLIVO";
+
     const accountSid =
-      process.env
-        .TWILIO_ACCOUNT_SID
+      (isExotel
+        ? process.env.EXOTEL_ACCOUNT_SID
+        : isPlivo
+          ? process.env.PLIVO_AUTH_ID
+        : process.env.TWILIO_ACCOUNT_SID)
         ?.trim();
 
-    const authToken =
-      process.env
-        .TWILIO_AUTH_TOKEN
-        ?.trim();
+    const authToken = isExotel
+      ? undefined
+      : isPlivo
+        ? process.env.PLIVO_AUTH_TOKEN?.trim()
+      : process.env.TWILIO_AUTH_TOKEN?.trim();
 
     if (
       !accountSid ||
-      !authToken
+      (!isExotel && !authToken)
     ) {
       log.error(
         {
@@ -375,7 +420,7 @@ export async function GET(
               startedAt
             ),
         },
-        "Twilio recording credentials are missing"
+        "Recording provider credentials are missing"
       );
 
       return jsonError(
@@ -392,11 +437,14 @@ export async function GET(
       URL;
 
     try {
-      mediaUrl =
-        buildTwilioMediaUrl(
-          call.recordingUrl,
-          accountSid
-        );
+      if (isPlivo) {
+        const recordingId = call.recordingId ?? parsePlivoRecordingReference(call.recordingUrl);
+        if (!recordingId) throw new Error("Plivo recording reference is invalid");
+        log.info({ event: "plivo.recording.fetch_started", recordingId, durationMs: getDurationMs(startedAt) }, "Plivo recording lookup started");
+        mediaUrl = await new PlivoProvider().getRecordingMediaUrl(recordingId);
+      } else {
+        mediaUrl = isExotel ? buildExotelMediaUrl(call.recordingUrl, accountSid) : buildTwilioMediaUrl(call.recordingUrl, accountSid);
+      }
     } catch (
       validationError
     ) {
@@ -428,17 +476,11 @@ export async function GET(
     // Provider Request Headers
     //----------------------------------------
 
-    const providerHeaders =
-      new Headers({
-        Authorization:
-          buildBasicAuthHeader(
-            accountSid,
-            authToken
-          ),
+    const providerHeaders = new Headers({ Accept: "audio/mpeg" });
 
-        Accept:
-          "audio/mpeg",
-      });
+    if (!isExotel && authToken) {
+      providerHeaders.set("Authorization", buildBasicAuthHeader(accountSid, authToken));
+    }
 
     const rangeHeader =
       request.headers.get(
@@ -628,9 +670,10 @@ export async function GET(
       "bytes"
     );
 
+    const download = request.nextUrl.searchParams.get("download") === "1";
     responseHeaders.set(
       "Content-Disposition",
-      `inline; filename="call-${callId}.mp3"`
+      `${download ? "attachment" : "inline"}; filename="call-${callId}.mp3"`
     );
 
     const passthroughHeaders = [
@@ -694,6 +737,8 @@ export async function GET(
       },
       "Recording stream returned to browser"
     );
+
+    if (isPlivo) log.info({ event: "plivo.recording.fetch_completed", durationMs: getDurationMs(startedAt) }, "Plivo recording stream returned to browser");
 
     //----------------------------------------
     // Stream Provider Response
@@ -824,4 +869,9 @@ export async function GET(
       500
     );
   }
+}
+
+function parsePlivoRecordingReference(value: string): string | null {
+  const match = /^plivo-recording:([^\s]+)$/.exec(value.trim());
+  return match?.[1] ?? null;
 }

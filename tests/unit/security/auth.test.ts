@@ -1,4 +1,6 @@
 import {
+  AccountStatus,
+  TenantStatus,
   UserRole,
 } from "@prisma/client";
 
@@ -97,6 +99,21 @@ const activeAdmin = {
 
   avatar:
     null,
+
+  campaignCapabilities:
+    [],
+
+  tenantId:
+    null,
+
+  tenantName:
+    null,
+
+  tenantStatus:
+    null,
+
+  accountStatus:
+    AccountStatus.ACTIVE,
 
   isActive:
     true,
@@ -298,11 +315,30 @@ describe(
                 avatar:
                   true,
 
+                tenantId:
+                  true,
+
+                accountStatus:
+                  true,
+
                 isActive:
                   true,
+
+                campaignCapabilities:
+                  true,
+
+                tenant: {
+                  select: {
+                    name:
+                      true,
+
+                    status:
+                      true,
+                  },
+                },
               },
             });
-          }
+        }
         );
 
         it(
@@ -335,6 +371,24 @@ describe(
             ).toBe(
               UserRole.SUPER_ADMIN
             );
+          }
+        );
+
+        it(
+          "returns null when the tenant is suspended",
+          async () => {
+            mocks.findUnique.mockResolvedValue({
+              ...activeAdmin,
+              tenantStatus: TenantStatus.SUSPENDED,
+              tenant: {
+                name: "Tenant",
+                status: TenantStatus.SUSPENDED,
+              },
+            });
+
+            const result = await getCurrentUser();
+
+            expect(result).toBeNull();
           }
         );
 

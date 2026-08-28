@@ -20,12 +20,13 @@ import {
   IVRMenuSessionService,
 } from "@/services/ivr/ivr-menu-session.service";
 
+import type {
+  CommunicationVoiceRuntime,
+} from "@/config/communication-plan";
+
 //--------------------------------------------------
 // Constants
 //--------------------------------------------------
-
-const INBOUND_CAMPAIGN_SYSTEM_KEY =
-  "INBOUND_ENQUIRIES";
 
 const DEFAULT_LANGUAGE =
   "English";
@@ -45,6 +46,8 @@ const serviceLog =
 //--------------------------------------------------
 
 export interface CreateInboundCallInput {
+  provider?: string;
+
   providerCallId:
     string;
 
@@ -53,6 +56,17 @@ export interface CreateInboundCallInput {
 
   calledNumber:
     string;
+
+  tenantId:
+    string;
+
+  inboundProfileId:
+    string;
+
+  ivrFlowVersionId?:
+    string | null;
+
+  requestedRuntime?: CommunicationVoiceRuntime;
 
   language?:
     string;
@@ -66,6 +80,12 @@ export interface CreateInboundCallResult {
     string;
 
   campaignId:
+    string;
+
+  tenantId:
+    string;
+
+  inboundProfileId:
     string;
 
   created:
@@ -99,6 +119,20 @@ export async function createOrGetInboundCall(
       ?.trim() ||
     DEFAULT_LANGUAGE;
 
+  const tenantId =
+    input.tenantId.trim();
+
+  const inboundProfileId =
+    input.inboundProfileId.trim();
+
+  const ivrFlowVersionId =
+    input.ivrFlowVersionId?.trim() ||
+    null;
+
+  const requestedRuntime =
+    input.requestedRuntime ??
+    "CASCADED";
+
   //------------------------------------------------
   // Validation
   //------------------------------------------------
@@ -124,6 +158,22 @@ export async function createOrGetInboundCall(
   ) {
     throw new Error(
       "Called phone number is required"
+    );
+  }
+
+  if (
+    requestedRuntime !== "CASCADED" &&
+    requestedRuntime !== "GEMINI_LIVE"
+  ) {
+    throw new Error("Inbound voice runtime is invalid");
+  }
+
+  if (
+    !tenantId ||
+    !inboundProfileId
+  ) {
+    throw new Error(
+      "Inbound tenant configuration is required"
     );
   }
 
@@ -153,6 +203,12 @@ export async function createOrGetInboundCall(
 
           status:
             true,
+
+          tenantId:
+            true,
+
+          inboundProfileId:
+            true,
         },
       });
 
@@ -165,6 +221,15 @@ export async function createOrGetInboundCall(
     ) {
       throw new Error(
         "Provider CallSid is already associated with an outbound call"
+      );
+    }
+
+    if (
+      existingCall.tenantId !== tenantId ||
+      existingCall.inboundProfileId !== inboundProfileId
+    ) {
+      throw new Error(
+        "Provider CallSid inbound context does not match the active configuration"
       );
     }
 
@@ -181,6 +246,10 @@ export async function createOrGetInboundCall(
 
       campaignId:
         existingCall.campaignId,
+
+      tenantId,
+
+      inboundProfileId,
 
       created:
         false,
@@ -205,7 +274,9 @@ export async function createOrGetInboundCall(
               .upsert({
                 where: {
                   systemKey:
-                    INBOUND_CAMPAIGN_SYSTEM_KEY,
+                    buildInboundCampaignSystemKey(
+                      tenantId
+                    ),
                 },
 
                 update: {
@@ -223,7 +294,9 @@ export async function createOrGetInboundCall(
                     "System campaign used to track incoming enquiry calls.",
 
                   systemKey:
-                    INBOUND_CAMPAIGN_SYSTEM_KEY,
+                    buildInboundCampaignSystemKey(
+                      tenantId
+                    ),
 
                   language,
 
@@ -252,8 +325,12 @@ export async function createOrGetInboundCall(
               .contact
               .upsert({
                 where: {
-                  phone:
-                    callerNumber,
+                  tenantId_phone: {
+                    tenantId,
+
+                    phone:
+                      callerNumber,
+                  },
                 },
 
                 update: {
@@ -268,6 +345,8 @@ export async function createOrGetInboundCall(
 
                   phone:
                     callerNumber,
+
+                  tenantId,
 
                   language,
                 },
@@ -290,6 +369,12 @@ export async function createOrGetInboundCall(
               .call
               .create({
                 data: {
+                  provider:
+                    input.provider
+                      ?.trim()
+                      .toUpperCase() ||
+                    "TWILIO",
+
                   providerCallId,
 
                   direction:
@@ -298,6 +383,20 @@ export async function createOrGetInboundCall(
                   callerNumber,
 
                   calledNumber,
+
+                  tenantId,
+
+                  inboundProfileId,
+
+                  ivrFlowVersionId,
+
+                  requestedRuntime,
+
+                  effectiveRuntime: null,
+
+                  fallbackUsed: false,
+
+                  fallbackReason: null,
 
                   campaignId:
                     campaign.id,
@@ -393,6 +492,12 @@ export async function createOrGetInboundCall(
           maskPhoneNumber(
             calledNumber
           ),
+
+        tenantId,
+
+        inboundProfileId,
+
+        requestedRuntime,
       },
       "Inbound call record created"
     );
@@ -406,6 +511,10 @@ export async function createOrGetInboundCall(
 
       campaignId:
         result.campaignId,
+
+      tenantId,
+
+      inboundProfileId,
 
       created:
         true,
@@ -442,6 +551,12 @@ export async function createOrGetInboundCall(
 
               direction:
                 true,
+
+              tenantId:
+                true,
+
+              inboundProfileId:
+                true,
             },
           });
 
@@ -450,6 +565,15 @@ export async function createOrGetInboundCall(
         duplicateCall.direction ===
           CallDirection.INBOUND
       ) {
+        if (
+          duplicateCall.tenantId !== tenantId ||
+          duplicateCall.inboundProfileId !== inboundProfileId
+        ) {
+          throw new Error(
+            "Provider CallSid inbound context does not match the active configuration"
+          );
+        }
+
         return {
           callId:
             duplicateCall.id,
@@ -459,6 +583,10 @@ export async function createOrGetInboundCall(
 
           campaignId:
             duplicateCall.campaignId,
+
+          tenantId,
+
+          inboundProfileId,
 
           created:
             false,
@@ -484,6 +612,10 @@ export async function createOrGetInboundCall(
           maskPhoneNumber(
             calledNumber
           ),
+
+        tenantId,
+
+        inboundProfileId,
 
         error:
           normalizeError(
@@ -545,4 +677,10 @@ function buildInboundCallerName(
   return lastFour
     ? `Inbound Caller ${lastFour}`
     : "Inbound Caller";
+}
+
+function buildInboundCampaignSystemKey(
+  tenantId: string
+): string {
+  return `INBOUND_ENQUIRIES:${tenantId}`;
 }

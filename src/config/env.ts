@@ -11,6 +11,14 @@ export interface TwilioEnvironment {
   mediaPublicUrl: string;
 }
 
+export interface PlivoEnvironment {
+  authId: string;
+  authToken: string;
+  callerId: string;
+  publicBaseUrl: string;
+  mediaPublicUrl: string;
+}
+
 export interface AIEnvironment {
   geminiApiKey: string;
   deepgramApiKey: string;
@@ -213,6 +221,17 @@ export function getTwilioEnvironment(): TwilioEnvironment {
   };
 }
 
+/** Plivo V3 webhook signatures use the account Auth Token. */
+export function getPlivoEnvironment(): PlivoEnvironment {
+  return {
+    authId: getRequiredEnv("PLIVO_AUTH_ID"),
+    authToken: getRequiredEnv("PLIVO_AUTH_TOKEN"),
+    callerId: getE164PhoneEnv("PLIVO_CALLER_ID"),
+    publicBaseUrl: getHttpOriginEnv("PLIVO_PUBLIC_BASE_URL"),
+    mediaPublicUrl: getOptionalWsOrigin("PLIVO_MEDIA_PUBLIC_URL") ?? "",
+  };
+}
+
 export function getAIEnvironment(): AIEnvironment {
   return {
     geminiApiKey:
@@ -256,4 +275,52 @@ export function getApplicationEnvironment(): ApplicationEnvironment {
 
     jwtSecret,
   };
+}
+
+export function getExotelEnvironment(): ExotelEnvironment {
+  const subdomain = getRequiredEnv("EXOTEL_SUBDOMAIN")
+    .replace(/^https:\/\//, "")
+    .replace(/\/+$/, "");
+
+  if (!/^[a-z0-9.-]+$/i.test(subdomain)) {
+    throw new Error("EXOTEL_SUBDOMAIN must be an Exotel API hostname without a protocol");
+  }
+
+  return {
+    accountSid: getRequiredEnv("EXOTEL_ACCOUNT_SID"),
+    apiKey: getRequiredEnv("EXOTEL_API_KEY"),
+    apiToken: getRequiredEnv("EXOTEL_API_TOKEN"),
+    subdomain,
+    callerId: getE164PhoneEnv("EXOTEL_CALLER_ID"),
+    publicBaseUrl: getHttpOriginEnv("EXOTEL_PUBLIC_BASE_URL"),
+    // Voice v1 has no documented signed-webhook verifier. A deployment-owned
+    // secret is therefore mandatory for this public callback boundary.
+    webhookSecret: getRequiredEnv("EXOTEL_WEBHOOK_SECRET"),
+    mediaPublicUrl: getOptionalWsOrigin("EXOTEL_MEDIA_PUBLIC_URL"),
+    streamUsername: getOptionalEnv("EXOTEL_STREAM_USERNAME"),
+    streamPassword: getOptionalEnv("EXOTEL_STREAM_PASSWORD"),
+  };
+}
+
+export function getOptionalWsOrigin(name: string): string | undefined {
+  const value = getOptionalEnv(name);
+  if (!value) return undefined;
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error(`${name} must be a valid URL`); }
+  if (url.protocol !== "ws:" && url.protocol !== "wss:") throw new Error(`${name} must use WS or WSS`);
+  if (url.pathname !== "/" || url.search || url.hash) throw new Error(`${name} must contain only a public origin`);
+  return url.origin;
+}
+
+export interface ExotelEnvironment {
+  accountSid: string;
+  apiKey: string;
+  apiToken: string;
+  subdomain: string;
+  callerId: string;
+  publicBaseUrl: string;
+  webhookSecret: string;
+  mediaPublicUrl?: string;
+  streamUsername?: string;
+  streamPassword?: string;
 }

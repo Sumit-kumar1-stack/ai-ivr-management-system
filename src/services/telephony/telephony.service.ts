@@ -3,6 +3,11 @@ import {
 } from "@prisma/client";
 
 import {
+  AppEvent,
+  EventPublisher,
+} from "@/core/events";
+
+import {
   ProviderFactory,
 } from "@/providers/telephony/provider.factory";
 
@@ -126,6 +131,9 @@ export async function startCall(
     created,
   } =
     await createCall({
+      provider:
+        provider.name,
+
       campaignId:
         request.campaignId,
 
@@ -295,6 +303,43 @@ export async function startCall(
       call.id
     );
 
+    void EventPublisher.publish(
+      AppEvent.CAMPAIGN_SELECTED,
+      {
+        callId:
+          call.id,
+
+        campaignId:
+          call.campaignId,
+
+        actorType:
+          "SYSTEM",
+
+        timestamp:
+          Date.now(),
+      }
+    );
+
+    void EventPublisher.publish(
+      AppEvent.CUSTOMER_MATCHED,
+      {
+        callId:
+          call.id,
+
+        campaignId:
+          call.campaignId,
+
+        contactId:
+          call.contactId,
+
+        actorType:
+          "SYSTEM",
+
+        timestamp:
+          Date.now(),
+      }
+    );
+
     log.info(
       {
         attemptNumber:
@@ -358,10 +403,16 @@ export async function startCall(
         providerRequest
       );
 
+    // Plivo acknowledges outbound creation with a request UUID. Its CallUUID
+    // arrives in the authenticated callback, so do not persist the request ID
+    // as a provider call identifier.
+    const providerCallId = Object.prototype.hasOwnProperty.call(result, "providerCallId")
+      ? result.providerCallId ?? null
+      : result.callId;
+
     log.info(
       {
-        providerCallId:
-          result.callId,
+        providerCallId,
 
         providerStatus:
           result.status,
@@ -394,8 +445,7 @@ export async function startCall(
     await updateCall(
       call.id,
       {
-        providerCallId:
-          result.callId,
+        providerCallId,
 
         status,
 
@@ -415,8 +465,7 @@ export async function startCall(
 
     log.info(
       {
-        providerCallId:
-          result.callId,
+        providerCallId,
 
         internalStatus:
           status,
@@ -447,8 +496,7 @@ export async function startCall(
       callId:
         call.id,
 
-      providerCallId:
-        result.callId,
+      providerCallId,
 
       status,
 

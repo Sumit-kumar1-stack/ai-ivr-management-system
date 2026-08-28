@@ -1,0 +1,17 @@
+.git
+.next
+node_modules
+coverage
+.vitest
+.env
+.env.*
+!.env.example
+cookies*.txt
+*.wav
+*.log
+*.zip
+storage
+uploads
+public/uploads
+ai-ivr-phase4-latest
+ai-ivr-system-review

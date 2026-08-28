@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useCallback,
   useMemo,
   useState,
 } from "react";
@@ -18,6 +19,7 @@ import {
 
 import {
   Button,
+  buttonVariants,
 } from "@/components/ui/button";
 
 import {
@@ -997,6 +999,8 @@ export default function CallDetailsPage() {
         </Card>
       </div>
 
+      <TransferCallbackPanel callId={call.id} />
+
       <Card>
         <CardHeader>
           <CardTitle>
@@ -1903,6 +1907,16 @@ export default function CallDetailsPage() {
     >
       Your browser does not support audio playback.
     </audio>
+
+    <a
+      href={`/api/calls/${call.id}/recording?download=1`}
+      className={buttonVariants({
+        variant: "outline",
+        size: "sm",
+      })}
+    >
+      Download recording
+    </a>
   </div>
 ) : (
               <p
@@ -1966,4 +1980,31 @@ export default function CallDetailsPage() {
       </div>
     </div>
   );
+}
+
+type SafeTransferEvent = { createdAt: string; message: string | null; status: string | null; provider: string | null; handoff: { department: string | null; intent: string | null; conversationSummary: string | null } | null };
+type SafeCallback = { id: string; status: string; phone: string; reason: string | null; intent: string | null; preferredStart: string; preferredEnd: string | null; timezone: string };
+
+function TransferCallbackPanel({ callId }: { callId: string }) {
+  const [data, setData] = useState<{ events: SafeTransferEvent[]; callbacks: SafeCallback[] } | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    const response = await fetch(`/api/calls/${encodeURIComponent(callId)}/transfer`, { cache: "no-store" });
+    const result = await response.json() as { success: boolean; data?: { events: SafeTransferEvent[]; callbacks: SafeCallback[] }; message?: string };
+    if (!response.ok || !result.success || !result.data) throw new Error(result.message ?? "Unable to load transfer details");
+    setData(result.data);
+  }, [callId]);
+  useEffect(() => { const timer = window.setTimeout(() => { void load().catch(error => setMessage(error instanceof Error ? error.message : "Unable to load transfer details")); }, 0); return () => window.clearTimeout(timer); }, [load]);
+  const act = async (id: string, action: "confirm" | "claim" | "schedule" | "complete" | "fail" | "cancel") => {
+    const response = await fetch(`/api/callbacks/${encodeURIComponent(id)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) });
+    const result = await response.json() as { success: boolean; message?: string };
+    if (!response.ok || !result.success) { setMessage(result.message ?? "Unable to update callback"); return; }
+    await load();
+  };
+  if (!data && !message) return null;
+  return <Card><CardHeader><CardTitle>Human Transfer and Callback</CardTitle></CardHeader><CardContent className="space-y-5">
+    {message && <p className="text-sm text-destructive">{message}</p>}
+    {data?.events.length ? <div className="space-y-3">{data.events.map((event, index) => <div key={`${event.createdAt}-${index}`} className="rounded-xl border p-4"><div className="flex flex-wrap items-center gap-2"><Badge variant={getStatusVariant(event.status ?? "")}>{event.status ?? event.message ?? "Transfer"}</Badge>{event.provider && <Badge variant="outline">{event.provider}</Badge>}<span className="text-xs text-muted-foreground">{formatDate(event.createdAt)}</span></div>{event.handoff && <p className="mt-3 text-sm">Department: {event.handoff.department ?? "Not specified"} · Intent: {event.handoff.intent ?? "Not specified"}<br />Safe handoff summary: {event.handoff.conversationSummary ?? "Not available"}</p>}</div>)}</div> : <p className="text-sm text-muted-foreground">No human-transfer activity for this call.</p>}
+    {data?.callbacks.length ? <div className="space-y-3 border-t pt-5"><p className="text-sm font-semibold">Callbacks</p>{data.callbacks.map(callback => <div key={callback.id} className="rounded-xl border p-4"><div className="flex flex-wrap items-center gap-2"><Badge variant={getStatusVariant(callback.status)}>{callback.status}</Badge><span className="text-sm text-muted-foreground">{callback.phone}</span></div><p className="mt-2 text-sm">{callback.reason ?? callback.intent ?? "Callback follow-up"}</p><p className="mt-1 text-xs text-muted-foreground">Window: {formatDate(callback.preferredStart)}{callback.preferredEnd ? ` – ${formatDate(callback.preferredEnd)}` : ""} ({callback.timezone})</p>{!["COMPLETED", "FAILED", "CANCELLED"].includes(callback.status) && <div className="mt-3 flex flex-wrap gap-2">{(["confirm", "claim", "schedule", "complete", "fail", "cancel"] as const).map(action => <Button key={action} size="sm" variant={action === "cancel" || action === "fail" ? "outline" : "default"} onClick={() => void act(callback.id, action)}>{action}</Button>)}</div>}</div>)}</div> : null}
+  </CardContent></Card>;
 }

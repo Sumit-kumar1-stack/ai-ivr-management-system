@@ -153,7 +153,10 @@ async function executeTransfer(
   id:
     true,
 
-  providerCallId:
+ providerCallId:
+    true,
+
+  provider:
     true,
 
   status:
@@ -182,7 +185,8 @@ async function executeTransfer(
   //------------------------------------------------
 
 const provider =
-  resolveProviderFromCallId(
+  resolveProvider(
+    call.provider,
     call.providerCallId
   );
 
@@ -243,10 +247,15 @@ const provider =
 // Provider Resolution
 //--------------------------------------------------
 
-function resolveProviderFromCallId(
+function resolveProvider(
+  persistedProvider: string,
   providerCallId:
     string
 ): HumanTransferProvider | null {
+const configured = persistedProvider.trim().toUpperCase();
+  if (configured === "PLIVO") return "PLIVO";
+  if (configured === "EXOTEL") return "EXOTEL";
+  if (configured === "TWILIO") return "TWILIO";
   const normalized =
     providerCallId.trim();
 

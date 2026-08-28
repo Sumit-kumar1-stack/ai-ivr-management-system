@@ -49,6 +49,9 @@ const BASE_ENV:
     COMMUNICATION_TIER:
       "STANDARD",
 
+    KNOWLEDGE_STORAGE_DIR:
+      "/var/lib/ai-ivr/knowledge",
+
     WHATSAPP_ENABLED:
       "false",
 
@@ -207,7 +210,7 @@ describe(
     );
 
     it(
-      "accepts Premium concurrency up to ten when human transfer is configured",
+      "accepts Premium concurrency up to ten when tenant transfer routing is enabled",
       () => {
         const report =
           validate({
@@ -223,8 +226,8 @@ describe(
             HUMAN_TRANSFER_ENABLED:
               "true",
 
-            HUMAN_TRANSFER_DESTINATION:
-              "+14155550125",
+            KNOWLEDGE_STORAGE_DIR:
+              "/var/lib/ai-ivr/knowledge",
           });
 
         expect(

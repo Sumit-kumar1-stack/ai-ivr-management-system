@@ -45,14 +45,10 @@ const REQUIRED_BASE_VARIABLES = [
   "REDIS_URL",
   "JWT_SECRET",
   "TELEPHONY_PROVIDER",
-  "TWILIO_ACCOUNT_SID",
-  "TWILIO_AUTH_TOKEN",
-  "TWILIO_PHONE_NUMBER",
-  "TWILIO_PUBLIC_BASE_URL",
-  "TWILIO_MEDIA_PUBLIC_URL",
   "GEMINI_API_KEY",
   "DEEPGRAM_API_KEY",
   "COMMUNICATION_TIER",
+  "KNOWLEDGE_STORAGE_DIR",
 ] as const;
 
 const KNOWN_OPTIONAL_VARIABLES =
@@ -66,11 +62,14 @@ const KNOWN_OPTIONAL_VARIABLES =
     "TWILIO_MEDIA_PORT",
     "WORKER_HEALTH_PORT",
     "SHUTDOWN_TIMEOUT_MS",
+    "MEDIA_DRAIN_TIMEOUT_MS",
     "SOCKET_ALLOWED_ORIGINS",
 
     "CAMPAIGN_CALL_CONCURRENCY",
     "CALL_RETRY_CONCURRENCY",
     "COMMUNICATION_CAMPAIGN_CONCURRENCY",
+    "COMMUNICATION_CAMPAIGN_MAKER_CHECKER_ENABLED",
+    "BILLING_WEBHOOK_SECRET",
 
     "DEEPGRAM_AUDIO_BUFFER_MAX_BYTES",
 
@@ -81,6 +80,26 @@ const KNOWN_OPTIONAL_VARIABLES =
     "GEMINI_TTS_STYLE",
 
     "TWILIO_MESSAGING_SERVICE_SID",
+    "TWILIO_ACCOUNT_SID",
+    "TWILIO_AUTH_TOKEN",
+    "TWILIO_PHONE_NUMBER",
+    "TWILIO_PUBLIC_BASE_URL",
+    "TWILIO_MEDIA_PUBLIC_URL",
+    "EXOTEL_ACCOUNT_SID",
+    "EXOTEL_API_KEY",
+    "EXOTEL_API_TOKEN",
+    "EXOTEL_SUBDOMAIN",
+    "EXOTEL_CALLER_ID",
+    "EXOTEL_PUBLIC_BASE_URL",
+    "EXOTEL_WEBHOOK_SECRET",
+    "EXOTEL_MEDIA_PUBLIC_URL",
+    "EXOTEL_STREAM_USERNAME",
+    "EXOTEL_STREAM_PASSWORD",
+    "PLIVO_AUTH_ID",
+    "PLIVO_AUTH_TOKEN",
+    "PLIVO_CALLER_ID",
+    "PLIVO_PUBLIC_BASE_URL",
+    "PLIVO_MEDIA_PUBLIC_URL",
     "MESSAGING_BUSINESS_NAME",
 
     "STALE_CALL_TIMEOUT_MINUTES",
@@ -90,12 +109,19 @@ const KNOWN_OPTIONAL_VARIABLES =
     "ENABLE_POST_CALL_ACTIONS",
 
     "HUMAN_TRANSFER_ENABLED",
-    "HUMAN_TRANSFER_DESTINATION",
     "HUMAN_TRANSFER_TIMEZONE",
     "HUMAN_TRANSFER_START_HOUR",
     "HUMAN_TRANSFER_END_HOUR",
     "HUMAN_TRANSFER_ANNOUNCEMENT",
     "HUMAN_TRANSFER_TIMEOUT_SECONDS",
+
+    "RECORDING_RETENTION_DAYS",
+    "TRANSCRIPT_RETENTION_DAYS",
+    "CONVERSATION_METADATA_RETENTION_DAYS",
+    "AUDIT_EVENT_RETENTION_DAYS",
+    "RETENTION_BATCH_SIZE",
+    "RETENTION_DELETION_BATCH_SIZE",
+    "RETENTION_MAX_RECORDS_PER_RUN",
 
     "WHATSAPP_ENABLED",
 
@@ -182,6 +208,11 @@ export function validateProductionEnvironment(
   );
 
   checkRuntimeTuning(
+    env,
+    checks
+  );
+
+  checkRetentionConfiguration(
     env,
     checks
   );
@@ -557,16 +588,12 @@ function checkTelephony(
     )
       ?.toLowerCase();
 
-  if (
-    provider &&
-    provider !==
-      "twilio"
-  ) {
+  if (provider !== "twilio" && provider !== "exotel" && provider !== "plivo") {
     addCheck(
       checks,
       "TELEPHONY_PROVIDER",
       "FAIL",
-      "must be twilio for the current production call path"
+      "must be twilio, exotel, or plivo for the production call path"
     );
   } else if (
     provider ===
@@ -578,6 +605,32 @@ function checkTelephony(
       "PASS",
       "Twilio production provider selected"
     );
+  } else if (provider === "exotel") {
+    addCheck(checks, "TELEPHONY_PROVIDER", "PASS", "Exotel production provider selected");
+  } else {
+    addCheck(checks, "TELEPHONY_PROVIDER", "PASS", "Plivo production provider selected");
+  }
+
+  if (provider === "exotel") {
+    for (const name of ["EXOTEL_ACCOUNT_SID", "EXOTEL_API_KEY", "EXOTEL_API_TOKEN", "EXOTEL_SUBDOMAIN", "EXOTEL_CALLER_ID", "EXOTEL_PUBLIC_BASE_URL", "EXOTEL_WEBHOOK_SECRET"]) {
+      checkRequiredSecret(env, checks, name, "required for Exotel Voice v1 call control");
+    }
+    const callerId = readEnvironmentValue(env, "EXOTEL_CALLER_ID");
+    if (callerId && !isE164(callerId)) addCheck(checks, "EXOTEL_CALLER_ID", "FAIL", "must be an E.164 phone number");
+    checkPublicHttpsOrigin(env, "EXOTEL_PUBLIC_BASE_URL", checks);
+    checkPublicWssOrigin(env, "EXOTEL_MEDIA_PUBLIC_URL", checks);
+    checkRequiredSecret(env, checks, "EXOTEL_STREAM_USERNAME", "required to authenticate Exotel AgentStream connections");
+    checkRequiredSecret(env, checks, "EXOTEL_STREAM_PASSWORD", "required to authenticate Exotel AgentStream connections");
+    return;
+  }
+
+  if (provider === "plivo") {
+    for (const name of ["PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN", "PLIVO_CALLER_ID", "PLIVO_PUBLIC_BASE_URL", "PLIVO_MEDIA_PUBLIC_URL"]) checkRequiredSecret(env, checks, name, "required for Plivo Voice control and V3 webhook validation");
+    const callerId = readEnvironmentValue(env, "PLIVO_CALLER_ID");
+    if (callerId && !isE164(callerId)) addCheck(checks, "PLIVO_CALLER_ID", "FAIL", "must be an E.164 phone number");
+    checkPublicHttpsOrigin(env, "PLIVO_PUBLIC_BASE_URL", checks);
+    checkPublicWssOrigin(env, "PLIVO_MEDIA_PUBLIC_URL", checks);
+    return;
   }
 
   const accountSid =
@@ -1013,29 +1066,6 @@ function checkHumanTransfer(
       );
     }
 
-    const destination =
-      readEnvironmentValue(
-        env,
-        "HUMAN_TRANSFER_DESTINATION"
-      );
-
-    if (
-      !destination
-    ) {
-      addCheck(
-        checks,
-        "HUMAN_TRANSFER_DESTINATION",
-        "FAIL",
-        "required when Premium human transfer is enabled"
-      );
-    } else {
-      addCheck(
-        checks,
-        "HUMAN_TRANSFER_DESTINATION",
-        "PASS",
-        "configured"
-      );
-    }
   } else if (
     tier ===
       "STANDARD" &&
@@ -1129,6 +1159,14 @@ function checkRuntimeTuning(
     );
   }
 
+  const knowledgeStorage = readEnvironmentValue(env, "KNOWLEDGE_STORAGE_DIR");
+  if (knowledgeStorage) {
+    const publicRoot = resolve(process.cwd(), "public");
+    const storageRoot = resolve(knowledgeStorage);
+    const isPublic = storageRoot === publicRoot || storageRoot.startsWith(`${publicRoot}/`) || storageRoot.startsWith(`${publicRoot}\\`);
+    addCheck(checks, "KNOWLEDGE_STORAGE_DIR", isPublic ? "FAIL" : "PASS", isPublic ? "must not be located under public/" : "uses a private storage directory");
+  }
+
   const logLevel =
     readEnvironmentValue(
       env,
@@ -1204,6 +1242,64 @@ function checkRuntimeTuning(
       "configured without a local development origin"
     );
   }
+}
+
+function checkRetentionConfiguration(
+  env: NodeJS.ProcessEnv,
+  checks: ProductionEnvironmentCheck[]
+): void {
+  const batchSize = checkOptionalBoundedPositiveInteger(
+    env,
+    checks,
+    "RETENTION_BATCH_SIZE",
+    1_000
+  );
+  const maxPerRun = checkOptionalBoundedPositiveInteger(
+    env,
+    checks,
+    "RETENTION_MAX_RECORDS_PER_RUN",
+    100_000
+  );
+
+  if (
+    batchSize !== null &&
+    maxPerRun !== null &&
+    batchSize > maxPerRun
+  ) {
+    addCheck(
+      checks,
+      "RETENTION_BATCH_SIZE",
+      "FAIL",
+      "must be less than or equal to RETENTION_MAX_RECORDS_PER_RUN"
+    );
+  }
+}
+
+function checkOptionalBoundedPositiveInteger(
+  env: NodeJS.ProcessEnv,
+  checks: ProductionEnvironmentCheck[],
+  name: string,
+  maximum: number
+): number | null {
+  const value = readEnvironmentValue(env, name);
+
+  if (!value) {
+    return null;
+  }
+
+  if (!/^[1-9]\d*$/.test(value)) {
+    addCheck(checks, name, "FAIL", "must be a positive integer");
+    return null;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed > maximum) {
+    addCheck(checks, name, "FAIL", `must be less than or equal to ${maximum}`);
+    return null;
+  }
+
+  addCheck(checks, name, "PASS", "valid bounded positive integer configuration");
+  return parsed;
 }
 
 function checkForbiddenProductionOverrides(
@@ -1538,6 +1634,29 @@ function checkPublicHttpsOrigin(
     "PASS",
     "uses a public HTTPS origin"
   );
+}
+
+function checkPublicWssOrigin(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  checks: ProductionEnvironmentCheck[]
+): void {
+  const value = readEnvironmentValue(env, name);
+  if (!value) return;
+  const url = parseUrl(value);
+  if (!url) {
+    addCheck(checks, name, "FAIL", "must be a valid absolute URL");
+    return;
+  }
+  if (url.protocol !== "wss:") {
+    addCheck(checks, name, "FAIL", "must use WSS in production");
+    return;
+  }
+  if (isLocalHostname(url.hostname) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+    addCheck(checks, name, "FAIL", "must be a clean publicly reachable WSS origin");
+    return;
+  }
+  addCheck(checks, name, "PASS", "uses a secure public WebSocket origin");
 }
 
 function checkOptionalPort(

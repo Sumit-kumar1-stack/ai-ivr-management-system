@@ -1,7 +1,13 @@
 import {
+  AuditEventOutcome,
   CommunicationCampaignStatus,
   CommunicationChannel,
+  CommunicationCampaignApprovalStatus,
 } from "@prisma/client";
+
+import type {
+  AuthenticatedUser,
+} from "@/lib/auth";
 
 import {
   createServerLogger,
@@ -11,6 +17,9 @@ import {
 import {
   prisma,
 } from "@/lib/prisma";
+import {
+  recordAuditEvent,
+} from "@/services/audit/audit-event.service";
 
 import {
   assertCommunicationDeploymentChannelsAvailable,
@@ -25,13 +34,25 @@ import {
 } from "./communication-entitlement.service";
 
 import {
+  resolveTenantBillingContextForUser,
+} from "@/services/billing/tenant-subscription.service";
+
+import {
   requirePublishedCommunicationIvrFlow,
 } from "./communication-ivr-binding.service";
+
+import {
+  IVRFlowService,
+} from "@/services/ivr-flow.service";
 
 import {
   compensateCommunicationCampaignQueueFailure,
   reserveCommunicationCampaignLaunch,
 } from "./communication-usage-limit.service";
+import {
+  canLaunchCampaign,
+  canLaunchCampaignState,
+} from "./campaign-permissions";
 
 //--------------------------------------------------
 // Logger
@@ -48,7 +69,10 @@ const log =
 
 export async function launchCommunicationCampaign(
   campaignId:
-    string
+    string,
+
+  user:
+    AuthenticatedUser
 ) {
   const id =
     campaignId
@@ -81,6 +105,43 @@ export async function launchCommunicationCampaign(
           status:
             true,
 
+          approvalRequired:
+            true,
+
+          approvalStatus:
+            true,
+
+          submittedByUserId:
+            true,
+
+          approvedByUserId:
+            true,
+
+          approvedAt:
+            true,
+
+          currentRevision:
+            true,
+
+          approvedRevision:
+            true,
+
+          ownerUserId:
+            true,
+
+          ownerUser: {
+            select: {
+              tenantId:
+                true,
+            },
+          },
+
+          attemptedContactCount:
+            true,
+
+          archivedAt:
+            true,
+
           tier:
             true,
 
@@ -102,6 +163,9 @@ export async function launchCommunicationCampaign(
           ivrFlowId:
             true,
 
+          ivrFlowVersionId:
+            true,
+
           _count: {
             select: {
               recipients:
@@ -119,198 +183,326 @@ export async function launchCommunicationCampaign(
     );
   }
 
-  //------------------------------------------------
-  // Recipients
-  //------------------------------------------------
+  const campaignTenantId =
+    campaign.ownerUser?.tenantId ??
+    null;
 
-  const recipientCount =
-    campaign
-      ._count
-      .recipients;
+  log.info(
+    {
+      event:
+        "CAMPAIGN_LAUNCH_REQUESTED",
 
-  if (
-    recipientCount ===
-    0
-  ) {
-    throw new Error(
-      "Communication campaign has no recipient snapshots"
-    );
-  }
-
-  //------------------------------------------------
-  // Channels
-  //------------------------------------------------
-
-  if (
-    campaign.channels
-      .length ===
-    0
-  ) {
-    throw new Error(
-      "Communication campaign has no selected channels"
-    );
-  }
-
-  //------------------------------------------------
-  // Deployment Availability Gate
-  //------------------------------------------------
-
-  assertCommunicationDeploymentChannelsAvailable(
-    campaign.channels
-  );
-
-  //------------------------------------------------
-  // Runtime Entitlement Gate
-  //
-  // The campaign's stored tier is the authoritative
-  // subscription snapshot. Never grant features from
-  // the current environment if the campaign itself was
-  // created under a lower tier.
-  //------------------------------------------------
-
-  const entitlement =
-    assertCommunicationCampaignEntitlements({
-      tier:
-        campaign.tier,
-
-      channels:
-        campaign.channels,
-
-      smartChanneling:
-        campaign
-          .smartChanneling,
-
-      fallbackPolicy:
-        campaign
-          .fallbackPolicy,
-
-      recipientCount,
-    });
-
-  //------------------------------------------------
-  // IVR Must Be Configured Before Queueing
-  //------------------------------------------------
-
-  if (
-    campaign.channels
-      .includes(
-        CommunicationChannel.IVR
-      )
-  ) {
-    if (
-      !campaign.ivrFlowId
-    ) {
-      throw new Error(
-        "IVR_FLOW_CONFIGURATION_REQUIRED: Select a published IVR flow before launching this campaign."
-      );
-    }
-
-    /*
-     * Re-check at launch. The flow may have been
-     * changed or unpublished after operator selection.
-     */
-    await requirePublishedCommunicationIvrFlow(
-      campaign.ivrFlowId
-    );
-  }
-
-  //------------------------------------------------
-  // Schedule
-  //------------------------------------------------
-
-  let delayMs =
-    0;
-
-  let scheduled =
-    false;
-
-  if (
-    !campaign
-      .launchImmediately
-  ) {
-    if (
-      !campaign.scheduledAt
-    ) {
-      throw new Error(
-        "Scheduled communication campaign has no scheduledAt value"
-      );
-    }
-
-    delayMs =
-      campaign
-        .scheduledAt
-        .getTime() -
-      Date.now();
-
-    if (
-      delayMs >
-      0
-    ) {
-      scheduled =
-        true;
-    } else {
-      delayMs =
-        0;
-    }
-  }
-
-  const targetStatus =
-    scheduled
-      ? CommunicationCampaignStatus.SCHEDULED
-      : CommunicationCampaignStatus.QUEUED;
-
-  //------------------------------------------------
-  // Daily Usage Date
-  //
-  // Future scheduled campaigns reserve against their
-  // execution day. Immediate / overdue schedules use
-  // today's UTC usage bucket.
-  //------------------------------------------------
-
-  const usageDate =
-    scheduled &&
-    campaign.scheduledAt
-      ? campaign.scheduledAt
-      : new Date();
-
-  //------------------------------------------------
-  // Atomic Plan Reservation + Status Claim
-  //------------------------------------------------
-
-  const usage =
-    await reserveCommunicationCampaignLaunch({
-      campaignId:
+      communicationCampaignId:
         campaign.id,
 
-      tier:
-        campaign.tier,
+      status:
+        campaign.status,
 
-      recipientCount,
+      approvalRequired:
+        campaign.approvalRequired,
 
-      usageDate,
+      approvalStatus:
+        campaign.approvalStatus,
+    },
+    "Communication campaign launch requested"
+  );
 
-      targetStatus,
-    });
+  const tenantId =
+    campaign.ownerUser?.tenantId ??
+    user.tenantId ??
+    "";
 
-  //------------------------------------------------
-  // Queue
-  //------------------------------------------------
+  await recordLaunchAuditEvent({
+    tenantId,
+    actor: user,
+    campaign,
+    action:
+      "CAMPAIGN_LAUNCH_REQUESTED",
+    outcome:
+      AuditEventOutcome.SUCCEEDED,
+    result:
+      "SUCCEEDED",
+    afterState: {
+      status:
+        campaign.status,
+
+      approvalStatus:
+        campaign.approvalStatus,
+
+      currentRevision:
+        campaign.currentRevision,
+
+      approvedRevision:
+        campaign.approvedRevision,
+    },
+  });
 
   try {
-    await CommunicationCampaignQueueService
-      .enqueue(
-        {
-          communicationCampaignId:
-            campaign.id,
-        },
-        delayMs
+    if (
+      campaign.status ===
+      CommunicationCampaignStatus.ARCHIVED
+    ) {
+      throw new Error(
+        "Communication campaign cannot be launched because it is archived"
       );
-  } catch (
-    error
+    }
+
+    if (
+      !canLaunchCampaignState(
+        campaign
+      )
+    ) {
+      const staleApproval =
+        campaign.approvalRequired &&
+        campaign.approvalStatus ===
+          CommunicationCampaignApprovalStatus.APPROVED &&
+        campaign.approvedRevision !==
+          campaign.currentRevision;
+
+      throw new Error(
+        staleApproval
+          ? "Communication campaign approval is stale and must be resubmitted"
+          : "Communication campaign is not approved for launch"
+      );
+    }
+
+  if (
+    !canLaunchCampaign(
+      user,
+      {
+        ...campaign,
+        tenantId:
+          campaignTenantId,
+      }
+    )
   ) {
+    throw new Error(
+      "You are not authorized to launch this communication campaign"
+    );
+    }
+
+    const billingContext =
+      await resolveTenantBillingContextForUser(
+        user.id
+      );
+
+    if (
+      !billingContext.launchAllowed
+    ) {
+      throw new Error(
+        "Tenant subscription is not active"
+      );
+    }
+
     //------------------------------------------------
-    // Compensation
+    // Recipients
     //------------------------------------------------
+
+    const recipientCount =
+      campaign
+        ._count
+        .recipients;
+
+    if (
+      recipientCount ===
+      0
+    ) {
+      throw new Error(
+        "Communication campaign has no recipient snapshots"
+      );
+    }
+
+    //------------------------------------------------
+    // Channels
+    //------------------------------------------------
+
+    if (
+      campaign.channels
+        .length ===
+      0
+    ) {
+      throw new Error(
+        "Communication campaign has no selected channels"
+      );
+    }
+
+    //------------------------------------------------
+    // Deployment Availability Gate
+    //------------------------------------------------
+
+    assertCommunicationDeploymentChannelsAvailable(
+      campaign.channels
+    );
+
+    //------------------------------------------------
+    // Runtime Entitlement Gate
+    //
+    // The current tenant subscription is authoritative.
+    // Never trust the stored campaign tier snapshot to
+    // authorize a launch.
+    //------------------------------------------------
+
+    const entitlement =
+      assertCommunicationCampaignEntitlements({
+        tier:
+          billingContext.effectiveCampaignTier,
+
+        channels:
+          campaign.channels,
+
+        smartChanneling:
+          campaign
+            .smartChanneling,
+
+        fallbackPolicy:
+          campaign
+            .fallbackPolicy,
+
+        recipientCount,
+      });
+
+    //------------------------------------------------
+    // IVR Must Be Configured Before Queueing
+    //------------------------------------------------
+
+    if (
+      campaign.channels
+        .includes(
+          CommunicationChannel.IVR
+        )
+    ) {
+      if (
+        !campaign.ivrFlowId ||
+        !campaign.ivrFlowVersionId
+      ) {
+        throw new Error(
+          "IVR_FLOW_CONFIGURATION_REQUIRED: Select a published IVR flow before launching this campaign."
+        );
+      }
+
+      /*
+       * Re-check at launch. The flow may have been
+       * changed or unpublished after operator selection.
+       */
+      await requirePublishedCommunicationIvrFlow(
+        campaign.ivrFlowId
+      );
+
+      const version = await IVRFlowService.findVersionById(
+        campaign.ivrFlowVersionId
+      );
+
+      if (
+        !version ||
+        version.status !== "PUBLISHED" ||
+        version.flowId !== campaign.ivrFlowId
+      ) {
+        throw new Error(
+          "IVR_FLOW_VERSION_CONFIGURATION_REQUIRED: Select an immutable published IVR flow version before launching this campaign."
+        );
+      }
+    }
+
+    //------------------------------------------------
+    // Schedule
+    //------------------------------------------------
+
+    let delayMs =
+      0;
+
+    let scheduled =
+      false;
+
+    if (
+      !campaign
+        .launchImmediately
+    ) {
+      if (
+        !campaign.scheduledAt
+      ) {
+        throw new Error(
+          "Scheduled communication campaign has no scheduledAt value"
+        );
+      }
+
+      delayMs =
+        campaign
+          .scheduledAt
+          .getTime() -
+        Date.now();
+
+      if (
+        delayMs >
+        0
+      ) {
+        scheduled =
+          true;
+      } else {
+        delayMs =
+          0;
+      }
+    }
+
+    const targetStatus =
+      scheduled
+        ? CommunicationCampaignStatus.SCHEDULED
+        : CommunicationCampaignStatus.QUEUED;
+
+    //------------------------------------------------
+    // Daily Usage Date
+    //
+    // Future scheduled campaigns reserve against their
+    // execution day. Immediate / overdue schedules use
+    // today's UTC usage bucket.
+    //------------------------------------------------
+
+    const usageDate =
+      scheduled &&
+      campaign.scheduledAt
+        ? campaign.scheduledAt
+        : new Date();
+
+    //------------------------------------------------
+    // Atomic Plan Reservation + Status Claim
+    //------------------------------------------------
+
+    const usage =
+      await reserveCommunicationCampaignLaunch({
+        campaignId:
+          campaign.id,
+
+        tenantId:
+          billingContext.tenantId,
+
+        tier:
+          billingContext.effectiveCampaignTier,
+
+        recipientCount,
+
+        usageDate,
+
+        targetStatus,
+      });
+
+    //------------------------------------------------
+    // Queue
+    //------------------------------------------------
+
+    try {
+      await CommunicationCampaignQueueService
+        .enqueue(
+          {
+            communicationCampaignId:
+              campaign.id,
+          },
+          delayMs
+        );
+    } catch (
+      error
+    ) {
+      //------------------------------------------------
+      // Compensation
+      //------------------------------------------------
 
     log.error(
       {
@@ -379,12 +571,52 @@ export async function launchCommunicationCampaign(
       );
     }
 
-    throw error;
-  }
+      throw error;
+    }
 
-  //------------------------------------------------
-  // Accepted
-  //------------------------------------------------
+    //------------------------------------------------
+    // Accepted
+    //------------------------------------------------
+
+    await recordLaunchAuditEvent({
+      tenantId,
+      actor: user,
+      campaign,
+      action:
+        "CAMPAIGN_STARTED",
+      outcome:
+        AuditEventOutcome.SUCCEEDED,
+      result:
+        "SUCCEEDED",
+      afterState: {
+        status:
+          targetStatus,
+
+        scheduled,
+
+        recipientCount,
+
+        tier:
+          billingContext.effectiveCampaignTier,
+      },
+      metadata: {
+        activeCampaigns:
+          usage
+            .activeCampaignsAfter,
+
+        concurrencyLimit:
+          usage
+            .concurrencyLimit,
+
+        dailyRecipientsUsed:
+          usage
+            .dailyRecipientsUsedAfter,
+
+        dailyRecipientsLimit:
+          usage
+            .dailyRecipientsLimit,
+      },
+    });
 
   log.info(
     {
@@ -395,7 +627,7 @@ export async function launchCommunicationCampaign(
         campaign.id,
 
       tier:
-        campaign.tier,
+        billingContext.effectiveCampaignTier,
 
       voiceRuntime:
         entitlement
@@ -452,7 +684,7 @@ export async function launchCommunicationCampaign(
     recipientCount,
 
     tier:
-      campaign.tier,
+      billingContext.effectiveCampaignTier,
 
     voiceRuntime:
       entitlement
@@ -481,4 +713,138 @@ export async function launchCommunicationCampaign(
           .concurrencyLimit,
     },
   };
+  } catch (
+    error
+  ) {
+    await recordLaunchAuditEvent({
+      tenantId,
+      actor: user,
+      campaign,
+      action:
+        "CAMPAIGN_LAUNCH_DENIED",
+      outcome:
+        AuditEventOutcome.DENIED,
+      result:
+        "DENIED",
+      reason:
+        error instanceof Error
+          ? error.message
+          : "Launch denied",
+      beforeState: {
+        status:
+          campaign.status,
+
+        approvalStatus:
+          campaign.approvalStatus,
+
+        currentRevision:
+          campaign.currentRevision,
+
+        approvedRevision:
+          campaign.approvedRevision,
+      },
+      metadata: {
+        currentRevision:
+          campaign.currentRevision,
+
+        approvedRevision:
+          campaign.approvedRevision,
+
+        approvalStatus:
+          campaign.approvalStatus,
+      },
+    });
+
+    throw error;
+  }
+}
+
+type LaunchAuditCampaignSnapshot = {
+  id: string;
+  status: CommunicationCampaignStatus;
+  approvalStatus: CommunicationCampaignApprovalStatus;
+  currentRevision: number;
+  approvedRevision: number | null;
+  ownerUserId: string | null;
+  tenantId?: string | null;
+  ownerUser: {
+    tenantId: string | null;
+  } | null;
+};
+
+async function recordLaunchAuditEvent(
+  input: {
+    tenantId: string;
+    actor: AuthenticatedUser;
+    campaign: LaunchAuditCampaignSnapshot;
+    action: string;
+    outcome: AuditEventOutcome;
+    result?: string | null;
+    reason?: string | null;
+    beforeState?: unknown;
+    afterState?: unknown;
+    metadata?: unknown;
+  }
+): Promise<void> {
+  const tenantId =
+    input.tenantId.trim();
+
+  if (!tenantId) {
+    return;
+  }
+
+  try {
+    await recordAuditEvent({
+      tenantId,
+      actor: {
+        id:
+          input.actor.id,
+
+        role:
+          input.actor.role,
+
+        tenantId:
+          input.actor.tenantId,
+      },
+      actorType: "USER",
+      entityType:
+        "CommunicationCampaign",
+      entityId:
+        input.campaign.id,
+      resourceType:
+        "CommunicationCampaign",
+      resourceId:
+        input.campaign.id,
+      action:
+        input.action,
+      outcome:
+        input.outcome,
+      result:
+        input.result ?? input.outcome,
+      reason:
+        input.reason ?? null,
+      beforeState:
+        input.beforeState,
+      afterState:
+        input.afterState,
+      metadata:
+        input.metadata,
+    });
+  } catch (error) {
+    log.warn(
+      {
+        event:
+          "communication.launch.audit_failed",
+
+        communicationCampaignId:
+          input.campaign.id,
+
+        error:
+          normalizeError(
+            error
+          ),
+      },
+      "Communication campaign launch audit could not be recorded"
+    );
+  }
 }

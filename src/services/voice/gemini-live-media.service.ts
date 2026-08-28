@@ -30,8 +30,20 @@ import {
 } from "@/services/conversations/conversation-state.service";
 
 import {
+  IVRFlowSessionService,
+} from "@/services/ivr/ivr-flow-session.service";
+
+import {
   AudioConverter,
 } from "./audio-converter.service";
+
+import {
+  normalizeGeminiLiveAudio,
+} from "./gemini-live-audio.service";
+
+import {
+  shouldRecordPremiumFirstAudioSent,
+} from "./gemini-live-output.service";
 
 import {
   GeminiLiveActionConfirmationService,
@@ -139,6 +151,29 @@ const executeGeminiLiveTool =
   executeGeminiLiveFunctionCall as
     GeminiLiveToolExecutor;
 
+export function buildIvrEntryContextPrompt(
+  context: Awaited<ReturnType<typeof IVRFlowSessionService.get>>
+): string {
+  if (!context) return "";
+  if (!context.selectedIntent && !context.selectedDepartment && !context.preferredLanguage) {
+    return context.inputExperience === "STAGED_HYBRID"
+      ? [
+          "IVR ENTRY CONTEXT",
+          "Caller made no keypad selection and is on the configured default AI path.",
+          "Do not infer a selected intent, department, or language.",
+        ].join("\n")
+      : "";
+  }
+  return [
+    "IVR ENTRY CONTEXT",
+    context.selectedIntent ? `Caller selected intent: ${context.selectedIntent}` : "",
+    context.selectedDepartment ? `Caller selected department: ${context.selectedDepartment}` : "",
+    context.preferredLanguage ? `Preferred conversational language: ${context.preferredLanguage}` : "",
+    context.currentNodeId ? `Current IVR node: ${context.currentNodeId}` : "",
+    "Do not ask the caller to repeat this selection. Continue naturally from it.",
+  ].filter(Boolean).join("\n");
+}
+
 //--------------------------------------------------
 // Session Record
 //--------------------------------------------------
@@ -220,6 +255,10 @@ interface GeminiLiveMediaSession {
   bufferedTwilioAudioBytes:
     number;
 
+  // PCM16/24k fragments that do not yet contain a full 8k output sample.
+  pendingModelPcm:
+    Buffer;
+
   //------------------------------------------------
   // Tool Circuit
   //------------------------------------------------
@@ -236,6 +275,11 @@ interface GeminiLiveMediaSession {
       string,
       AbortController
     >;
+
+  firstCallerAudioReceivedAt: number | null;
+  firstModelAudioStartedAt: number | null;
+  firstAssistantAudioSentAt: number | null;
+  turnCount: number;
 }
 
 //--------------------------------------------------
@@ -358,13 +402,24 @@ class GeminiLiveMediaManager {
         callId
       );
 
+    const ivrContext =
+      await IVRFlowSessionService.get(
+        callId
+      );
+
+    const ivrOpeningMessage =
+      ivrContext?.selectedDepartment ||
+      ivrContext?.selectedIntent
+        ? `Sure. I can help with ${ivrContext.selectedDepartment ?? ivrContext.selectedIntent}. What would you like to know?`
+        : null;
+
     const openingMessage =
       outboundContext.outbound &&
       outboundContext.openingMessage
         ? outboundContext
             .openingMessage
             .trim()
-        : "Hello. How may I help you today?";
+        : ivrOpeningMessage ?? "Hello. How may I help you today?";
 
     const outboundPrompt =
       buildOutboundContextPrompt(
@@ -418,13 +473,24 @@ class GeminiLiveMediaManager {
         ),
 
         outboundPrompt,
+
+        buildIvrEntryContextPrompt(ivrContext),
       ]
         .filter(
           Boolean
         )
-        .join(
-          "\n\n"
-        );
+      .join(
+        "\n\n"
+      );
+
+    if (ivrContext?.inputStage === "ENTRY_IVR" && !ivrContext.selectedDigit && !ivrContext.selectedIntent) {
+      log.info({ event: "ivr.entry_input.fallback_to_ai", provider: "PLIVO", reason: "NO_SELECTION", configuredTimeout: ivrContext.collectedFields?.entryTimeoutSeconds ?? null, fallbackNodeId: ivrContext.fallbackNodeId ?? null, runtime: "GEMINI_LIVE" }, "Staged entry fell through to realtime AI without a keypad selection");
+      await IVRFlowSessionService.set(callId, { ...ivrContext, conversationMode: "REALTIME_AI", inputStage: "REALTIME_AI" });
+    }
+
+    if (ivrContext?.inputStage === "REALTIME_AI") {
+      log.info({ event: "gemini.live.started_from_ivr_context", currentIvrNodeId: ivrContext.currentNodeId, selectedIntent: ivrContext.selectedIntent ?? null, selectedDepartment: ivrContext.selectedDepartment ?? null, preferredLanguage: ivrContext.preferredLanguage ?? null }, "Gemini Live started with persisted IVR entry context");
+    }
 
     //----------------------------------------------
     // Initial Gemini Session
@@ -494,6 +560,9 @@ class GeminiLiveMediaManager {
       bufferedTwilioAudioBytes:
         0,
 
+      pendingModelPcm:
+        Buffer.alloc(0),
+
       toolCircuitOpenUntil:
         null,
 
@@ -505,6 +574,11 @@ class GeminiLiveMediaManager {
           string,
           AbortController
         >(),
+
+      firstCallerAudioReceivedAt: null,
+      firstModelAudioStartedAt: null,
+      firstAssistantAudioSentAt: null,
+      turnCount: 0,
     };
 
     this.sessions.set(
@@ -1071,10 +1145,34 @@ const live =
     // Forward
     //----------------------------------------------
 
+    if (
+      session.firstCallerAudioReceivedAt === null
+    ) {
+      session.firstCallerAudioReceivedAt = Date.now();
+
+      createCallLogger(callId).info(
+        {
+          event: "premium.media.audio_received",
+          callId,
+          audioSizeBytes: mulawAudio.length,
+        },
+        "First caller audio received for Premium runtime"
+      );
+    }
+
     try {
       this.sendMulawToLive(
         session.live,
         mulawAudio
+      );
+
+      createCallLogger(callId).debug(
+        {
+          event: "premium.model.input_accepted",
+          callId,
+          audioSizeBytes: mulawAudio.length,
+        },
+        "Caller audio accepted by Gemini Live"
       );
 
       GeminiLiveResilienceService
@@ -1104,7 +1202,7 @@ const live =
   }
 
   //------------------------------------------------
-  // Model Audio → Twilio
+  // Model Audio → provider μ-law/8k
   //------------------------------------------------
 
   private handleModelAudio(
@@ -1115,7 +1213,7 @@ const live =
       GeminiLiveSessionService,
 
     audio:
-      Buffer,
+      unknown,
 
     mimeType:
       string
@@ -1136,6 +1234,32 @@ const live =
       createCallLogger(
         callId
       );
+
+    const normalized = normalizeGeminiLiveAudio(audio, mimeType);
+    log.debug({ event: "gemini.live.audio_normalized", inputType: normalized.inputType, byteLength: normalized.byteLength, mimeType: normalized.mimeType, sampleRate: normalized.sampleRate }, "Gemini Live audio normalized");
+
+    if (normalized.audio.length === 0) {
+      log.warn({ event: "gemini.live.audio_ignored", reason: "empty_or_unsupported_payload", inputType: normalized.inputType, byteLength: normalized.byteLength, mimeType: normalized.mimeType, sampleRate: normalized.sampleRate }, "Gemini Live returned no playable audio");
+      return;
+    }
+
+    if (
+      session.firstModelAudioStartedAt === null
+    ) {
+      session.firstModelAudioStartedAt = Date.now();
+
+      log.info(
+        {
+          event: "premium.model.audio_started",
+          callId,
+          firstModelAudioLatencyMs:
+            session.firstCallerAudioReceivedAt === null
+              ? null
+              : session.firstModelAudioStartedAt - session.firstCallerAudioReceivedAt,
+        },
+        "Gemini Live started assistant audio"
+      );
+    }
 
     if (
       !session.speaking
@@ -1172,7 +1296,8 @@ const live =
     //----------------------------------------------
 
     if (
-      !mimeType
+      !normalized.mimeType ||
+      !normalized.mimeType
         .toLowerCase()
         .startsWith(
           "audio/pcm"
@@ -1186,11 +1311,17 @@ const live =
           reason:
             "unexpected_mime_type",
 
-          mimeType,
+          mimeType: normalized.mimeType,
+          sampleRate: normalized.sampleRate,
         },
         "Unexpected Gemini Live audio format"
       );
 
+      return;
+    }
+
+    if (normalized.sampleRate !== 24_000 || normalized.audio.length % 2 !== 0) {
+      log.warn({ event: "gemini.live.audio_ignored", reason: normalized.sampleRate !== 24_000 ? "unsupported_sample_rate" : "invalid_pcm16_length", inputType: normalized.inputType, byteLength: normalized.byteLength, mimeType: normalized.mimeType, sampleRate: normalized.sampleRate }, "Gemini Live audio cannot be converted safely");
       return;
     }
 
@@ -1199,22 +1330,47 @@ const live =
     //----------------------------------------------
 
     try {
-      const twilioAudio =
+      const pcm = Buffer.concat([session.pendingModelPcm, normalized.audio]);
+      const completeLength = pcm.length - (pcm.length % 6);
+      if (completeLength === 0) {
+        session.pendingModelPcm = pcm;
+        return;
+      }
+      session.pendingModelPcm = pcm.subarray(completeLength);
+      const providerAudio =
         AudioConverter
           .pcm24kToMulaw8k(
-            audio
+            pcm.subarray(0, completeLength)
           );
+
+      if (providerAudio.length === 0) return;
 
       const sent =
         AudioSessionService
           .sendAudioByCallId(
             callId,
-            twilioAudio
+            providerAudio
           );
 
       if (
         sent
       ) {
+        if (shouldRecordPremiumFirstAudioSent({ firstAssistantAudioSentAt: session.firstAssistantAudioSentAt, providerAudio, providerAccepted: sent })) {
+          session.firstAssistantAudioSentAt = Date.now();
+
+          log.info(
+            {
+              event: "premium.first_audio_sent",
+              callId,
+              premium_first_audio_latency_ms:
+                session.firstCallerAudioReceivedAt === null
+                  ? null
+                  : session.firstAssistantAudioSentAt - session.firstCallerAudioReceivedAt,
+            },
+            "First Premium assistant audio submitted to the telephony provider"
+          );
+        }
+
         GeminiLiveResilienceService
           .recordAudioSuccess(
             callId
@@ -1228,22 +1384,22 @@ const live =
           .recordAudioFailure(
             callId,
             new Error(
-              "Twilio audio session rejected Gemini output"
+              "Telephony audio session rejected Gemini output"
             )
           );
 
       log.warn(
         {
           event:
-            "gemini.live.twilio_audio_not_sent",
+            "gemini.live.provider_audio_not_sent",
 
           audioSizeBytes:
-            twilioAudio.length,
+            providerAudio.length,
 
           consecutiveFailures:
             failure.count,
         },
-        "Gemini audio could not be sent to Twilio"
+        "Gemini audio could not be sent to the telephony provider"
       );
 
       if (
@@ -1252,7 +1408,7 @@ const live =
         this.terminatePremiumRuntime(
           callId,
           session,
-          "twilio_audio_failure_threshold"
+          "provider_audio_failure_threshold"
         );
       }
     } catch (
@@ -1448,6 +1604,11 @@ const live =
     session.speaking =
       false;
 
+    session.pendingModelPcm =
+      Buffer.alloc(0);
+
+    session.turnCount += 1;
+
     const cleared =
       AudioSessionService
         .clearPlayback(
@@ -1486,11 +1647,11 @@ const live =
     log.info(
       {
         event:
-          "gemini.live.twilio_playback_clear",
+          "gemini.live.provider_playback_clear",
 
         cleared,
       },
-      "Gemini interruption cleared Twilio playback"
+      "Gemini interruption cleared telephony provider playback"
     );
   }
 
@@ -4111,6 +4272,14 @@ const live =
 
         resilience:
           resilienceSnapshot,
+
+        turnCount: session.turnCount,
+
+        premium_first_audio_latency_ms:
+          session.firstCallerAudioReceivedAt === null ||
+          session.firstAssistantAudioSentAt === null
+            ? null
+            : session.firstAssistantAudioSentAt - session.firstCallerAudioReceivedAt,
       },
       "Premium Gemini Live runtime reached terminal failure"
     );
@@ -4366,6 +4535,9 @@ const live =
 
         resilience:
           resilienceSnapshot,
+
+        turnCount:
+          session.turnCount,
       },
       "Closing Premium Gemini Live media session"
     );

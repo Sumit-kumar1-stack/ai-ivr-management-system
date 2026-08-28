@@ -166,7 +166,8 @@ export async function askGemini(
 
 export async function* askGeminiStream(
   prompt: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onUsage?: (usage: { inputTokens?: number | null; outputTokens?: number | null }) => void
 ): AsyncGenerator<string> {
   const normalizedPrompt =
     prompt.trim();
@@ -199,6 +200,16 @@ export async function* askGeminiStream(
     for await (
       const chunk of stream
     ) {
+      // Gemini only supplies these provider-native billing units on some
+      // stream responses. Do not derive them from text when absent.
+      const usage = chunk.usageMetadata;
+      if (usage) {
+        onUsage?.({
+          inputTokens: usage.promptTokenCount ?? null,
+          outputTokens: usage.candidatesTokenCount ?? null,
+        });
+      }
+
       if (
         signal?.aborted
       ) {

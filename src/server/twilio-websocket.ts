@@ -56,6 +56,7 @@ import {
 import {
   VoiceWorker,
 } from "@/services/voice/voice-worker.service";
+import { canAcceptMediaStreams } from "@/server/media-lifecycle";
 
 //--------------------------------------------------
 // Types
@@ -207,6 +208,12 @@ export function initializeTwilioWebSocket(
           return;
         }
 
+        if (!canAcceptMediaStreams()) {
+          log.info({ event: "twilio.websocket.upgrade_rejected", reason: "media_draining" }, "Twilio WebSocket rejected while media drains");
+          rejectUpgrade(socket, 503, "Media server is draining");
+          return;
+        }
+
         log.debug(
           {
             event:
@@ -232,6 +239,19 @@ export function initializeTwilioWebSocket(
               ),
           },
           "Twilio WebSocket upgrade requested"
+        );
+
+        log.info(
+          {
+            event:
+              "twilio.websocket.upgrade_received",
+
+            pathname,
+
+            method:
+              request.method,
+          },
+          "Twilio WebSocket upgrade received"
         );
 
         //------------------------------------------
@@ -315,6 +335,16 @@ export function initializeTwilioWebSocket(
           socket,
           head,
           webSocket => {
+            log.info(
+              {
+                event:
+                  "twilio.websocket.upgrade_accepted",
+
+                pathname,
+              },
+              "Twilio WebSocket upgrade accepted"
+            );
+
             twilioWebSocketServer.emit(
               "connection",
               webSocket,
@@ -364,7 +394,7 @@ export function initializeTwilioWebSocket(
     (
       webSocket:
         WebSocket,
-      _request:
+      request:
         IncomingMessage
     ) => {
       socketContexts.set(
@@ -379,6 +409,13 @@ export function initializeTwilioWebSocket(
         {
           event:
             "twilio.websocket.connected",
+
+          pathname:
+            new URL(
+              request.url ??
+                "/",
+              "http://localhost"
+            ).pathname,
 
           readyState:
             webSocket.readyState,

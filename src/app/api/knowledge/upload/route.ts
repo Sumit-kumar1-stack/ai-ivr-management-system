@@ -1,4 +1,3 @@
-import fs from "fs/promises";
 import path from "path";
 
 import {
@@ -27,6 +26,11 @@ import {
 import {
   saveKnowledgeDocument,
 } from "@/services/knowledge.service";
+
+import { KnowledgeFileStorage } from "@/services/knowledge/knowledge-file-storage.service";
+
+import { requireCampaignCapability } from "@/lib/auth";
+import { ensureRateLimit, readClientAddress } from "@/lib/abuse-control";
 
 //--------------------------------------------------
 // Logger
@@ -61,12 +65,22 @@ export async function POST(
   const startedAt =
     process.hrtime.bigint();
 
-  let savedFilePath:
+  let savedFileKey:
     string |
     null =
       null;
 
   try {
+    const currentUser = await requireCampaignCapability("CAMPAIGN_EDIT");
+
+    await ensureRateLimit({
+      scope: "knowledge-upload",
+      limit: 20,
+      windowMs: 60 * 1000,
+      keyParts: [currentUser.id, readClientAddress(request)],
+      failurePolicy: "FAIL_CLOSED",
+    });
+
     const formData =
       await request.formData();
 
@@ -182,43 +196,13 @@ export async function POST(
         bytes
       );
 
-    const uploadDir =
-      path.join(
-        process.cwd(),
-        "public",
-        "uploads",
-        "knowledge"
-      );
+    const storedFile = await KnowledgeFileStorage.store({
+      scopeId: currentUser.tenantId ?? currentUser.id,
+      originalName: file.name,
+      content: buffer,
+    });
 
-    await fs.mkdir(
-      uploadDir,
-      {
-        recursive:
-          true,
-      }
-    );
-
-    const safeOriginalName =
-      sanitizeFileName(
-        file.name
-      );
-
-    const filename =
-      `${Date.now()}-${safeOriginalName}`;
-
-    const filePath =
-      path.join(
-        uploadDir,
-        filename
-      );
-
-    savedFilePath =
-      filePath;
-
-    await fs.writeFile(
-      filePath,
-      buffer
-    );
+    savedFileKey = storedFile.key;
 
     log.info(
       {
@@ -242,7 +226,7 @@ export async function POST(
     const document =
       await saveKnowledgeDocument({
         fileName:
-          filename,
+          path.basename(storedFile.key),
 
         originalName:
           file.name,
@@ -254,7 +238,10 @@ export async function POST(
           file.size,
 
         path:
-          `/uploads/knowledge/${filename}`,
+          storedFile.key,
+
+        ownerUserId:
+          currentUser.id,
       });
 
     log.info(
@@ -281,7 +268,7 @@ export async function POST(
 
     const text =
       await extractText(
-        filePath,
+        storedFile.localPath,
         file.type
       );
 
@@ -391,12 +378,10 @@ export async function POST(
      * transaction-based improvement.
      */
     if (
-      savedFilePath
+      savedFileKey
     ) {
       try {
-        await fs.unlink(
-          savedFilePath
-        );
+        await KnowledgeFileStorage.delete(savedFileKey);
       } catch {
         // File may already be absent.
       }
@@ -434,35 +419,4 @@ export async function POST(
       }
     );
   }
-}
-
-//--------------------------------------------------
-// Sanitize File Name
-//--------------------------------------------------
-
-function sanitizeFileName(
-  originalName: string
-): string {
-  const baseName =
-    path.basename(
-      originalName
-    );
-
-  const sanitized =
-    baseName
-      .replace(
-        /[^a-zA-Z0-9._-]/g,
-        "_"
-      )
-      .replace(
-        /_+/g,
-        "_"
-      )
-      .slice(
-        0,
-        150
-      );
-
-  return sanitized ||
-    "document";
 }

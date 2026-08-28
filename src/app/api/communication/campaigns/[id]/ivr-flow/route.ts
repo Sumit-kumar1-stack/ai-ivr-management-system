@@ -1,8 +1,4 @@
 import {
-  UserRole,
-} from "@prisma/client";
-
-import {
   NextRequest,
   NextResponse,
 } from "next/server";
@@ -13,7 +9,7 @@ import {
 } from "zod";
 
 import {
-  requireRole,
+  requireCampaignCapability,
 } from "@/lib/auth";
 
 import {
@@ -41,6 +37,12 @@ const inputSchema =
         .min(
           1
         ),
+    ivrFlowVersionId:
+      z
+        .string()
+        .trim()
+        .min(1)
+        .optional(),
   });
 
 //--------------------------------------------------
@@ -56,15 +58,6 @@ interface RouteContext {
 }
 
 //--------------------------------------------------
-// Roles
-//--------------------------------------------------
-
-const ROLES = [
-  UserRole.SUPER_ADMIN,
-  UserRole.ADMIN,
-] as const;
-
-//--------------------------------------------------
 // PUT
 //--------------------------------------------------
 
@@ -76,9 +69,10 @@ export async function PUT(
     RouteContext
 ): Promise<NextResponse> {
   try {
-    const currentUser = await requireRole(
-      ROLES
-    );
+    const currentUser =
+      await requireCampaignCapability(
+        "CAMPAIGN_EDIT"
+      );
 
     const {
       id,
@@ -98,7 +92,9 @@ export async function PUT(
     const flow =
       await bindCommunicationIvrFlow(
         id,
-        body.ivrFlowId
+        body.ivrFlowId,
+        body.ivrFlowVersionId,
+        currentUser
       );
 
     return NextResponse.json(

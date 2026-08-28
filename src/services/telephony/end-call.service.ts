@@ -68,6 +68,9 @@ export async function endProviderCall(
           providerCallId:
             true,
 
+          provider:
+            true,
+
           status:
             true,
         },
@@ -156,7 +159,9 @@ export async function endProviderCall(
 
     const provider =
       ProviderFactory
-        .getProvider();
+        .getProviderForName(
+          call.provider
+        );
 
     //------------------------------------------------
     // Execute Provider Hangup

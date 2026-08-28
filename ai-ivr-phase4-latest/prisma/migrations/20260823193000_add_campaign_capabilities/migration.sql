@@ -1,0 +1,2 @@
+ALTER TABLE "User"
+ADD COLUMN "campaignCapabilities" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];

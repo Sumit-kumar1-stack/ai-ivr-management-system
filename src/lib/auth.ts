@@ -1,8 +1,6 @@
 import {
-  cookies,
-} from "next/headers";
-
-import {
+  AccountStatus,
+  TenantStatus,
   UserRole,
 } from "@prisma/client";
 
@@ -13,6 +11,13 @@ import {
 import {
   AUTH_COOKIE_NAME,
 } from "@/lib/auth-constants";
+
+import {
+  hasAnyCampaignCapability,
+  hasCampaignCapability,
+  CAMPAIGN_CAPABILITIES,
+  type CampaignCapability,
+} from "@/services/communication/campaign-capabilities";
 
 import {
   verifyToken,
@@ -27,9 +32,23 @@ export interface AuthenticatedUser {
   fullName: string;
   email: string;
   role: UserRole;
+  campaignCapabilities?: readonly CampaignCapability[];
   phone: string | null;
   avatar: string | null;
+  tenantId: string | null;
+  tenantName: string | null;
+  tenantStatus: TenantStatus | null;
+  accountStatus: AccountStatus;
   isActive: boolean;
+}
+
+function isLoginEligibleTenantStatus(
+  status: TenantStatus
+) {
+  return (
+    status === TenantStatus.ACTIVE ||
+    status === TenantStatus.TRIAL
+  );
 }
 
 
@@ -91,6 +110,19 @@ export async function getCurrentUser():
 
   try {
 
+    /*
+     * Import request-bound Next APIs only when the
+     * auth helper is executing inside a live
+     * request render. This keeps the module safe to
+     * load during custom-server/bootstrap phases.
+     */
+    const {
+      cookies,
+    } =
+      await import(
+        "next/headers"
+      );
+
     const cookieStore =
       await cookies();
 
@@ -134,21 +166,48 @@ export async function getCurrentUser():
           role:
             true,
 
+          campaignCapabilities:
+            true,
+
           phone:
             true,
 
           avatar:
             true,
 
+          tenantId:
+            true,
+
+          accountStatus:
+            true,
+
           isActive:
             true,
+
+          tenant: {
+            select: {
+              name:
+                true,
+
+              status:
+                true,
+            },
+          },
         },
       });
 
 
     if (
       !user ||
-      !user.isActive
+      !user.isActive ||
+      user.accountStatus !==
+        AccountStatus.ACTIVE ||
+      (
+        user.tenant &&
+        !isLoginEligibleTenantStatus(
+          user.tenant.status
+        )
+      )
     ) {
       return null;
     }
@@ -161,7 +220,23 @@ export async function getCurrentUser():
      * A role may have changed after the JWT
      * was originally issued.
      */
-    return user;
+    return {
+      id: user.id,
+      fullName: user.fullName,
+      email: user.email,
+      role: user.role,
+      campaignCapabilities:
+        (user.role === UserRole.SUPER_ADMIN
+          ? [...CAMPAIGN_CAPABILITIES]
+          : user.campaignCapabilities ?? []) as CampaignCapability[],
+      phone: user.phone,
+      avatar: user.avatar,
+      tenantId: user.tenantId,
+      tenantName: user.tenant?.name ?? null,
+      tenantStatus: user.tenant?.status ?? null,
+      accountStatus: user.accountStatus,
+      isActive: user.isActive,
+    };
 
   } catch {
 
@@ -219,6 +294,46 @@ export async function requireRole(
 
   return user;
 
+}
+
+export async function requireCampaignCapability(
+  capability:
+    CampaignCapability
+): Promise<AuthenticatedUser> {
+  const user =
+    await requireUser();
+
+  if (
+    user.role !== UserRole.SUPER_ADMIN &&
+    !hasCampaignCapability(
+      user.campaignCapabilities,
+      capability
+    )
+  ) {
+    throw new AuthorizationError();
+  }
+
+  return user;
+}
+
+export async function requireAnyCampaignCapabilities(
+  capabilities:
+    readonly CampaignCapability[]
+): Promise<AuthenticatedUser> {
+  const user =
+    await requireUser();
+
+  if (
+    user.role !== UserRole.SUPER_ADMIN &&
+    !hasAnyCampaignCapability(
+      user.campaignCapabilities,
+      capabilities
+    )
+  ) {
+    throw new AuthorizationError();
+  }
+
+  return user;
 }
 
 

@@ -231,7 +231,7 @@ export interface GeminiLiveSessionCallbacks {
 
   onAudio?: (
     audio:
-      Buffer,
+      Buffer | Uint8Array | ArrayBuffer,
 
     mimeType:
       string
@@ -672,14 +672,11 @@ export class GeminiLiveSessionService {
             //--------------------------------------
             // M10 4F — Session Resumption
             //
-            // transparent=true asks Gemini to also
-            // provide lastConsumedClientMessageIndex.
+            // The Developer API supports resumable handles,
+            // but `transparent` is Enterprise-only.
             //--------------------------------------
 
             sessionResumption: {
-              transparent:
-                true,
-
               ...(resumeHandle
                 ? {
                     handle:
@@ -1590,14 +1587,9 @@ export class GeminiLiveSessionService {
       const inlineData =
         part.inlineData;
 
-      const encodedAudio =
-        inlineData
-          ?.data
-          ?.trim();
+      const encodedAudio = inlineData?.data;
 
-      if (
-        !encodedAudio
-      ) {
+      if (typeof encodedAudio !== "string" || !encodedAudio.trim()) {
         continue;
       }
 
@@ -1641,6 +1633,8 @@ export class GeminiLiveSessionService {
           ?.mimeType
           ?.trim() ||
         "audio/pcm;rate=24000";
+
+      log.debug({ event: "gemini.live.audio_decoded", inputType: "base64", byteLength: audio.length, mimeType, sampleRate: sampleRateFromMimeType(mimeType) }, "Gemini Live audio decoded");
 
       this.dispatchCallback(
         () =>
@@ -1905,4 +1899,10 @@ function isRecord(
       value
     )
   );
+}
+
+function sampleRateFromMimeType(mimeType: string): number | null {
+  const match = mimeType.match(/(?:rate|samplerate)\s*=\s*(\d+)/i);
+  const rate = match ? Number(match[1]) : NaN;
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
 }

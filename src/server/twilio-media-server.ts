@@ -1,7 +1,3 @@
-import {
-  loadEnvConfig,
-} from "@next/env";
-
 import http, {
   type IncomingMessage,
   type ServerResponse,
@@ -17,18 +13,13 @@ import {
   getDurationMs,
   normalizeError,
 } from "@/lib/logger";
+import { ProviderFactory } from "@/providers/telephony/provider.factory";
 
 import {
   registerProcessLifecycle,
 } from "@/server/process-lifecycle";
-
-//--------------------------------------------------
-// Load Environment First
-//--------------------------------------------------
-
-loadEnvConfig(
-  process.cwd()
-);
+import { beginMediaDrain, getMediaDrainTimeoutMs, getMediaLifecycleState, markMediaRunning, markMediaTerminated } from "@/server/media-lifecycle";
+import { checkIntegrationConfiguration, isIntegrationConfigurationReady } from "@/config/readiness";
 
 //--------------------------------------------------
 // Logger
@@ -36,7 +27,7 @@ loadEnvConfig(
 
 const log =
   createServerLogger(
-    "twilio-media-process"
+    "media-process"
   );
 
 //--------------------------------------------------
@@ -63,6 +54,16 @@ let mediaWebSocketServer:
   null =
     null;
 
+let exotelMediaWebSocketServer:
+  WebSocketServer |
+  null =
+    null;
+
+let plivoMediaWebSocketServer:
+  WebSocketServer |
+  null =
+    null;
+
 let serverStarting:
   Promise<void> |
   null =
@@ -77,10 +78,11 @@ let serverClosing:
 // Start Media Process
 //--------------------------------------------------
 
-async function startMediaProcess():
+export async function startMediaProcess():
   Promise<void> {
   const startedAt =
     process.hrtime.bigint();
+  const selectedProvider = ProviderFactory.getProviderName();
 
   log.info(
     {
@@ -89,8 +91,9 @@ async function startMediaProcess():
 
       port:
         MEDIA_PORT,
+      selectedProvider,
     },
-    "Twilio media process startup started"
+    "Media process startup started"
   );
 
   //----------------------------------------
@@ -111,6 +114,7 @@ async function startMediaProcess():
   //----------------------------------------
 
   await startMediaServer();
+  markMediaRunning();
 
   //----------------------------------------
   // Load Process-Owned Resources
@@ -140,6 +144,7 @@ async function startMediaProcess():
       "media-process-lifecycle",
 
     resources: [
+      { name: "media-call-drain", close: drainMediaCalls },
       {
         name:
           "media-websocket-clients",
@@ -185,13 +190,30 @@ async function startMediaProcess():
       websocketPath:
         "/api/twilio/stream",
 
+      selectedProvider,
+
       durationMs:
         getDurationMs(
           startedAt
         ),
     },
-    "Twilio media process started"
+    "Media process started"
   );
+}
+
+async function drainMediaCalls(): Promise<void> {
+  beginMediaDrain();
+  const websocketServers = [mediaWebSocketServer, exotelMediaWebSocketServer, plivoMediaWebSocketServer].filter((server): server is WebSocketServer => server !== null);
+  const timeoutMs = getMediaDrainTimeoutMs();
+  log.info({ event: "media.drain.started", activeStreams: activeMediaStreams(websocketServers), timeoutMs }, "Media drain started");
+  const startedAt = Date.now();
+  while (websocketServers.some(server => server.clients.size > 0) && Date.now() - startedAt < timeoutMs) await wait(100);
+  if (websocketServers.some(server => server.clients.size > 0)) {
+    log.warn({ event: "media.drain.timeout", activeStreams: activeMediaStreams(websocketServers), timeoutMs }, "Media drain timeout reached");
+    await closeMediaWebSocketClients();
+  } else {
+    log.info({ event: "media.drain.completed", activeStreams: 0, durationMs: Date.now() - startedAt }, "Media drain completed");
+  }
 }
 
 //--------------------------------------------------
@@ -243,7 +265,7 @@ async function startMediaServerInternal():
     server;
 
   //----------------------------------------
-  // Initialize Signed Twilio WebSocket
+  // Initialize provider-specific WebSocket routes.
   //----------------------------------------
 
   const {
@@ -256,6 +278,19 @@ async function startMediaServerInternal():
     initializeTwilioWebSocket(
       server
     );
+
+  const {
+    initializeExotelWebSocket,
+  } = await import(
+    "@/server/exotel-websocket"
+  );
+
+  exotelMediaWebSocketServer = initializeExotelWebSocket(
+    server
+  );
+
+  const { initializePlivoWebSocket } = await import("@/server/plivo-websocket");
+  plivoMediaWebSocketServer = initializePlivoWebSocket(server);
 
   //----------------------------------------
   // HTTP Server Errors
@@ -284,7 +319,7 @@ async function startMediaServerInternal():
                 error
               ),
           },
-          "Twilio media port is already in use"
+          "Media port is already in use"
         );
 
         return;
@@ -303,7 +338,7 @@ async function startMediaServerInternal():
               error
             ),
         },
-        "Twilio media HTTP server error"
+        "Media HTTP server error"
       );
     }
   );
@@ -324,7 +359,7 @@ async function startMediaServerInternal():
               error
             ),
         },
-        "Twilio media HTTP client error"
+        "Media HTTP client error"
       );
 
       if (
@@ -399,6 +434,9 @@ async function startMediaServerInternal():
 
     mediaWebSocketServer =
       null;
+    exotelMediaWebSocketServer =
+      null;
+    plivoMediaWebSocketServer = null;
 
     throw error;
   }
@@ -414,12 +452,17 @@ async function startMediaServerInternal():
       websocketPath:
         "/api/twilio/stream",
 
+      exotelWebsocketPath:
+        "/api/exotel/stream",
+
+      plivoWebsocketPath: "/api/plivo/stream",
+
       durationMs:
         getDurationMs(
           startedAt
         ),
     },
-    "Twilio media server is listening"
+    "Multi-provider media server is listening"
   );
 }
 
@@ -427,13 +470,13 @@ async function startMediaServerInternal():
 // HTTP Request Handler
 //--------------------------------------------------
 
-function handleHttpRequest(
+async function handleHttpRequest(
   request:
     IncomingMessage,
 
   response:
     ServerResponse
-): void {
+): Promise<void> {
   const url =
     new URL(
       request.url ??
@@ -463,7 +506,7 @@ function handleHttpRequest(
           "healthy",
 
         service:
-          "twilio-media-server",
+          "multi-provider-media-server",
 
         timestamp:
           new Date()
@@ -495,13 +538,12 @@ function handleHttpRequest(
           ?.listening
       );
 
-    const websocketReady =
-      mediaWebSocketServer !==
-      null;
+    const websocketReady = mediaWebSocketServer !== null && exotelMediaWebSocketServer !== null && plivoMediaWebSocketServer !== null;
 
-    const ready =
-      httpReady &&
-      websocketReady;
+    const configuration = checkIntegrationConfiguration();
+    const [database, redis] = await Promise.all([checkDatabase(), checkRedis()]);
+    const draining = getMediaLifecycleState() !== "RUNNING";
+    const ready = httpReady && websocketReady && database.healthy && redis.healthy && isIntegrationConfigurationReady(configuration) && !draining;
 
     sendJson(
       response,
@@ -518,7 +560,7 @@ function handleHttpRequest(
             : "not_ready",
 
         service:
-          "twilio-media-server",
+          "multi-provider-media-server",
 
         timestamp:
           new Date()
@@ -537,6 +579,16 @@ function handleHttpRequest(
             path:
               "/api/twilio/stream",
           },
+          exotelWebsocketServer: {
+            healthy: exotelMediaWebSocketServer !== null,
+            path: "/api/exotel/stream",
+          },
+          plivoWebsocketServer: { healthy: plivoMediaWebSocketServer !== null, path: "/api/plivo/stream" },
+          database,
+          redis,
+          configuration,
+          activeStreams: activeMediaStreams([mediaWebSocketServer, exotelMediaWebSocketServer, plivoMediaWebSocketServer].filter((server): server is WebSocketServer => server !== null)),
+          draining,
         },
       }
     );
@@ -611,19 +663,10 @@ function sendJson(
 
 async function closeMediaWebSocketClients():
   Promise<void> {
-  const websocketServer =
-    mediaWebSocketServer;
+  const websocketServers = [mediaWebSocketServer, exotelMediaWebSocketServer, plivoMediaWebSocketServer].filter((server): server is WebSocketServer => server !== null);
+  if (!websocketServers.length) return;
 
-  if (
-    !websocketServer
-  ) {
-    return;
-  }
-
-  const clients =
-    Array.from(
-      websocketServer.clients
-    );
+  const clients = websocketServers.flatMap(websocketServer => Array.from(websocketServer.clients));
 
   log.info(
     {
@@ -633,7 +676,7 @@ async function closeMediaWebSocketClients():
       activeClients:
         clients.length,
     },
-    "Closing Twilio media WebSocket clients"
+    "Closing media WebSocket clients"
   );
 
   for (
@@ -650,19 +693,13 @@ async function closeMediaWebSocketClients():
     }
   }
 
-  await waitForWebSocketClients(
-    websocketServer,
-    2_000
-  );
+  await Promise.all(websocketServers.map(websocketServer => waitForWebSocketClients(websocketServer, 2_000)));
 
   /*
    * Terminate clients that did not complete the
    * close handshake within the grace period.
    */
-  for (
-    const client of
-    websocketServer.clients
-  ) {
+  for (const websocketServer of websocketServers) for (const client of websocketServer.clients) {
     if (
       client.readyState !==
       WebSocket.CLOSED
@@ -677,11 +714,9 @@ async function closeMediaWebSocketClients():
         "media.websocket_clients.close.completed",
 
       remainingClients:
-        websocketServer
-          .clients
-          .size,
+        activeMediaStreams(websocketServers),
     },
-    "Twilio media WebSocket clients closed"
+    "Media WebSocket clients closed"
   );
 }
 
@@ -712,6 +747,15 @@ async function waitForWebSocketClients(
       50
     );
   }
+}
+
+function activeMediaStreams(
+  websocketServers: WebSocketServer[]
+): number {
+  return websocketServers.reduce(
+    (total, websocketServer) => total + websocketServer.clients.size,
+    0
+  );
 }
 
 //--------------------------------------------------
@@ -758,6 +802,7 @@ async function closeMediaServerInternal():
 
   mediaHttpServer =
     null;
+  markMediaTerminated();
 
   /*
    * twilio-websocket.ts closes its WebSocketServer
@@ -765,6 +810,9 @@ async function closeMediaServerInternal():
    */
   mediaWebSocketServer =
     null;
+  exotelMediaWebSocketServer =
+    null;
+  plivoMediaWebSocketServer = null;
 
   if (
     !server.listening
@@ -807,8 +855,23 @@ async function closeMediaServerInternal():
           startedAt
         ),
     },
-    "Twilio media HTTP server closed"
+    "Media HTTP server closed"
   );
+}
+
+async function checkDatabase(): Promise<{ healthy: boolean }> {
+  try {
+    const { prisma } = await import("@/lib/prisma");
+    await prisma.$queryRaw`SELECT 1`;
+    return { healthy: true };
+  } catch { return { healthy: false }; }
+}
+
+async function checkRedis(): Promise<{ healthy: boolean }> {
+  try {
+    const { redisConnection } = await import("@/lib/redis");
+    return { healthy: await redisConnection.ping() === "PONG" };
+  } catch { return { healthy: false }; }
 }
 
 //--------------------------------------------------
@@ -866,32 +929,3 @@ function wait(
 }
 
 //--------------------------------------------------
-// Start Entry Point
-//--------------------------------------------------
-
-startMediaProcess().catch(
-  (
-    error:
-      unknown
-  ) => {
-    log.fatal(
-      {
-        event:
-          "media.process.start.failed",
-
-        port:
-          MEDIA_PORT,
-
-        error:
-          normalizeError(
-            error
-          ),
-      },
-      "Twilio media process startup failed"
-    );
-
-    process.exit(
-      1
-    );
-  }
-);

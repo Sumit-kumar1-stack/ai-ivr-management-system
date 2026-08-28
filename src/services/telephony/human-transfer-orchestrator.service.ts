@@ -10,6 +10,21 @@ import {
   requestHumanTransfer,
 } from "@/services/tools/transfer-to-human.service";
 
+import {
+  getCall,
+} from "@/services/calls/call.service";
+
+import {
+  beginCallbackConversation,
+} from "@/services/conversations/callback-conversation.service";
+import {
+  buildAgentHandoffContext,
+} from "./agent-handoff-context.service";
+import {
+  persistAgentHandoffContext,
+  persistTransferLifecycle,
+} from "./agent-transfer-persistence.service";
+
 //--------------------------------------------------
 // Result
 //--------------------------------------------------
@@ -26,6 +41,9 @@ export interface HumanTransferOrchestrationResult {
 
   code:
     string | null;
+
+  callbackOffered:
+    boolean;
 }
 
 //--------------------------------------------------
@@ -37,7 +55,12 @@ export async function orchestrateHumanTransfer(
     string,
 
   reason?:
-    string
+    string,
+
+  options?: {
+    destination?: string;
+    destinationUserId?: string;
+  }
 ): Promise<HumanTransferOrchestrationResult> {
   const log =
     createCallLogger(
@@ -51,9 +74,14 @@ export async function orchestrateHumanTransfer(
   const policy =
     resolveHumanTransferPolicy();
 
+  log.info({ event: "agent.transfer.requested" }, "Human transfer requested");
+  await persistTransferLifecycle(callId, "REQUESTED");
+  log.info({ event: "agent.transfer.policy_checked", allowed: policy.allowed, destinationConfigured: Boolean(options?.destination) }, "Human transfer policy checked");
+  await persistTransferLifecycle(callId, "POLICY_CHECKED", { allowed: policy.allowed, destinationConfigured: Boolean(options?.destination) });
+
   if (
     !policy.allowed ||
-    !policy.destination
+    !options?.destination
   ) {
     log.info(
       {
@@ -61,25 +89,18 @@ export async function orchestrateHumanTransfer(
           "human_transfer.policy_denied",
 
         reason:
-          policy.reason,
+          policy.reason ?? "No tenant transfer destination was selected.",
       },
       "Human transfer denied by policy"
     );
 
-    return {
-      requested:
-        true,
-
-      transferred:
-        false,
-
-      message:
-        policy.reason ||
-        "A human agent is not available right now.",
-
-      code:
-        "TRANSFER_NOT_AVAILABLE",
-    };
+    return unavailableTransferResult(
+      callId,
+      policy.reason ||
+        "A tenant transfer destination was not selected.",
+      "TRANSFER_NOT_AVAILABLE",
+      reason
+    );
   }
 
   //------------------------------------------------
@@ -90,9 +111,15 @@ export async function orchestrateHumanTransfer(
     [
       "human-transfer",
       callId,
+      options.destinationUserId ?? options.destination,
     ].join(
       ":"
     );
+
+  const handoff = await buildAgentHandoffContext(callId);
+  if (handoff) await persistAgentHandoffContext(handoff);
+  await persistTransferLifecycle(callId, "CONTEXT_READY", { contextAvailable: Boolean(handoff) });
+  log.info({ event: "agent.transfer.context_ready", contextAvailable: Boolean(handoff), intent: handoff?.customerIntent ?? null, department: handoff?.department ?? null }, "Safe agent handoff context prepared");
 
   //------------------------------------------------
   // Tool Gateway
@@ -103,7 +130,7 @@ export async function orchestrateHumanTransfer(
       callId,
 
       destination:
-        policy.destination,
+        options.destination,
 
       announcement:
         policy.announcement ??
@@ -151,19 +178,12 @@ export async function orchestrateHumanTransfer(
       "Human transfer tool failed"
     );
 
-    return {
-      requested:
-        true,
-
-      transferred:
-        false,
-
-      message:
-        "I could not connect the call to a human agent right now.",
-
-      code:
-        result.error.code,
-    };
+    return unavailableTransferResult(
+      callId,
+      "I could not connect the call to a human agent right now.",
+      result.error.code,
+      reason
+    );
   }
 
   //------------------------------------------------
@@ -199,5 +219,64 @@ export async function orchestrateHumanTransfer(
 
     code:
       null,
+
+    callbackOffered:
+      false,
   };
+}
+
+async function unavailableTransferResult(
+  callId: string,
+  fallbackMessage: string,
+  code: string,
+  reason?: string
+): Promise<HumanTransferOrchestrationResult> {
+  const log = createCallLogger(callId);
+  await persistTransferLifecycle(callId, "UNAVAILABLE", { code });
+
+  try {
+    const call = await getCall(callId);
+
+    if (!call || call.inboundProfile?.callbackEnabled === false) {
+      return {
+        requested: true,
+        transferred: false,
+        message: fallbackMessage,
+        code,
+        callbackOffered: false,
+      };
+    }
+
+    const callback = await beginCallbackConversation(callId, {
+      phone:
+        call.direction === "INBOUND"
+          ? call.callerNumber ?? undefined
+          : call.contactPhoneSnapshot ?? undefined,
+      reason: reason?.trim() || "Human transfer unavailable",
+    });
+
+    return {
+      requested: true,
+      transferred: false,
+      message: `${fallbackMessage} ${callback.prompt}`,
+      code,
+      callbackOffered: callback.handled,
+    };
+  } catch (error) {
+    log.warn(
+      {
+        event: "human_transfer.callback_fallback_failed",
+        error,
+      },
+      "Callback fallback could not be started after a human transfer failure"
+    );
+
+    return {
+      requested: true,
+      transferred: false,
+      message: fallbackMessage,
+      code,
+      callbackOffered: false,
+    };
+  }
 }

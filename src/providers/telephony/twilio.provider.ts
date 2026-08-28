@@ -21,6 +21,23 @@ import {
 
 export class TwilioProvider
   extends BaseTelephonyProvider {
+  readonly name = "twilio" as const;
+  readonly capabilities = {
+    supportsInbound: true,
+    supportsOutbound: true,
+    supportsDtmf: true,
+    supportsXmlInput: true,
+    supportsRealtimeDtmfDuringMedia: true,
+    supportsTransfer: true,
+    supportsRecording: true,
+    supportsRealtimeMedia: true,
+    supportsBidirectionalMedia: true,
+    supportsBargeIn: true,
+    supportsStatusCallbacks: true,
+    supportsStreamingTts: true,
+    supportsGeminiLive: true,
+    supportsCallControlUpdate: false,
+  } as const;
 
   //--------------------------------------------------
   // Normalize Phone Number

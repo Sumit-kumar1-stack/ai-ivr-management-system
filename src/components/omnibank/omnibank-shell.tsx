@@ -3,14 +3,11 @@
 import Link from "next/link";
 
 import {
-  BarChart3,
   CircleHelp,
-  FileUp,
   Landmark,
   LayoutDashboard,
   LogOut,
   Megaphone,
-  ShieldCheck,
 } from "lucide-react";
 
 import type {
@@ -44,7 +41,7 @@ interface OmniBankShellProps {
 // Navigation
 //--------------------------------------------------
 
-const navigation = [
+export const OMNIBANK_NAVIGATION = [
   {
     id:
       "dashboard",
@@ -61,59 +58,18 @@ const navigation = [
 
   {
     id:
-      "csv",
-
-    label:
-      "CSV",
-
-    href:
-      "#",
-
-    icon:
-      FileUp,
-  },
-
-  {
-    id:
       "campaigns",
 
     label:
-      "Campaigns",
+      "Quick Test Call",
 
     href:
-      "/communication/campaigns/new/audience",
+      "/communication/quick-test-call",
 
     icon:
       Megaphone,
   },
 
-  {
-    id:
-      "ekyc",
-
-    label:
-      "eKYC",
-
-    href:
-      "#",
-
-    icon:
-      ShieldCheck,
-  },
-
-  {
-    id:
-      "reports",
-
-    label:
-      "Reports",
-
-    href:
-      "#",
-
-    icon:
-      BarChart3,
-  },
 ] as const;
 
 //--------------------------------------------------
@@ -255,7 +211,7 @@ export default function OmniBankShell({
               px-3
             "
           >
-            {navigation.map(
+            {OMNIBANK_NAVIGATION.map(
               item => {
                 const Icon =
                   item.icon;

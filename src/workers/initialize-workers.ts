@@ -17,6 +17,7 @@ import {
   closeStaleCallCleanup,
   initializeStaleCallCleanup,
 } from "@/services/calls/stale-call-cleanup.service";
+import { closeDataRetention, initializeDataRetention } from "@/services/retention/data-retention.service";
 
 import {
   CallRetryQueueService,
@@ -115,6 +116,7 @@ export function initializeWorkers():
     //----------------------------------------
 
     initializeStaleCallCleanup();
+    initializeDataRetention();
 
     //----------------------------------------
     // Ready
@@ -139,6 +141,7 @@ export function initializeWorkers():
 
         staleCallCleanup:
           true,
+        retention: true,
 
         durationMs:
           getDurationMs(
@@ -274,6 +277,8 @@ async function closeWorkersInternal():
         ),
     });
   }
+
+  closeDataRetention();
 
   //----------------------------------------
   // Close Communication Campaign Worker

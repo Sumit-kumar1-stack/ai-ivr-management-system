@@ -51,6 +51,9 @@ const mocks =
         completeAudit:
           vi.fn(),
 
+        enforceRateLimit:
+          vi.fn(),
+
         reconcileStaleToolExecutions:
           vi.fn(),
 
@@ -112,6 +115,14 @@ vi.mock(
                 ),
         })
       ),
+  })
+);
+
+vi.mock(
+  "@/lib/abuse-control",
+  () => ({
+    enforceRateLimit:
+      mocks.enforceRateLimit,
   })
 );
 
@@ -390,6 +401,9 @@ describe(
           .mockResolvedValue({
             id:
               CALL_ID,
+
+            tenantId:
+              "tenant-1",
           });
 
         //------------------------------------------------
@@ -420,6 +434,28 @@ describe(
           .mockResolvedValue(
             undefined
           );
+
+        mocks
+          .enforceRateLimit
+          .mockResolvedValue({
+            allowed:
+              true,
+
+            current:
+              1,
+
+            limit:
+              30,
+
+            windowMs:
+              60_000,
+
+            retryAfterMs:
+              60_000,
+
+            key:
+              "abuse:tool-search:1",
+          });
 
         //------------------------------------------------
         // Default Tool Result
@@ -500,6 +536,75 @@ describe(
 
             status:
               "SUCCEEDED",
+          })
+        );
+      }
+    );
+
+    it(
+      "aborts a knowledge search when the rate limit is exceeded",
+      async () => {
+        mocks
+          .enforceRateLimit
+          .mockResolvedValueOnce({
+            allowed:
+              false,
+
+            current:
+              31,
+
+            limit:
+              30,
+
+            windowMs:
+              60_000,
+
+            retryAfterMs:
+              2_000,
+
+            key:
+              "abuse:tool-search:over",
+          });
+
+        const result =
+          await executeBusinessTool(
+            createRequest()
+          );
+
+        expect(
+          result.success
+        ).toBe(false);
+
+        if (
+          result.success
+        ) {
+          throw new Error(
+            "Expected rate-limited tool result"
+          );
+        }
+
+        expect(
+          result.error.code
+        ).toBe(
+          "RATE_LIMITED"
+        );
+
+        expect(
+          mocks.handler
+        ).not.toHaveBeenCalled();
+
+        expect(
+          mocks.completeAudit
+        ).toHaveBeenCalledWith(
+          expect.objectContaining({
+            executionId:
+              EXECUTION_ID,
+
+            status:
+              "ABORTED",
+
+            errorCode:
+              "RATE_LIMITED",
           })
         );
       }

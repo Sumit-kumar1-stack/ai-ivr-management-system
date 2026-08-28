@@ -999,7 +999,8 @@ export async function runCampaign(
             result.callId,
 
           providerCallId:
-            result.providerCallId,
+            result.providerCallId ??
+            undefined,
 
           duplicate:
             result.duplicate ??

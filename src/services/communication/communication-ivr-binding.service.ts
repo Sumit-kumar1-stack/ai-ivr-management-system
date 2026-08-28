@@ -1,11 +1,16 @@
 import {
   CommunicationCampaignStatus,
   CommunicationChannel,
+  IVRFlowVersionStatus,
 } from "@prisma/client";
 
 import {
   prisma,
 } from "@/lib/prisma";
+import {
+  recordCommunicationCampaignMaterialChange,
+  type CommunicationCampaignMaterialChangeActor,
+} from "@/services/communication/communication-campaign-material-change.service";
 
 import {
   IVRFlowService,
@@ -27,16 +32,27 @@ export interface PublishedCommunicationIvrFlow {
 
   version:
     number;
+
+  publishedVersionId:
+    string;
+
 }
 
 //--------------------------------------------------
 // List Valid Published Flows
 //--------------------------------------------------
 
-export async function listPublishedCommunicationIvrFlows():
+export async function listPublishedCommunicationIvrFlows(
+  tenantId: string | null | undefined
+):
   Promise<
     PublishedCommunicationIvrFlow[]
   > {
+  const resolvedTenantId = tenantId?.trim() ?? "";
+  if (!resolvedTenantId) {
+    return [];
+  }
+
   const flows =
     await prisma
       .iVRFlow
@@ -44,6 +60,7 @@ export async function listPublishedCommunicationIvrFlows():
         where: {
           isPublished:
             true,
+          tenantId: resolvedTenantId,
         },
 
         orderBy: [
@@ -59,30 +76,32 @@ export async function listPublishedCommunicationIvrFlows():
         ],
       });
 
-  return flows
-    .filter(
-      flow =>
-        IVRFlowService
-          .getRuntimeMenu(
-            flow
-          ) !==
-        null
-    )
-    .map(
-      flow => ({
-        id:
-          flow.id,
+  const versions = await prisma.iVRFlowVersion.findMany({
+    where: {
+      flowId: { in: flows.map(flow => flow.id) },
+      tenantId: resolvedTenantId,
+      status: IVRFlowVersionStatus.PUBLISHED,
+    },
+    orderBy: { versionNumber: "desc" },
+  });
+  const versionByFlowId = new Map(
+    versions.map(version => [version.flowId, version] as const)
+  );
 
-        name:
-          flow.name,
+  return flows.flatMap(flow => {
+    const publishedVersion = versionByFlowId.get(flow.id);
+    if (!publishedVersion || IVRFlowService.getRuntimeMenu(flow) === null) {
+      return [];
+    }
 
-        description:
-          flow.description,
-
-        version:
-          flow.version,
-      })
-    );
+    return [{
+      id: flow.id,
+      name: flow.name,
+      description: flow.description,
+      version: publishedVersion.versionNumber,
+      publishedVersionId: publishedVersion.id,
+    }];
+  });
 }
 
 //--------------------------------------------------
@@ -90,8 +109,9 @@ export async function listPublishedCommunicationIvrFlows():
 //--------------------------------------------------
 
 export async function requirePublishedCommunicationIvrFlow(
-  ivrFlowId:
-    string
+  ivrFlowId: string,
+  ivrFlowVersionId?: string | null,
+  tenantId?: string | null
 ) {
   const id =
     ivrFlowId
@@ -122,29 +142,41 @@ export async function requirePublishedCommunicationIvrFlow(
     );
   }
 
-  if (
-    !flow.isPublished
-  ) {
-    throw new Error(
-      "Selected IVR flow is not published"
-    );
+  if (tenantId?.trim() && flow.tenantId !== tenantId.trim()) {
+    throw new Error("Cross-tenant IVR flow binding is not allowed");
   }
 
-  const menu =
-    IVRFlowService
-      .getRuntimeMenu(
-        flow
-      );
+  const publishedVersion = ivrFlowVersionId?.trim()
+    ? await prisma.iVRFlowVersion.findFirst({
+        where: {
+          id: ivrFlowVersionId.trim(),
+          flowId: flow.id,
+          status: IVRFlowVersionStatus.PUBLISHED,
+          ...(tenantId?.trim() ? { tenantId: tenantId.trim() } : {}),
+        },
+      })
+    : await IVRFlowService.findPublishedVersion(flow.id);
 
-  if (
-    !menu
-  ) {
-    throw new Error(
-      "Selected IVR flow does not contain a valid runtime DTMF menu"
-    );
+  if (!publishedVersion) {
+    throw new Error("Selected IVR flow has no immutable published version");
   }
 
-  return flow;
+  if (!ivrFlowVersionId?.trim() && !flow.isPublished) {
+    throw new Error("Selected IVR flow is not published");
+  }
+
+  const menu = IVRFlowService.getRuntimeMenu({
+    nodes: publishedVersion.nodes,
+  });
+
+  if (!menu) {
+    throw new Error("Selected IVR flow does not contain a valid runtime DTMF menu");
+  }
+
+  return {
+    ...flow,
+    publishedVersion,
+  };
 }
 
 //--------------------------------------------------
@@ -156,7 +188,13 @@ export async function bindCommunicationIvrFlow(
     string,
 
   ivrFlowId:
-    string
+    string,
+
+  ivrFlowVersionId?:
+    string | null,
+
+  actor?:
+    CommunicationCampaignMaterialChangeActor
 ): Promise<PublishedCommunicationIvrFlow> {
   const campaignId =
     communicationCampaignId
@@ -192,6 +230,10 @@ export async function bindCommunicationIvrFlow(
 
           channels:
             true,
+
+          ownerUser: {
+            select: { tenantId: true },
+          },
         },
       });
 
@@ -239,8 +281,17 @@ export async function bindCommunicationIvrFlow(
 
   const flow =
     await requirePublishedCommunicationIvrFlow(
-      ivrFlowId
+      ivrFlowId,
+      ivrFlowVersionId,
+      campaign.ownerUser?.tenantId
     );
+
+  if (
+    flow.tenantId &&
+    flow.tenantId !== campaign.ownerUser?.tenantId
+  ) {
+    throw new Error("Cross-tenant IVR flow binding is not allowed");
+  }
 
   //------------------------------------------------
   // Bind
@@ -257,8 +308,17 @@ export async function bindCommunicationIvrFlow(
       data: {
         ivrFlowId:
           flow.id,
+        ivrFlowVersionId:
+          flow.publishedVersion.id,
       },
     });
+
+  if (actor) {
+    await recordCommunicationCampaignMaterialChange(
+      campaign.id,
+      actor
+    );
+  }
 
   return {
     id:
@@ -271,6 +331,9 @@ export async function bindCommunicationIvrFlow(
       flow.description,
 
     version:
-      flow.version,
+      flow.publishedVersion.versionNumber,
+
+    publishedVersionId:
+      flow.publishedVersion.id,
   };
 }

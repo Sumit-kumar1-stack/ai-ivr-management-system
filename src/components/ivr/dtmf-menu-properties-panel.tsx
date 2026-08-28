@@ -28,8 +28,8 @@ interface Props {
     IVRNode;
 
   onChange: (
-    menu:
-      IVRRuntimeMenuConfig
+    runtimeMenu: Omit<IVRRuntimeMenuConfig, "options">,
+    options: IVRRuntimeMenuOption[]
   ) => void;
 }
 
@@ -45,6 +45,7 @@ const actions:
     "BRANCH_INFORMATION",
     "REQUEST_CALLBACK",
     "HUMAN_AGENT",
+    "AGENT_REQUEST",
     "REPEAT_MENU",
     "CONTINUE_AI",
     "END_CALL",
@@ -75,6 +76,8 @@ function createDefaultMenu():
 
     maxAttempts:
       3,
+
+    timeoutSeconds: 8,
 
     options: [
       {
@@ -202,9 +205,13 @@ export default function DTMFMenuPropertiesPanel({
   node,
   onChange,
 }: Props) {
-  const menu =
-    node.data.runtimeMenu ??
-    createDefaultMenu();
+  const defaultMenu = createDefaultMenu();
+  const legacyMenu = node.data.runtimeMenu;
+  const menu: IVRRuntimeMenuConfig = {
+    ...defaultMenu,
+    ...legacyMenu,
+    options: node.data.options ?? legacyMenu?.options ?? defaultMenu.options,
+  };
 
   //------------------------------------------------
   // Update Menu Field
@@ -217,12 +224,13 @@ export default function DTMFMenuPropertiesPanel({
     value:
       IVRRuntimeMenuConfig[K]
   ): void {
-    onChange({
+    const updatedMenu = {
       ...menu,
-
       [field]:
         value,
-    });
+    };
+    const { options, ...runtimeMenu } = updatedMenu;
+    onChange(runtimeMenu, options);
   }
 
   //------------------------------------------------
@@ -513,6 +521,12 @@ export default function DTMFMenuPropertiesPanel({
 
         </div>
 
+        <div>
+          <label className="mb-2 block text-sm font-medium">Entry timeout (seconds)</label>
+          <Input type="number" min={1} max={60} value={menu.timeoutSeconds ?? 8} onChange={event => updateMenu("timeoutSeconds", Math.min(60, Math.max(1, Number(event.target.value) || 8)))} />
+          <p className="mt-1 text-xs text-muted-foreground">For staged Plivo entry, no selection falls through to realtime AI after this timeout.</p>
+        </div>
+
         {/* ----------------------------------------
             Options
         ---------------------------------------- */}
@@ -680,6 +694,27 @@ export default function DTMFMenuPropertiesPanel({
                       placeholder="Loan information"
                     />
 
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="mb-1 block text-xs font-medium">Intent</label>
+                      <Input value={option.intent ?? ""} onChange={event => updateOption(index, { intent: event.target.value })} placeholder="PERSONAL_LOAN" />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium">Target node ID</label>
+                      <Input value={option.destinationNodeId ?? ""} onChange={event => updateOption(index, { destinationNodeId: event.target.value })} placeholder="personal-loan" />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium">Department</label>
+                      <Input value={option.department ?? ""} onChange={event => updateOption(index, { department: event.target.value })} placeholder="Optional" />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium">Preferred language</label>
+                      <select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={option.language ?? ""} onChange={event => updateOption(index, { language: (event.target.value || undefined) as IVRRuntimeMenuOption["language"] })}>
+                        <option value="">No language change</option><option value="English">English</option><option value="Hindi">Hindi</option><option value="Hinglish">Hinglish</option><option value="AUTO">Auto-detect</option>
+                      </select>
+                    </div>
                   </div>
 
                   {/* --------------------------------

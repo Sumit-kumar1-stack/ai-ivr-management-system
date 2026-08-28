@@ -11,6 +11,7 @@ import {
 import {
   registerProcessLifecycle,
 } from "@/server/process-lifecycle";
+import { validateEnvironmentFor } from "@/config/process-environment";
 
 //--------------------------------------------------
 // Load Environment First
@@ -22,6 +23,8 @@ loadEnvConfig(
 
 process.env.IVR_PROCESS_NAME =
   "worker";
+
+validateEnvironmentFor("worker");
 
 //--------------------------------------------------
 // Logger

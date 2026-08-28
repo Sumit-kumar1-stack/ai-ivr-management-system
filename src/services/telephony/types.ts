@@ -114,7 +114,7 @@ export interface CallResponse {
    * a Twilio Call SID.
    */
   providerCallId?:
-    string;
+    string | null;
 
   status:
     string;

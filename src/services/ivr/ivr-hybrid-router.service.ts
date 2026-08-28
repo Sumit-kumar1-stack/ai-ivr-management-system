@@ -8,20 +8,24 @@ import {
 } from "@/services/calls/call.service";
 
 import {
-  IVRFlowService,
-} from "@/services/ivr-flow.service";
+  CascadedTurnLatency,
+} from "@/services/voice-runtime/cascaded-turn-latency.service";
 
 import {
-  executeIVRAction,
-} from "./ivr-action-executor.service";
+  executeIVRGraphRoute,
+} from "./ivr-graph-executor.service";
 
 import {
-  resolveIVRVoiceInput,
-} from "./ivr-voice-resolver.service";
+  IVRFlowSessionService,
+} from "./ivr-flow-session.service";
+
+import {
+  routeStandardInput,
+} from "./standard-input-router.service";
 
 import type {
-  IVRActionExecutionResult,
-} from "./ivr-action-executor.service";
+  IVRGraphExecutionResult,
+} from "./ivr-graph-executor.service";
 
 //--------------------------------------------------
 // Result
@@ -38,7 +42,10 @@ export interface HybridVoiceRouteResult {
     string | null;
 
   execution:
-    IVRActionExecutionResult | null;
+    IVRGraphExecutionResult | null;
+
+  graphExecution:
+    IVRGraphExecutionResult | null;
 
   continueConversation:
     boolean;
@@ -63,6 +70,9 @@ function noMatch(
     execution:
       null,
 
+    graphExecution:
+      null,
+
     continueConversation:
       true,
   };
@@ -74,8 +84,10 @@ function noMatch(
 
 export async function routeVoiceThroughIVR(
   callId: string,
-  transcript: string
+  transcript: string,
+  _turnId?: number
 ): Promise<HybridVoiceRouteResult> {
+  void _turnId;
   const log =
     createCallLogger(
       callId
@@ -108,153 +120,85 @@ export async function routeVoiceThroughIVR(
       return noMatch();
     }
 
-    //------------------------------------------------
-    // Published Menu
-    //------------------------------------------------
-
-    const menu =
-      await IVRFlowService
-        .findRuntimeMenuForCampaign(
-          call.campaignId
-        );
+    const runtime = await IVRFlowSessionService.get(callId);
 
     if (
-      !menu
+      !call.ivrFlowVersion ||
+      !runtime?.currentNodeId ||
+      !call.ivrFlowVersion.nodes
     ) {
       log.debug(
         {
-          event:
-            "ivr.voice.route_skipped",
-
-          reason:
-            "no_published_menu",
-
-          campaignId:
-            call.campaignId,
+          event: "ivr.voice.route_skipped",
+          reason: "no_active_ivr_flow",
+          campaignId: call.campaignId,
         },
-        "No published IVR menu available for voice routing"
+        "No active IVR flow available for voice routing"
       );
-
       return noMatch();
     }
 
-    //------------------------------------------------
-    // Resolve
-    //------------------------------------------------
+    const nodes = Array.isArray(call.ivrFlowVersion.nodes)
+      ? call.ivrFlowVersion.nodes as Array<{ id: string; data?: Record<string, unknown> }>
+      : [];
+    const edges = Array.isArray(call.ivrFlowVersion.edges)
+      ? call.ivrFlowVersion.edges as Array<{ source: string; target: string; data?: Record<string, unknown> }>
+      : [];
+    const currentNode = nodes.find(node => node.id === runtime.currentNodeId);
 
-    const resolution =
-      resolveIVRVoiceInput(
-        menu,
-        transcript
-      );
-
-    if (
-      !resolution.matched ||
-      !resolution.action ||
-      !resolution.option
-    ) {
-      log.debug(
-        {
-          event:
-            "ivr.voice.no_match",
-
-          campaignId:
-            call.campaignId,
-
-          confidence:
-            resolution.confidence,
-
-          reason:
-            resolution.reason,
-
-          transcriptCharacterCount:
-            transcript.length,
-        },
-        "Voice input did not match published IVR action"
-      );
-
-      return noMatch(
-        resolution.confidence
-      );
+    if (!currentNode) {
+      return noMatch();
     }
 
-    //------------------------------------------------
-    // Execute Same Action As DTMF
-    //------------------------------------------------
+    const currentKind = String(currentNode.data?.nodeKind ?? "").toUpperCase();
+    if (currentKind === "AI_CONVERSATION" || currentKind === "AI") {
+      return noMatch();
+    }
 
-    const execution =
-      await executeIVRAction(
-        callId,
-        resolution.action,
-        resolution.option.response,
-        resolution.option.value
-      );
+    const route = routeStandardInput({
+      nodes,
+      edges,
+      currentNodeId: currentNode.id,
+      inputMode: "VOICE",
+      rawInput: transcript,
+      previousNodeId: runtime.previousNodeId ?? undefined,
+    });
 
-    //------------------------------------------------
-    // AI Categories Continue Into Conversation
-    //------------------------------------------------
-
-    const continueConversation =
-      execution.requiresAI;
+    const execution = await executeIVRGraphRoute(callId, route, {
+      mode: "VOICE",
+      value: transcript,
+    });
 
     log.info(
       {
-        event:
-          "ivr.voice.action_routed",
-
-        campaignId:
-          call.campaignId,
-
-        action:
-          resolution.action,
-
-        confidence:
-          resolution.confidence,
-
-        handled:
-          execution.handled,
-
-        completed:
-          execution.completed,
-
-        requiresAI:
-          execution.requiresAI,
-
-        shouldRepeatMenu:
-          execution.shouldRepeatMenu,
-
-        shouldEndCall:
-          execution.shouldEndCall,
-
-        shouldTransferToHuman:
-          execution.shouldTransferToHuman,
-
-        callbackRequested:
-          execution.callbackRequested,
-
-        transcriptCharacterCount:
-          transcript.length,
+        event: "ivr.voice.route_completed",
+        campaignId: call.campaignId,
+        matched: route.matched,
+        confidence: route.confidence,
+        currentNodeId: execution.currentNodeId,
+        nextNodeId: execution.nextNodeId,
+        endCall: execution.endCall,
+        awaitInput: execution.awaitInput,
+        transcriptCharacterCount: transcript.length,
       },
-      "Voice input routed through shared IVR action executor"
+      "Voice input routed through shared IVR graph executor"
     );
 
     return {
-      matched:
-        true,
-
-      confidence:
-        resolution.confidence,
-
-      action:
-        resolution.action,
-
+      matched: route.matched,
+      confidence: route.confidence,
+      action: route.action,
       execution,
-
-      continueConversation,
+      graphExecution: execution,
+      continueConversation: false,
     };
   } catch (
     error
   ) {
+    CascadedTurnLatency.fail(
+      callId,
+      "ROUTING"
+    );
     log.error(
       {
         event:
@@ -277,4 +221,135 @@ export async function routeVoiceThroughIVR(
      */
     return noMatch();
   }
+}
+
+/** Provider-neutral keypad entry point used by non-streaming voice adapters. */
+export async function routeDtmfThroughIVR(
+  callId: string,
+  digit: string
+): Promise<HybridVoiceRouteResult> {
+  const call = await getCall(callId);
+  const runtime = await IVRFlowSessionService.get(callId);
+  if (!call?.ivrFlowVersion || !runtime?.currentNodeId) return noMatch();
+
+  const nodes = Array.isArray(call.ivrFlowVersion.nodes)
+    ? call.ivrFlowVersion.nodes as Array<{ id: string; data?: Record<string, unknown> }>
+    : [];
+  const edges = Array.isArray(call.ivrFlowVersion.edges)
+    ? call.ivrFlowVersion.edges as Array<{ source: string; target: string; sourceHandle?: string | null; data?: Record<string, unknown> }>
+    : [];
+  const entryNodeId = runtime.currentNodeId;
+  const route = routeStandardInput({
+    nodes,
+    edges,
+    currentNodeId: runtime.currentNodeId,
+    inputMode: "DTMF",
+    rawInput: digit,
+    previousNodeId: runtime.previousNodeId ?? undefined,
+  });
+  const execution = await executeIVRGraphRoute(callId, route, { mode: "DTMF", value: digit });
+  if (route.matched) {
+    await persistEntrySelection(callId, (await IVRFlowSessionService.get(callId)) ?? runtime, nodes, entryNodeId, digit, route.optionLabel);
+  }
+  return {
+    matched: route.matched,
+    confidence: route.confidence,
+    action: route.action,
+    execution,
+    graphExecution: execution,
+    continueConversation: false,
+  };
+}
+
+async function persistEntrySelection(
+  callId: string,
+  runtime: NonNullable<Awaited<ReturnType<typeof IVRFlowSessionService.get>>>,
+  nodes: Array<{ id: string; data?: Record<string, unknown> }>,
+  entryNodeId: string,
+  digit: string,
+  optionLabel: string | null
+): Promise<void> {
+  const entryNode = nodes.find(node => node.id === entryNodeId);
+  const options = Array.isArray(entryNode?.data?.options) ? entryNode.data.options : [];
+  const option = options.find(value => value && typeof value === "object" && (value as Record<string, unknown>).digit === digit) as Record<string, unknown> | undefined;
+  const selectedIntent = stringValue(option?.intent) ?? stringValue(option?.action) ?? optionLabel ?? runtime.selectedIntent ?? null;
+  const selectedDepartment = stringValue(option?.department) ?? optionLabel ?? runtime.selectedDepartment ?? null;
+  const preferredLanguage = stringValue(option?.language) ?? runtime.preferredLanguage ?? null;
+  await IVRFlowSessionService.set(callId, {
+    ...runtime,
+    selectedDigit: digit,
+    selectedIntent,
+    selectedDepartment,
+    preferredLanguage,
+    collectedFields: { ...(runtime.collectedFields ?? {}), ...(selectedIntent ? { selectedIntent } : {}), ...(selectedDepartment ? { selectedDepartment } : {}) },
+    conversationMode: "REALTIME_AI",
+    inputStage: "REALTIME_AI",
+  });
+  createCallLogger(callId).info({ event: "ivr.intent.selected", currentNodeId: runtime.currentNodeId, selectedIntent, selectedDepartment, preferredLanguage }, "IVR entry selection persisted");
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Moves an active published flow to an explicitly configured node.  Global
+ * input commands use this rather than maintaining a second graph state store.
+ */
+export async function routeToIVRNode(
+  callId: string,
+  targetNodeId: string,
+  transition: string,
+  value: string
+): Promise<HybridVoiceRouteResult> {
+  const call = await getCall(callId);
+  const runtime = await IVRFlowSessionService.get(callId);
+  const nodes = Array.isArray(call?.ivrFlowVersion?.nodes)
+    ? call.ivrFlowVersion.nodes as Array<{ id: string }>
+    : [];
+
+  if (!call?.ivrFlowVersion || !runtime?.currentNodeId || !nodes.some(node => node.id === targetNodeId)) {
+    return noMatch();
+  }
+
+  const execution = await executeIVRGraphRoute(callId, {
+    matched: true,
+    confidence: 1,
+    resultingNodeId: targetNodeId,
+    transition,
+    action: "NAVIGATE",
+    optionLabel: null,
+  }, { mode: "DTMF", value });
+
+  return {
+    matched: true,
+    confidence: 1,
+    action: "NAVIGATE",
+    execution,
+    graphExecution: execution,
+    continueConversation: false,
+  };
+}
+
+/** Returns to a configured main-menu node, falling back to the flow START. */
+export async function routeMainMenuThroughIVR(
+  callId: string,
+  configuredNodeId?: string | null
+): Promise<HybridVoiceRouteResult> {
+  const call = await getCall(callId);
+  const nodes = Array.isArray(call?.ivrFlowVersion?.nodes)
+    ? call.ivrFlowVersion.nodes as Array<{ id: string; data?: Record<string, unknown> }>
+    : [];
+  const configured = configuredNodeId?.trim();
+  const start = nodes.find(node => String(node.data?.nodeKind ?? "").toUpperCase() === "START");
+  const startConfigured = typeof start?.data?.mainMenuNodeId === "string"
+    ? start.data.mainMenuNodeId.trim()
+    : "";
+  const targetNodeId = [configured, startConfigured, start?.id].find(candidate =>
+    Boolean(candidate) && nodes.some(node => node.id === candidate)
+  );
+
+  return targetNodeId
+    ? routeToIVRNode(callId, targetNodeId, "MAIN_MENU", "*")
+    : noMatch();
 }

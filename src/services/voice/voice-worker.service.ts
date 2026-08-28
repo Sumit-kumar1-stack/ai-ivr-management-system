@@ -37,6 +37,10 @@ import {
 } from "@/services/voice-runtime/turn-coordinator.service";
 
 import {
+  CascadedTurnLatency,
+} from "@/services/voice-runtime/cascaded-turn-latency.service";
+
+import {
   AudioRouter,
 } from "./audio-router.service";
 
@@ -53,8 +57,14 @@ import {
 } from "./voice.service";
 
 import {
+  playStandardTtsFallback,
+} from "./standard-tts-fallback.service";
+
+import {
   voiceQueue,
 } from "./voice-queue.service";
+
+import { STANDARD_REALTIME_CONFIG } from "@/config/standard-realtime";
 
 function sleep(
   milliseconds: number
@@ -154,6 +164,14 @@ export class VoiceWorker {
       return false;
     }
 
+    // Backpressure before spending another TTS request. This retains phrase
+    // order and lets Plivo playback drain rather than discarding queued audio.
+    while (voiceQueue.size(callId) >= STANDARD_REALTIME_CONFIG.ttsQueueMaxChunks) {
+      if (turnId !== undefined && !TurnCoordinator.isCurrent(callId, turnId)) return false;
+      if (!AudioSessionService.getByCallId(callId)) return false;
+      await sleep(15);
+    }
+
     try {
       const tts =
         await VoiceService.synthesize(
@@ -190,6 +208,10 @@ export class VoiceWorker {
         );
 
         return false;
+      }
+
+      if (turnId !== undefined) {
+        tts.generationId = TurnCoordinator.getCurrentGenerationId(callId) ?? undefined;
       }
 
       if (
@@ -252,6 +274,10 @@ export class VoiceWorker {
         tts
       );
 
+      CascadedTurnLatency.markFirstAudioQueued(
+        callId
+      );
+
       log.debug(
         {
           callId,
@@ -281,7 +307,10 @@ export class VoiceWorker {
         "Failed to synthesize speech"
       );
 
-      return false;
+      return playStandardTtsFallback(
+        callId,
+        error
+      );
     }
   }
 
@@ -559,6 +588,61 @@ export class VoiceWorker {
         }
 
         if (
+          state === "TERMINATING" &&
+          !voiceQueue.hasItems(
+            callId
+          ) &&
+          !SpeechProduction.isActive(
+            callId
+          )
+        ) {
+          PlaybackState.stop(
+            callId
+          );
+
+          voiceQueue.clear(
+            callId
+          );
+
+          sentenceBuffer.clear(
+            callId
+          );
+
+          SpeechProduction.clear(
+            callId
+          );
+
+          ConversationAbort.abort(
+            callId
+          );
+
+          ConversationAbort.clear(
+            callId
+          );
+
+          if (
+            AudioSessionService.getByCallId(
+              callId
+            )
+          ) {
+            ConversationStateService.setState(
+              callId,
+              "ENDED"
+            );
+          }
+
+          log.info(
+            {
+              event:
+                "voice.worker.terminating_completed",
+            },
+            "Termination completed; stopping voice worker"
+          );
+
+          return;
+        }
+
+        if (
           !AudioSessionService.getByCallId(
             callId
           )
@@ -703,6 +787,17 @@ export class VoiceWorker {
             10
           );
 
+          continue;
+        }
+
+        if (
+          audio.generationId &&
+          !TurnCoordinator.isCurrentGeneration(callId, audio.generationId)
+        ) {
+          log.info(
+            { event: "standard.generation.stale_audio_discarded", generationId: audio.generationId },
+            "Discarding audio from an invalidated generation"
+          );
           continue;
         }
 
@@ -904,6 +999,27 @@ export class VoiceWorker {
             callId
           )
         ) {
+          if (
+            ConversationStateService.getState(
+              callId
+            ) === "TERMINATING"
+          ) {
+            ConversationStateService.setState(
+              callId,
+              "ENDED"
+            );
+
+            log.info(
+              {
+                event:
+                  "voice.playback.completed_terminal",
+              },
+              "All terminal speech finished; stopping voice worker"
+            );
+
+            return;
+          }
+
           ConversationStateService.setState(
             callId,
             "LISTENING"

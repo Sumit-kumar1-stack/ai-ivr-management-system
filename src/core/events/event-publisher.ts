@@ -13,6 +13,10 @@ import {
 } from "@/lib/logger";
 
 import {
+  prisma,
+} from "@/lib/prisma";
+
+import {
   eventBus,
 } from "./event-bus";
 
@@ -22,10 +26,12 @@ import {
 
 import {
   createSafeEventSnapshot,
+  createSafeAuditSnapshot,
 } from "./event-snapshot";
 
 import {
   AppEvent,
+  isAuditAppEvent,
   isAppEvent,
 } from "./event-types";
 
@@ -67,6 +73,71 @@ function getCallId(
 
   return callId ||
     null;
+}
+
+async function enrichTenantContext(
+  event: AppEvent,
+  payload: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const callId =
+    getCallId(payload);
+
+  if (!callId) {
+    return payload;
+  }
+
+  try {
+    const call =
+      await prisma.call.findUnique({
+        where: { id: callId },
+        select: {
+          tenantId: true,
+          campaign: {
+            select: {
+              ownerUser: {
+                select: { tenantId: true },
+              },
+            },
+          },
+        },
+      });
+
+    const tenantId =
+      call?.tenantId ??
+      call?.campaign?.ownerUser?.tenantId ??
+      null;
+
+    if (tenantId) {
+      return { ...payload, tenantId };
+    }
+
+    log.warn(
+      {
+        event: "events.tenant_context.unresolved",
+        applicationEvent: event,
+        callId,
+      },
+      "Call event has no authoritative tenant context"
+    );
+  } catch (error) {
+    log.error(
+      {
+        event: "events.tenant_context.lookup_failed",
+        applicationEvent: event,
+        callId,
+        error: normalizeError(error),
+      },
+      "Authoritative call tenant lookup failed"
+    );
+  }
+
+  const withoutTenant = {
+    ...payload,
+  };
+
+  delete withoutTenant.tenantId;
+
+  return withoutTenant;
 }
 
 //--------------------------------------------------
@@ -136,6 +207,12 @@ export class EventPublisher {
       return false;
     }
 
+    const enrichedPayload =
+      await enrichTenantContext(
+        event,
+        payload
+      );
+
     //----------------------------------------
     // Safe In-Memory Monitoring
     //----------------------------------------
@@ -143,7 +220,7 @@ export class EventPublisher {
     try {
       EventMonitor.add(
         event,
-        payload
+        enrichedPayload
       );
     } catch (
       error
@@ -183,7 +260,7 @@ export class EventPublisher {
     ) {
       const callId =
         getCallId(
-          payload
+          enrichedPayload
         );
 
       if (
@@ -207,18 +284,30 @@ export class EventPublisher {
       } else {
         try {
           const safePayload =
-            createSafeEventSnapshot(
-              payload
-            );
+            isAuditAppEvent(
+              event
+            )
+              ? createSafeAuditSnapshot(
+                  enrichedPayload
+                )
+              : createSafeEventSnapshot(
+                  enrichedPayload
+                );
 
           const safeMetadata =
-            payload.metadata !==
+            enrichedPayload.metadata !==
               undefined &&
-            payload.metadata !==
+            enrichedPayload.metadata !==
               null
-              ? createSafeEventSnapshot(
-                  payload.metadata
+              ? isAuditAppEvent(
+                  event
                 )
+                ? createSafeAuditSnapshot(
+                    enrichedPayload.metadata
+                  )
+                : createSafeEventSnapshot(
+                    enrichedPayload.metadata
+                  )
               : undefined;
 
           await CallEventService.create(
@@ -266,7 +355,7 @@ export class EventPublisher {
     try {
       await eventBus.emitAsync(
         event,
-        payload
+        enrichedPayload
       );
 
       return true;
@@ -311,6 +400,9 @@ export class EventPublisher {
       case AppEvent.CALL_STARTED:
         return CallEventType.STARTED;
 
+      case AppEvent.CALL_CREATED:
+        return CallEventType.CALL_CREATED;
+
       case AppEvent.CALL_RINGING:
         return CallEventType.RINGING;
 
@@ -319,6 +411,9 @@ export class EventPublisher {
 
       case AppEvent.CALL_COMPLETED:
         return CallEventType.COMPLETED;
+
+      case AppEvent.CALL_TERMINATED:
+        return CallEventType.CALL_TERMINATED;
 
       case AppEvent.CALL_FAILED:
         return CallEventType.FAILED;
@@ -334,6 +429,57 @@ export class EventPublisher {
 
       case AppEvent.VOICE_INTERRUPTED:
         return CallEventType.INTERRUPTED;
+
+      case AppEvent.CAMPAIGN_SELECTED:
+        return CallEventType.CAMPAIGN_SELECTED;
+
+      case AppEvent.CUSTOMER_MATCHED:
+        return CallEventType.CUSTOMER_MATCHED;
+
+      case AppEvent.AI_SESSION_STARTED:
+        return CallEventType.AI_SESSION_STARTED;
+
+      case AppEvent.INTENT_DETECTED:
+        return CallEventType.INTENT_DETECTED;
+
+      case AppEvent.RAG_QUERY:
+        return CallEventType.RAG_QUERY;
+
+      case AppEvent.DOCUMENT_ACCESSED:
+        return CallEventType.DOCUMENT_ACCESSED;
+
+      case AppEvent.AUTH_REQUESTED:
+        return CallEventType.AUTH_REQUESTED;
+
+      case AppEvent.AUTH_SUCCEEDED:
+        return CallEventType.AUTH_SUCCEEDED;
+
+      case AppEvent.AUTH_FAILED:
+        return CallEventType.AUTH_FAILED;
+
+      case AppEvent.ACTION_REQUESTED:
+        return CallEventType.ACTION_REQUESTED;
+
+      case AppEvent.POLICY_ALLOWED:
+        return CallEventType.POLICY_ALLOWED;
+
+      case AppEvent.POLICY_DENIED:
+        return CallEventType.POLICY_DENIED;
+
+      case AppEvent.ACTION_EXECUTED:
+        return CallEventType.ACTION_EXECUTED;
+
+      case AppEvent.ACTION_FAILED:
+        return CallEventType.ACTION_FAILED;
+
+      case AppEvent.FALLBACK_TRIGGERED:
+        return CallEventType.FALLBACK_TRIGGERED;
+
+      case AppEvent.PROVIDER_CHANGED:
+        return CallEventType.PROVIDER_CHANGED;
+
+      case AppEvent.HUMAN_TRANSFER:
+        return CallEventType.HUMAN_TRANSFER;
 
       /*
        * Conversation, dashboard, metric, audio and

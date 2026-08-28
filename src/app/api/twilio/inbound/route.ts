@@ -18,6 +18,10 @@ import {
 } from "@/services/calls/inbound-call.service";
 
 import {
+  resolveActiveInboundConfiguration,
+} from "@/services/calls/inbound-number.service";
+
+import {
   createErrorTwiml,
   createMediaStreamTwiml,
   createTwimlResponse,
@@ -124,6 +128,37 @@ export async function POST(
     }
 
     //------------------------------------------------
+    // Resolve Tenant From Registered Provider Number
+    //------------------------------------------------
+
+    const inboundConfiguration =
+      await resolveActiveInboundConfiguration({
+        provider: "TWILIO",
+        calledNumber,
+      });
+
+    if (
+      !inboundConfiguration.configured
+    ) {
+      log.warn(
+        {
+          event: "twilio.inbound.unconfigured_number",
+          reason: inboundConfiguration.reason,
+          calledNumber: maskPhoneNumber(
+            calledNumber
+          ),
+        },
+        "Inbound Twilio call rejected because no eligible tenant configuration was resolved"
+      );
+
+      return createTwimlResponse(
+        createErrorTwiml(
+          "This number is not available for incoming calls right now."
+        )
+      );
+    }
+
+    //------------------------------------------------
     // Create / Recover Internal Call
     //------------------------------------------------
 
@@ -137,7 +172,29 @@ export async function POST(
         calledNumber,
 
         language:
-          "English",
+          inboundConfiguration
+            .configuration
+            .defaultLanguage,
+
+        tenantId:
+          inboundConfiguration
+            .configuration
+            .tenantId,
+
+        inboundProfileId:
+          inboundConfiguration
+            .configuration
+            .inboundProfileId,
+
+        ivrFlowVersionId:
+          inboundConfiguration
+            .configuration
+            .ivrFlowVersionId,
+
+        requestedRuntime:
+          inboundConfiguration
+            .configuration
+            .requestedRuntime,
       });
 
     //------------------------------------------------
@@ -154,6 +211,17 @@ export async function POST(
 
         campaignId:
           inboundCall.campaignId,
+
+        tenantId:
+          inboundCall.tenantId,
+
+        inboundProfileId:
+          inboundCall.inboundProfileId,
+
+        requestedRuntime:
+          inboundConfiguration
+            .configuration
+            .requestedRuntime,
 
         providerCallIdPresent:
           true,

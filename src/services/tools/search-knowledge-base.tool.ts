@@ -7,12 +7,24 @@ import {
 } from "@/lib/prisma";
 
 import {
+  CallDirection,
+} from "@prisma/client";
+
+import {
   createCallLogger,
 } from "@/lib/logger";
 
 import {
   retrieveKnowledge,
 } from "@/services/knowledge/retrieval.service";
+
+import {
+  resolveSecureCampaignKnowledgeDocumentIds,
+} from "@/services/knowledge/campaign-knowledge.service";
+
+import {
+  resolveInboundKnowledgeDocumentIds,
+} from "@/services/knowledge/inbound-knowledge-scope.service";
 
 import type {
   BusinessToolDefinition,
@@ -141,6 +153,42 @@ async function executeKnowledgeSearch(
 
         campaignId:
           true,
+
+        direction:
+          true,
+
+        tenantId:
+          true,
+
+        inboundProfile: {
+          select: {
+            knowledgeDocumentIds: true,
+          },
+        },
+
+        ivrFlowVersion: {
+          select: {
+            tenantId: true,
+            status: true,
+            nodes: true,
+          },
+        },
+
+        authenticationLevel:
+          true,
+
+        campaign: {
+          select: {
+            ownerUserId:
+              true,
+
+            ownerUser: {
+              select: {
+                tenantId: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -160,10 +208,45 @@ async function executeKnowledgeSearch(
     input.limit ??
     5;
 
-  const results =
-    await retrieveKnowledge(
-      input.query,
-      limit
+    const knowledgeDocumentIds =
+      call.direction === CallDirection.INBOUND
+        ? resolveInboundKnowledgeDocumentIds({
+            tenantId: call.tenantId,
+            profileKnowledgeDocumentIds: call.inboundProfile?.knowledgeDocumentIds,
+            ivrFlowVersion: call.ivrFlowVersion,
+          })
+        : await resolveSecureCampaignKnowledgeDocumentIds(
+            call.campaignId,
+            {
+              ownerUserId:
+                call.campaign.ownerUserId,
+            }
+          );
+
+    const tenantId =
+      call.tenantId ??
+      call.campaign.ownerUser?.tenantId ??
+      null;
+
+    const results =
+      await retrieveKnowledge(
+        input.query,
+        limit,
+        {
+        knowledgeDocumentIds:
+          knowledgeDocumentIds,
+
+        tenantId,
+
+        ownerUserId:
+          call.campaign.ownerUserId,
+
+        callAuthenticationLevel:
+          call.authenticationLevel,
+
+        callId:
+          call.id,
+      }
     );
 
   //------------------------------------------------

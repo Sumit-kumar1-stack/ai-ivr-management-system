@@ -29,8 +29,25 @@ import {
 } from "./business-workflow-turn-router.service";
 
 import {
+  resolveVoiceConversationOutcome,
+  type ConversationVoiceOutcome,
+} from "./voice-outcome.service";
+
+import {
+  triggerCampaignActionForVoiceOutcome,
+} from "@/services/communication/campaign-action-resolver.service";
+
+import {
   VoiceWorker,
 } from "@/services/voice/voice-worker.service";
+
+import {
+  resolveVoiceIntentFlowTransition,
+} from "@/services/ivr/ivr-flow-graph.service";
+
+import {
+  orchestrateHumanTransfer,
+} from "@/services/telephony/human-transfer-orchestrator.service";
 
 //--------------------------------------------------
 // Result
@@ -49,6 +66,9 @@ export interface LiveTurnRouteResult {
 
   audioQueued:
     boolean;
+
+  outcome?:
+    ConversationVoiceOutcome;
 }
 
 //--------------------------------------------------
@@ -111,7 +131,681 @@ export async function routeLiveTurn(
     if (
       !business.handled
     ) {
-      return normalConversation();
+      const outcome =
+        await resolveVoiceConversationOutcome(
+          callId,
+          normalized
+        );
+
+      log.info(
+        {
+          event:
+            "conversation.voice_outcome.resolved",
+
+          intent:
+            outcome.intent,
+
+          confidence:
+            outcome.confidence,
+
+          requestedAction:
+            outcome.requestedAction,
+
+          requiresConfirmation:
+            outcome.requiresConfirmation,
+
+          handled:
+            outcome.handled,
+
+          responsePresent:
+            Boolean(
+              outcome.response
+            ),
+        },
+        "Voice conversation outcome resolved"
+      );
+
+      void EventPublisher.publish(
+        AppEvent.INTENT_DETECTED,
+        {
+          callId,
+
+          intent:
+            outcome.intent,
+
+          confidence:
+            outcome.confidence,
+
+          requestedAction:
+            outcome.requestedAction,
+
+          requiresConfirmation:
+            outcome.requiresConfirmation,
+
+          handled:
+            outcome.handled,
+
+          actorType:
+            "AI",
+
+          timestamp:
+            Date.now(),
+        }
+      );
+
+      const flowTransition =
+        await resolveVoiceIntentFlowTransition(
+          callId,
+          outcome,
+          turnId
+        );
+
+      if (
+        flowTransition.matched
+      ) {
+        log.info(
+          {
+            event:
+              "conversation.ivr_flow.transitioned",
+
+            nextNodeId:
+              flowTransition.nextNodeId,
+
+            nextNodeKind:
+              flowTransition.nextNodeKind,
+
+            trigger:
+              flowTransition.trigger,
+
+            value:
+              flowTransition.value,
+
+            consumed:
+              flowTransition.consumed,
+          },
+          "Voice outcome matched an IVR flow transition"
+        );
+
+        if (
+          flowTransition.response
+        ) {
+          await ConversationService.addMessage({
+            callId,
+
+            role:
+              "USER",
+
+            content:
+              normalized,
+          });
+
+          await EventPublisher.publish(
+            AppEvent.CONVERSATION_MESSAGE,
+            {
+              callId,
+
+              role:
+                "USER",
+
+              text:
+                normalized,
+
+              timestamp:
+                Date.now(),
+            }
+          );
+
+          const audioSession =
+            AudioSessionService
+              .getByCallId(
+                callId
+              );
+
+          await persistAssistantResponse(
+            callId,
+            flowTransition.response
+          );
+
+          if (
+            audioSession
+          ) {
+            ConversationStateService.setState(
+              callId,
+              "THINKING"
+            );
+
+            ConversationEvents.emit(
+              "thinking",
+              callId
+            );
+
+            void VoiceWorker.start(
+              callId
+            );
+
+            const audioQueued =
+              await VoiceWorker.addText(
+                callId,
+                flowTransition.response,
+                turnId
+              );
+
+            if (
+              !audioQueued
+            ) {
+              returnToListening(
+                callId
+              );
+            }
+
+            return {
+              handled:
+                true,
+
+              response:
+                flowTransition.response,
+
+              reason:
+                "BUSINESS_WORKFLOW",
+
+              audioQueued,
+
+              outcome,
+            };
+          }
+
+          return {
+            handled:
+              true,
+
+            response:
+              flowTransition.response,
+
+            reason:
+              "BUSINESS_WORKFLOW",
+
+            audioQueued:
+              false,
+
+            outcome,
+          };
+        }
+
+        return {
+          handled:
+            true,
+
+          response:
+            null,
+
+          reason:
+            "BUSINESS_WORKFLOW",
+
+          audioQueued:
+            false,
+
+          outcome,
+        };
+      }
+
+      //------------------------------------------------
+      // Human Agent Request
+      //------------------------------------------------
+
+      const humanRequested =
+        outcome.intent ===
+          "REQUEST_HUMAN" ||
+        outcome.requestedAction ===
+          "REQUEST_HUMAN";
+
+      if (
+        humanRequested
+      ) {
+        const actionResult =
+          await triggerCampaignActionForVoiceOutcome(
+            callId,
+            outcome,
+            turnId
+          );
+
+        if (
+          actionResult.matched &&
+          !actionResult.executed &&
+          actionResult.reason ===
+            "confirmation_required"
+        ) {
+          const reply =
+            outcome.response ??
+            "Please confirm that you want me to connect you to a human agent.";
+
+          await persistUserMessage(
+            callId,
+            normalized
+          );
+
+          await persistAssistantResponse(
+            callId,
+            reply
+          );
+
+          const audioSession =
+            AudioSessionService
+              .getByCallId(
+                callId
+              );
+
+          if (
+            audioSession
+          ) {
+            ConversationStateService.setState(
+              callId,
+              "THINKING"
+            );
+
+            ConversationEvents.emit(
+              "thinking",
+              callId
+            );
+
+            void VoiceWorker.start(
+              callId
+            );
+
+            const audioQueued =
+              await VoiceWorker.addText(
+                callId,
+                reply,
+                turnId
+              );
+
+            if (
+              !audioQueued
+            ) {
+              returnToListening(
+                callId
+              );
+            }
+
+            return {
+              handled:
+                true,
+
+              response:
+                reply,
+
+              reason:
+                "BUSINESS_WORKFLOW",
+
+              audioQueued,
+
+              outcome,
+            };
+          }
+
+          return {
+            handled:
+              true,
+
+            response:
+              reply,
+
+            reason:
+              "BUSINESS_WORKFLOW",
+
+            audioQueued:
+              false,
+
+            outcome,
+          };
+        }
+
+        if (
+          actionResult.executed
+        ) {
+          await persistUserMessage(
+            callId,
+            normalized
+          );
+
+          await persistAssistantResponse(
+            callId,
+            outcome.response ??
+              "I will connect you now."
+          );
+
+          return {
+            handled:
+              true,
+
+            response:
+              null,
+
+            reason:
+              "BUSINESS_WORKFLOW",
+
+            audioQueued:
+              false,
+
+            outcome,
+          };
+        }
+
+        const transfer =
+          await orchestrateHumanTransfer(
+            callId,
+            outcome.response ??
+              "Caller requested a human agent"
+          );
+
+        await persistUserMessage(
+          callId,
+          normalized
+        );
+
+        await persistAssistantResponse(
+          callId,
+          transfer.message
+        );
+
+        if (
+          transfer.transferred
+        ) {
+          return {
+            handled:
+              true,
+
+            response:
+              null,
+
+            reason:
+              "BUSINESS_WORKFLOW",
+
+            audioQueued:
+              false,
+
+            outcome,
+          };
+        }
+
+        const audioSession =
+          AudioSessionService.getByCallId(
+            callId
+          );
+
+        if (
+          audioSession
+        ) {
+          ConversationStateService.setState(
+            callId,
+            "THINKING"
+          );
+
+          ConversationEvents.emit(
+            "thinking",
+            callId
+          );
+
+          void VoiceWorker.start(
+            callId
+          );
+
+          const audioQueued =
+            await VoiceWorker.addText(
+              callId,
+              transfer.message,
+              turnId
+            );
+
+          if (
+            !audioQueued
+          ) {
+            returnToListening(
+              callId
+            );
+          }
+
+          return {
+            handled:
+              true,
+
+            response:
+              transfer.message,
+
+            reason:
+              "BUSINESS_WORKFLOW",
+
+            audioQueued,
+
+            outcome,
+          };
+        }
+
+        return {
+          handled:
+            true,
+
+          response:
+            transfer.message,
+
+          reason:
+            "BUSINESS_WORKFLOW",
+
+          audioQueued:
+            false,
+
+          outcome,
+        };
+      }
+
+      //------------------------------------------------
+      // Send Approved Information
+      //------------------------------------------------
+
+      const informationRequested =
+        outcome.intent === "SEND_INFORMATION" ||
+        outcome.requestedAction === "SEND_INFORMATION";
+
+      if (informationRequested) {
+        const actionResult = await triggerCampaignActionForVoiceOutcome(
+          callId,
+          outcome,
+          turnId
+        );
+
+        if (actionResult.executed) {
+          const reply = "I have sent the requested information.";
+
+          await persistUserMessage(callId, normalized);
+          await persistAssistantResponse(callId, reply);
+
+          const audioSession = AudioSessionService.getByCallId(callId);
+
+          if (!audioSession) {
+            return {
+              handled: true,
+              response: reply,
+              reason: "BUSINESS_WORKFLOW",
+              audioQueued: false,
+              outcome,
+            };
+          }
+
+          ConversationStateService.setState(callId, "THINKING");
+          ConversationEvents.emit("thinking", callId);
+          void VoiceWorker.start(callId);
+
+          const audioQueued = await VoiceWorker.addText(
+            callId,
+            reply,
+            turnId
+          );
+
+          if (!audioQueued) {
+            returnToListening(callId);
+          }
+
+          return {
+            handled: true,
+            response: reply,
+            reason: "BUSINESS_WORKFLOW",
+            audioQueued,
+            outcome,
+          };
+        }
+      }
+
+      void triggerCampaignActionForVoiceOutcome(
+        callId,
+        outcome,
+        turnId
+      );
+
+      if (
+        outcome.handled
+      ) {
+        await ConversationService.addMessage({
+          callId,
+
+          role:
+            "USER",
+
+          content:
+            normalized,
+        });
+
+        await EventPublisher.publish(
+          AppEvent.CONVERSATION_MESSAGE,
+          {
+            callId,
+
+            role:
+              "USER",
+
+            text:
+              normalized,
+
+            timestamp:
+              Date.now(),
+          }
+        );
+
+        if (
+          outcome.response
+        ) {
+          const audioSession =
+            AudioSessionService
+              .getByCallId(
+                callId
+              );
+
+          await persistAssistantResponse(
+            callId,
+            outcome.response
+          );
+
+          if (
+            audioSession
+          ) {
+            ConversationStateService.setState(
+              callId,
+              "THINKING"
+            );
+
+            ConversationEvents.emit(
+              "thinking",
+              callId
+            );
+
+            void VoiceWorker.start(
+              callId
+            );
+
+            const audioQueued =
+              await VoiceWorker.addText(
+                callId,
+                outcome.response,
+                turnId
+              );
+
+            if (
+              !audioQueued
+            ) {
+              returnToListening(
+                callId
+              );
+            }
+
+            return {
+              handled:
+                true,
+
+              response:
+                outcome.response,
+
+              reason:
+                "NORMAL_CONVERSATION",
+
+              audioQueued,
+
+              outcome,
+            };
+          }
+
+          log.warn(
+            {
+              event:
+                "conversation.voice_outcome.response_not_spoken",
+
+              intent:
+                outcome.intent,
+
+              requestedAction:
+                outcome.requestedAction,
+
+              reason:
+                "audio_session_missing",
+            },
+            "Voice outcome response could not be spoken because audio session no longer exists"
+          );
+
+          return {
+            handled:
+              true,
+
+            response:
+              outcome.response,
+
+            reason:
+              "NORMAL_CONVERSATION",
+
+            audioQueued:
+              false,
+
+            outcome,
+          };
+        }
+
+        return {
+          handled:
+            true,
+
+          response:
+            null,
+
+          reason:
+            "NORMAL_CONVERSATION",
+
+          audioQueued:
+            false,
+
+          outcome,
+        };
+      }
+
+      return {
+        ...normalConversation(),
+        outcome,
+      };
     }
 
     //------------------------------------------------
@@ -350,6 +1044,9 @@ export async function routeLiveTurn(
         "BUSINESS_WORKFLOW",
 
       audioQueued,
+
+      outcome:
+        undefined,
     };
   } catch (
     error
@@ -409,6 +1106,43 @@ async function persistAssistantResponse(
 
       text:
         response,
+
+      timestamp:
+        Date.now(),
+    }
+  );
+}
+
+//--------------------------------------------------
+// Persist User Message
+//--------------------------------------------------
+
+async function persistUserMessage(
+  callId:
+    string,
+
+  content:
+    string
+): Promise<void> {
+  await ConversationService.addMessage({
+    callId,
+
+    role:
+      "USER",
+
+    content,
+  });
+
+  await EventPublisher.publish(
+    AppEvent.CONVERSATION_MESSAGE,
+    {
+      callId,
+
+      role:
+        "USER",
+
+      text:
+        content,
 
       timestamp:
         Date.now(),

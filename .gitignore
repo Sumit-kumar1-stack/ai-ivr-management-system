@@ -52,3 +52,12 @@ next-env.d.ts
 # Test output
 coverage/
 .vitest/
+
+# Runtime-only sensitive and generated artifacts
+/storage/
+/uploads/
+/public/uploads/knowledge/
+cookies*.txt
+*.wav
+*.log
+ai-ivr-*.zip

@@ -6,6 +6,13 @@ import {
   ConversationAbort,
 } from "@/services/conversations/abort.service";
 
+import {
+  CascadedTurnLatency,
+} from "./cascaded-turn-latency.service";
+
+import { StandardPartialPrefetch } from "./standard-partial-prefetch.service";
+import { StandardRuntimeUsage } from "./standard-runtime-usage.service";
+
 //--------------------------------------------------
 // Types
 //--------------------------------------------------
@@ -19,6 +26,8 @@ export type TurnStatus =
 export interface ActiveTurn {
   turnId: number;
 
+  generationId: string;
+
   callId: string;
 
   startedAt: number;
@@ -31,6 +40,8 @@ export interface ActiveTurn {
 
 export interface BeginTurnResult {
   turnId: number;
+
+  generationId: string;
 
   signal: AbortSignal;
 
@@ -115,6 +126,17 @@ class TurnCoordinatorService {
         callId
       );
 
+      StandardPartialPrefetch.cancel(
+        callId,
+        "new_generation"
+      );
+
+      CascadedTurnLatency.interrupt(
+        callId
+      );
+
+      void StandardRuntimeUsage.complete(callId, previousTurn.turnId);
+
       log.info(
         {
           event:
@@ -167,6 +189,8 @@ class TurnCoordinatorService {
         turnId:
           nextTurnId,
 
+        generationId: `${callId}:${nextTurnId}`,
+
         callId,
 
         startedAt:
@@ -184,6 +208,16 @@ class TurnCoordinatorService {
       activeTurn
     );
 
+    CascadedTurnLatency.beginTurn(
+      callId,
+      nextTurnId
+    );
+
+    CascadedTurnLatency.setGeneration(
+      callId,
+      activeTurn.generationId
+    );
+
     log.info(
       {
         event:
@@ -196,6 +230,8 @@ class TurnCoordinatorService {
           previousTurn
             ?.turnId ??
           null,
+
+        generationId: activeTurn.generationId,
       },
       "Realtime conversation turn started"
     );
@@ -203,6 +239,8 @@ class TurnCoordinatorService {
     return {
       turnId:
         nextTurnId,
+
+      generationId: activeTurn.generationId,
 
       signal:
         controller.signal,
@@ -238,6 +276,23 @@ class TurnCoordinatorService {
         .signal
         .aborted
     );
+  }
+
+  isCurrentGeneration(
+    callId: string,
+    generationId: string
+  ): boolean {
+    const active = this.activeTurns.get(callId);
+    return Boolean(
+      active &&
+      active.generationId === generationId &&
+      active.status === "PROCESSING" &&
+      !active.abortController.signal.aborted
+    );
+  }
+
+  getCurrentGenerationId(callId: string): string | null {
+    return this.activeTurns.get(callId)?.generationId ?? null;
   }
 
   //------------------------------------------------
@@ -285,6 +340,10 @@ class TurnCoordinatorService {
     active.status =
       "COMPLETED";
 
+    // Speech generation has completed by this point, so finalizing here keeps
+    // all incremental phrase requests in the provider-unit record.
+    void StandardRuntimeUsage.complete(callId, turnId);
+
     const log =
       createCallLogger(
         callId
@@ -330,6 +389,8 @@ class TurnCoordinatorService {
 
     active.status =
       "FAILED";
+
+    void StandardRuntimeUsage.complete(callId, turnId);
 
     createCallLogger(
       callId
@@ -393,6 +454,17 @@ class TurnCoordinatorService {
     ConversationAbort.abort(
       callId
     );
+
+    StandardPartialPrefetch.cancel(
+      callId,
+      reason
+    );
+
+    CascadedTurnLatency.interrupt(
+      callId
+    );
+
+    void StandardRuntimeUsage.complete(callId, active.turnId);
 
     createCallLogger(
       callId
@@ -509,6 +581,18 @@ class TurnCoordinatorService {
     ConversationAbort.clear(
       callId
     );
+
+    StandardPartialPrefetch.clear(
+      callId
+    );
+
+    CascadedTurnLatency.cleanupCall(
+      callId
+    );
+
+    if (active) {
+      void StandardRuntimeUsage.complete(callId, active.turnId);
+    }
 
     createCallLogger(
       callId

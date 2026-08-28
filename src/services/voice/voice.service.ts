@@ -20,6 +20,12 @@ import {
 } from "./audio-converter.service";
 
 import {
+  CascadedTurnLatency,
+} from "@/services/voice-runtime/cascaded-turn-latency.service";
+
+import { StandardRuntimeUsage } from "@/services/voice-runtime/standard-runtime-usage.service";
+
+import {
   TTSAudioChunk,
 } from "./types";
 
@@ -27,11 +33,17 @@ import {
 // Gemini Client
 //--------------------------------------------------
 
-const ai =
-  new GoogleGenAI({
-    apiKey:
-      AI_CONFIG.geminiApiKey,
+let ai: GoogleGenAI | undefined;
+
+function getGeminiClient(): GoogleGenAI {
+  ai ??= new GoogleGenAI({
+    apiKey: AI_CONFIG.geminiApiKey,
   });
+  return ai;
+}
+
+const MAX_RETRYABLE_TTS_ATTEMPTS =
+  2;
 
 //--------------------------------------------------
 // Helpers
@@ -165,6 +177,13 @@ export class VoiceService {
       "Gemini speech generation started"
     );
 
+    CascadedTurnLatency.startTts(
+      callId,
+      "GEMINI",
+      model,
+      voice
+    );
+
     //----------------------------------------------
     // Generate Raw 24 kHz PCM Audio
     //----------------------------------------------
@@ -172,7 +191,7 @@ export class VoiceService {
     let response:
       Awaited<
         ReturnType<
-          typeof ai.models.generateContent
+          GoogleGenAI["models"]["generateContent"]
         >
       >;
 
@@ -187,7 +206,7 @@ export class VoiceService {
           1;
 
         response =
-          await ai.models
+          await getGeminiClient().models
             .generateContent({
               model,
 
@@ -249,22 +268,16 @@ export class VoiceService {
           "Gemini TTS synthesis attempt failed"
         );
 
-        if (
-          status ===
-          429
-        ) {
-          throw error;
-        }
-
         const retryable =
-          typeof status ===
-            "number" &&
-          status >=
-            500 &&
-          status <
-            600 &&
-          attempt ===
-            1;
+          typeof status === "number" &&
+          (
+            status === 429 ||
+            (
+              status >= 500 &&
+              status < 600
+            )
+          ) &&
+          attempt < MAX_RETRYABLE_TTS_ATTEMPTS;
 
         if (
           retryable
@@ -277,7 +290,7 @@ export class VoiceService {
               attempt,
 
               delayMs:
-                1_000,
+                attempt * 500,
 
               status,
             },
@@ -285,11 +298,16 @@ export class VoiceService {
           );
 
           await delay(
-            1_000
+            attempt * 500
           );
 
           continue;
         }
+
+        CascadedTurnLatency.fail(
+          callId,
+          "TTS"
+        );
 
         throw error;
       }
@@ -349,6 +367,16 @@ export class VoiceService {
       pcmAudio.length ===
       0
     ) {
+      CascadedTurnLatency.fail(
+        callId,
+        "TTS"
+      );
+
+      CascadedTurnLatency.fail(
+        callId,
+        "TTS"
+      );
+
       throw new Error(
         "Gemini returned an empty PCM audio buffer"
       );
@@ -368,6 +396,11 @@ export class VoiceService {
       mulawAudio.length ===
       0
     ) {
+      CascadedTurnLatency.fail(
+        callId,
+        "TTS"
+      );
+
       throw new Error(
         "μ-law conversion returned empty audio"
       );
@@ -407,6 +440,17 @@ export class VoiceService {
           attempt,
       },
       "Gemini speech generated"
+    );
+
+    CascadedTurnLatency.markTtsAudioReady(
+      callId
+    );
+
+    StandardRuntimeUsage.recordTts(
+      callId,
+      "GEMINI",
+      normalizedText.length,
+      mulawAudio.length
     );
 
     return {

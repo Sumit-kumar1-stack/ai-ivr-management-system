@@ -12,6 +12,13 @@ import type {
   CommunicationVoiceRuntime,
 } from "@/config/communication-plan";
 
+import {
+  CascadedTurnLatency,
+} from "@/services/voice-runtime/cascaded-turn-latency.service";
+import {
+  AudioConverter,
+} from "@/services/voice/audio-converter.service";
+
 //--------------------------------------------------
 // Types
 //--------------------------------------------------
@@ -23,6 +30,10 @@ export interface AudioSession {
   twilioCallSid:
     string;
 
+  mediaFormat?:
+    "MULAW_8K" |
+    "PCM_8K";
+
   streamSid:
     string;
 
@@ -31,6 +42,18 @@ export interface AudioSession {
 
   voiceRuntime:
     CommunicationVoiceRuntime;
+
+  requestedRuntime:
+    CommunicationVoiceRuntime;
+
+  effectiveRuntime:
+    CommunicationVoiceRuntime;
+
+  fallbackUsed:
+    boolean;
+
+  fallbackReason:
+    string | null;
 
   createdAt:
     number;
@@ -43,6 +66,10 @@ interface CreateAudioSessionInput {
   twilioCallSid:
     string;
 
+  mediaFormat?:
+    "MULAW_8K" |
+    "PCM_8K";
+
   streamSid:
     string;
 
@@ -51,6 +78,18 @@ interface CreateAudioSessionInput {
 
   voiceRuntime?:
     CommunicationVoiceRuntime;
+
+  requestedRuntime?:
+    CommunicationVoiceRuntime;
+
+  effectiveRuntime?:
+    CommunicationVoiceRuntime;
+
+  fallbackUsed?:
+    boolean;
+
+  fallbackReason?:
+    string | null;
 }
 
 type CloseListener =
@@ -136,13 +175,35 @@ class AudioSessionManager {
       );
     }
 
-const session:
+    const session:
   AudioSession = {
     ...input,
 
     voiceRuntime:
       input.voiceRuntime ??
       "CASCADED",
+
+    requestedRuntime:
+      input.requestedRuntime ??
+      input.voiceRuntime ??
+      "CASCADED",
+
+    effectiveRuntime:
+      input.effectiveRuntime ??
+      input.voiceRuntime ??
+      "CASCADED",
+
+    fallbackUsed:
+      input.fallbackUsed ??
+      false,
+
+      fallbackReason:
+        input.fallbackReason ??
+        null,
+
+      mediaFormat:
+        input.mediaFormat ??
+        "MULAW_8K",
 
     createdAt:
       Date.now(),
@@ -444,6 +505,11 @@ const session:
     }
 
     try {
+      const outboundAudio =
+        session.mediaFormat === "PCM_8K"
+          ? AudioConverter.mulaw8kToPcm8k(audio)
+          : audio;
+
       session.socket.send(
         JSON.stringify({
           event:
@@ -454,7 +520,7 @@ const session:
 
           media: {
             payload:
-              audio.toString(
+              outboundAudio.toString(
                 "base64"
               ),
           },
@@ -475,10 +541,32 @@ const session:
         "Twilio audio sent"
       );
 
+      if (session.mediaFormat === "PCM_8K") {
+        log.debug({ event: "exotel.media.audio_sent", providerCallId: session.twilioCallSid, internalCallId: session.callId, audioSizeBytes: outboundAudio.length }, "Exotel AgentStream audio sent");
+      }
+
+      if (
+        session.voiceRuntime ===
+        "CASCADED"
+      ) {
+        CascadedTurnLatency.markFirstAudioSent(
+          session.callId
+        );
+      }
+
       return true;
     } catch (
       error
     ) {
+      if (
+        session.voiceRuntime ===
+        "CASCADED"
+      ) {
+        CascadedTurnLatency.fail(
+          session.callId,
+          "OUTPUT"
+        );
+      }
       log.error(
         {
           event:

@@ -100,6 +100,30 @@ export class AudioConverter {
     return output;
   }
 
+  /** Exotel AgentStream uses raw signed PCM16 little-endian at the selected rate. */
+  static mulaw8kToPcm8k(mulawAudio: Buffer): Buffer {
+    if (!Buffer.isBuffer(mulawAudio) || mulawAudio.length === 0) {
+      throw new Error("μ-law audio buffer is required");
+    }
+    const output = Buffer.alloc(mulawAudio.length * 2);
+    for (let index = 0; index < mulawAudio.length; index += 1) {
+      output.writeInt16LE(this.mulawToLinear(mulawAudio[index]), index * 2);
+    }
+    return output;
+  }
+
+  /** Converts documented Exotel PCM16/8k input to the internal μ-law/8k contract. */
+  static pcm16kToMulaw8k(pcmAudio: Buffer): Buffer {
+    if (!Buffer.isBuffer(pcmAudio) || pcmAudio.length === 0 || pcmAudio.length % 2 !== 0) {
+      throw new Error("PCM16/8k audio must be a non-empty even-length buffer");
+    }
+    const output = Buffer.alloc(pcmAudio.length / 2);
+    for (let index = 0; index < output.length; index += 1) {
+      output[index] = this.linearToMulaw(pcmAudio.readInt16LE(index * 2));
+    }
+    return output;
+  }
+
   //--------------------------------------------------
   // Gemini PCM16 24 kHz → Twilio μ-law 8 kHz
   //--------------------------------------------------
@@ -193,7 +217,11 @@ export class AudioConverter {
           downsampled[
             index
           ]
-        );
+      );
+    }
+
+    if (mulaw.length === 0) {
+      throw new Error("PCM16/24k audio does not contain a complete 8k output sample");
     }
 
     return mulaw;

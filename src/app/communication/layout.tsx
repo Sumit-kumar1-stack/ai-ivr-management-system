@@ -39,7 +39,11 @@ export default async function CommunicationLayout({
     getCommunicationPlan();
 
   return (
-    <DashboardShell plan={plan}>
+    <DashboardShell
+      plan={plan}
+      role={user.role}
+      campaignCapabilities={user.campaignCapabilities}
+    >
       {children}
     </DashboardShell>
   );

@@ -35,7 +35,11 @@ export default async function DashboardLayout({
   const plan = getCommunicationPlan();
 
   return (
-    <DashboardShell plan={plan}>
+    <DashboardShell
+      plan={plan}
+      role={user.role}
+      campaignCapabilities={user.campaignCapabilities}
+    >
       {children}
     </DashboardShell>
   );

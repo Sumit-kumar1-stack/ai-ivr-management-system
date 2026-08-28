@@ -27,8 +27,29 @@ interface CommunicationContactRecipient {
 
 export async function ensureCommunicationContacts(
   recipients:
-    CommunicationContactRecipient[]
+    CommunicationContactRecipient[],
+
+  ownerUserId:
+    string | null
 ): Promise<string[]> {
+  const owner =
+    ownerUserId
+      ? await prisma.user.findUnique({
+          where: { id: ownerUserId },
+          select: { tenantId: true },
+        })
+      : null;
+
+  const tenantId =
+    owner?.tenantId ??
+    null;
+
+  if (!tenantId) {
+    throw new Error(
+      "Communication campaign owner must belong to a tenant"
+    );
+  }
+
   const ids =
     new Set<
       string
@@ -47,8 +68,10 @@ export async function ensureCommunicationContacts(
         .contact
         .findUnique({
           where: {
-            phone:
-              recipient.phone,
+            tenantId_phone: {
+              tenantId,
+              phone: recipient.phone,
+            },
           },
 
           select: {
@@ -85,6 +108,10 @@ export async function ensureCommunicationContacts(
               phone:
                 recipient.phone,
 
+              tenantId,
+
+              ownerUserId,
+
               language:
                 recipient.language,
             },
@@ -116,8 +143,10 @@ export async function ensureCommunicationContacts(
             .contact
             .findUnique({
               where: {
-                phone:
-                  recipient.phone,
+                tenantId_phone: {
+                  tenantId,
+                  phone: recipient.phone,
+                },
               },
 
               select: {

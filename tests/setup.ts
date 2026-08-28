@@ -72,3 +72,31 @@ afterEach(
     vi.useRealTimers();
   }
 );
+
+vi.stubEnv(
+  "TWILIO_PUBLIC_BASE_URL",
+  process.env
+    .TWILIO_PUBLIC_BASE_URL ??
+    "https://public.test.example"
+);
+
+vi.stubEnv(
+  "TWILIO_MEDIA_PUBLIC_URL",
+  process.env
+    .TWILIO_MEDIA_PUBLIC_URL ??
+    "https://media.test.example"
+);
+
+vi.stubEnv(
+  "GEMINI_API_KEY",
+  process.env
+    .GEMINI_API_KEY ??
+    "test-gemini-api-key"
+);
+
+vi.stubEnv(
+  "DEEPGRAM_API_KEY",
+  process.env
+    .DEEPGRAM_API_KEY ??
+    "test-deepgram-api-key"
+);

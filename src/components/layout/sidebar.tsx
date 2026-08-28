@@ -6,69 +6,37 @@ import {
   usePathname,
 } from "next/navigation";
 
-import {
-  LayoutDashboard,
-  Megaphone,
-  Contact,
-  Phone,
-  BookOpen,
-  BarChart3,
-  Workflow,
-  Settings,
-} from "lucide-react";
+import type {
+  UserRole,
+} from "@prisma/client";
+
+import type {
+  CampaignCapability,
+} from "@/services/communication/campaign-capabilities";
 
 import type { CommunicationPlan } from "@/config/communication-plan";
 
-const menu = [
-  {
-    label: "Dashboard",
-    href: "/dashboard",
-    icon: LayoutDashboard,
-  },
-  {
-    label: "Campaigns",
-    href: "/campaigns",
-    icon: Megaphone,
-  },
-  {
-    label: "Calls",
-    href: "/calls",
-    icon: Phone,
-  },
-  {
-    label: "Contacts",
-    href: "/contacts",
-    icon: Contact,
-  },
-  {
-    label: "IVR",
-    href: "/ivr",
-    icon: Workflow,
-  },
-  {
-    label: "Knowledge",
-    href: "/knowledge",
-    icon: BookOpen,
-  },
-  {
-    label: "Analytics",
-    href: "/analytics",
-    icon: BarChart3,
-  },
-  {
-    label: "Settings",
-    href: "/settings",
-    icon: Settings,
-  },
-];
+import {
+  buildDashboardNavigation,
+} from "./navigation";
 
 export default function Sidebar({
   plan,
+  role,
+  campaignCapabilities,
 }: {
   plan?: CommunicationPlan;
+  role: UserRole;
+  campaignCapabilities?: readonly CampaignCapability[];
 }) {
   const pathname =
     usePathname();
+
+  const groups =
+    buildDashboardNavigation(
+      role,
+      campaignCapabilities
+    );
 
   return (
     <aside
@@ -150,83 +118,54 @@ export default function Sidebar({
         </div>
       )}
 
-      <nav aria-label="Dashboard navigation">
-        <ul className="space-y-1">
-          {menu.map(
-            (
-              item
-            ) => {
-              const Icon =
-                item.icon;
+      <nav aria-label="Dashboard navigation" className="space-y-6">
+        {groups.map(group => (
+          <div key={group.title} className="space-y-2">
+            <p className="px-3 text-[10px] font-bold uppercase tracking-[0.3em] text-slate-400">
+              {group.title}
+            </p>
+            <ul className="space-y-1">
+              {group.items.map(item => {
+                const Icon = item.icon;
+                const isActive =
+                  pathname === item.href ||
+                  (item.href !== "/dashboard" &&
+                    pathname.startsWith(`${item.href}/`)) ||
+                  (item.href === "/campaigns" &&
+                    pathname.startsWith("/communication/campaigns"));
 
-              const isActive =
-                pathname === item.href ||
-                (item.href !== "/dashboard" &&
-                  pathname.startsWith(`${item.href}/`)) ||
-                (item.href === "/ivr" &&
-                  pathname.startsWith("/ivr-builder")) ||
-                (item.href === "/campaigns" &&
-                  pathname.startsWith("/communication/campaigns"));
-
-              return (
-                <li
-                  key={
-                    item.href
-                  }
-                >
-                  <Link
-                    href={
-                      item.href
-                    }
-                    aria-current={
-                      isActive
-                        ? "page"
-                        : undefined
-                    }
-                    className={`
-                      flex
-                      items-center
-                      gap-3
-                      rounded-lg
-                      px-3
-                      py-2.5
-                      text-sm
-                      font-semibold
-                      transition-all
-                      duration-150
-                      ${
-                        isActive
-                          ? `
-                            bg-blue-600
-                            text-white
-                            shadow-sm
-                            shadow-blue-500/10
-                          `
-                          : `
-                            text-slate-600
-                            hover:bg-slate-200/50
-                            hover:text-slate-900
-                          `
-                      }
-                    `}
-                  >
-                    <Icon
-                      size={
-                        18
-                      }
-                    />
-
-                    <span>
-                      {
-                        item.label
-                      }
-                    </span>
-                  </Link>
-                </li>
-              );
-            }
-          )}
-        </ul>
+                return (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href}
+                      aria-current={isActive ? "page" : undefined}
+                      className={`
+                        flex
+                        items-center
+                        gap-3
+                        rounded-lg
+                        px-3
+                        py-2.5
+                        text-sm
+                        font-semibold
+                        transition-all
+                        duration-150
+                        ${
+                          isActive
+                            ? "bg-blue-600 text-white shadow-sm shadow-blue-500/10"
+                            : "text-slate-600 hover:bg-slate-200/50 hover:text-slate-900"
+                        }
+                      `}
+                    >
+                      <Icon size={18} />
+                      <span>{item.label}</span>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
       </nav>
     </aside>
   );

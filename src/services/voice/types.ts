@@ -3,6 +3,8 @@ export interface TTSAudioChunk {
 
   callId: string;
 
+  generationId?: string;
+
   text: string;
 
   audio: Buffer;

@@ -38,6 +38,14 @@ import {
 } from "@/services/voice-runtime/speech-production.service";
 
 import {
+  CascadedTurnLatency,
+} from "@/services/voice-runtime/cascaded-turn-latency.service";
+
+import {
+  StandardRuntimeUsage,
+} from "@/services/voice-runtime/standard-runtime-usage.service";
+
+import {
   resolveOutboundConversationContext,
 } from "@/services/campaigns/outbound-conversation-context.service";
 
@@ -106,6 +114,10 @@ import {
 import {
   generateConversationSummary,
 } from "./summary.service";
+
+import {
+  handleIVRGraphExecutionResult,
+} from "@/services/ivr/ivr-execution-result-handler.service";
 
 function returnToListening(
   callId: string
@@ -241,7 +253,7 @@ function getRemainingSpeech(
 // Handle Non-AI IVR Voice Action
 //--------------------------------------------------
 
-async function handleVoiceIVRExecution(
+export async function handleVoiceIVRExecution(
   callId: string,
   execution: IVRActionExecutionResult,
   signal?: AbortSignal,
@@ -465,7 +477,8 @@ export async function processUserMessage(
   callId: string,
   message: string,
   signal?: AbortSignal,
-  turnId?: number
+  turnId?: number,
+  generationId?: string
 ): Promise<string> {
   const log =
     createCallLogger(
@@ -700,11 +713,25 @@ export async function processUserMessage(
     const hybridRoutingStartedAt =
       performance.now();
 
+    CascadedTurnLatency.startRoutingPass(
+      callId,
+      "routeVoiceThroughIVR"
+    );
+
     const hybridRoute =
       await routeVoiceThroughIVR(
         callId,
-        normalizedMessage
+        normalizedMessage,
+        turnId
       );
+
+    CascadedTurnLatency.completeRoutingPass(
+      callId,
+      "routeVoiceThroughIVR",
+      hybridRoute.graphExecution
+        ? "IVR_HANDLED"
+        : "GENERAL_AI"
+    );
 
     throwIfTurnAborted(
       signal
@@ -739,72 +766,37 @@ export async function processUserMessage(
       "Conversation checked against published IVR voice actions"
     );
 
-    //----------------------------------------
-    // Deterministic IVR Action
-    //----------------------------------------
-
-    if (
-      hybridRoute.matched &&
-      hybridRoute.execution &&
-      !hybridRoute.continueConversation
-    ) {
-      const handledReply =
-        await handleVoiceIVRExecution(
+    if (hybridRoute.graphExecution) {
+      const handled =
+        await handleIVRGraphExecutionResult(
           callId,
-          hybridRoute.execution,
-          signal,
-          turnId
+          hybridRoute.graphExecution,
+          {
+            turnId,
+            recordConversationMessage: true,
+          }
         );
 
-      if (
-        handledReply !==
-        null
-      ) {
+      if (handled.spokenText !== null) {
         log.info(
           {
-            event:
-              "conversation.ivr_voice.completed",
-
-            action:
-              hybridRoute.action,
-
-            confidence:
-              hybridRoute.confidence,
-
-            totalTurnMs:
-              Math.round(
-                performance.now() -
-                  turnStartedAt
-              ),
+            event: "conversation.ivr_voice.completed",
+            action: hybridRoute.action,
+            confidence: hybridRoute.confidence,
+            totalTurnMs: Math.round(performance.now() - turnStartedAt),
           },
-          "Voice IVR semantic action completed without RAG or Gemini"
+          "Voice IVR graph execution completed without RAG or Gemini"
         );
 
-        return handledReply;
+        return handled.spokenText;
       }
-    }
 
-    //----------------------------------------
-    // AI-Assisted IVR Category
-    //----------------------------------------
-
-    if (
-      hybridRoute.matched &&
-      hybridRoute.execution?.requiresAI
-    ) {
-      log.info(
-        {
-          event:
-            "conversation.ivr_voice.ai_continuation",
-
-          action:
-            hybridRoute.action,
-
-          confidence:
-            hybridRoute.confidence,
-        },
-        "Voice IVR category selected; continuing into conversational AI"
-      );
+      if (
+        hybridRoute.graphExecution.status === "SAFE_FAILURE" ||
+        hybridRoute.graphExecution.awaitInput
+      ) {
+        return "";
+      }
     }
 
     //----------------------------------------
@@ -821,7 +813,8 @@ export async function processUserMessage(
     const basePrompt =
       await buildPrompt(
         callId,
-        normalizedMessage
+        normalizedMessage,
+        generationId
       );
 
     throwIfTurnAborted(
@@ -1041,12 +1034,24 @@ ${VoiceResponsePolicy.getInstruction()}`;
       "Gemini streaming started"
     );
 
+    CascadedTurnLatency.startLlm(
+      callId,
+      "GEMINI",
+      process.env.GEMINI_TEXT_MODEL?.trim() ||
+        "gemini-3.6-flash"
+    );
+
     try {
       for await (
         const chunk of
         generateAIResponseStream(
           prompt,
-          controller.signal
+          controller.signal,
+          usage => StandardRuntimeUsage.recordLlmUsage(
+            callId,
+            usage.inputTokens,
+            usage.outputTokens
+          )
         )
       ) {
         if (
@@ -1085,6 +1090,10 @@ ${VoiceResponsePolicy.getInstruction()}`;
           firstToken =
             false;
 
+          CascadedTurnLatency.markLlmFirstResponse(
+            callId
+          );
+
           log.info(
             {
               event:
@@ -1114,11 +1123,27 @@ ${VoiceResponsePolicy.getInstruction()}`;
               if (
                 earlySpeechDecisionMade
               ) {
+                CascadedTurnLatency.markLlmFirstPhrase(callId);
+                earlySentence = [earlySentence, sentence]
+                  .filter(Boolean)
+                  .join(" ");
+
+                earlySpeechPromise = (earlySpeechPromise ?? Promise.resolve(true))
+                  .then(() => {
+                    if (controller.signal.aborted || signal?.aborted) return false;
+                    return VoiceWorker.addText(callId, sentence, turnId);
+                  });
+
+                log.debug(
+                  {
+                    event: "standard.tts.phrase_queued",
+                    turnId: turnId ?? null,
+                    phraseCharacterCount: sentence.length,
+                  },
+                  "Subsequent completed phrase queued behind active TTS work"
+                );
                 return;
               }
-
-              earlySpeechDecisionMade =
-                true;
 
               if (
                 controller.signal.aborted ||
@@ -1126,6 +1151,11 @@ ${VoiceResponsePolicy.getInstruction()}`;
               ) {
                 return;
               }
+
+              earlySpeechDecisionMade =
+                true;
+
+              CascadedTurnLatency.markLlmFirstPhrase(callId);
 
               const sentenceWordCount =
                 countWords(
@@ -1243,9 +1273,16 @@ ${VoiceResponsePolicy.getInstruction()}`;
       await sentenceBuffer
         .flushRemaining(
           callId,
-          async () => {
-            // Remaining text is synthesized below
-            // after the final response policy.
+          async residual => {
+            if (!residual.trim()) return;
+            earlySentence = [earlySentence, residual]
+              .filter(Boolean)
+              .join(" ");
+            earlySpeechPromise = (earlySpeechPromise ?? Promise.resolve(true))
+              .then(() => {
+                if (controller.signal.aborted || signal?.aborted) return false;
+                return VoiceWorker.addText(callId, residual, turnId);
+              });
           }
         );
     } catch (
@@ -1273,6 +1310,11 @@ ${VoiceResponsePolicy.getInstruction()}`;
           "Gemini stream aborted"
         );
       } else {
+        CascadedTurnLatency.fail(
+          callId,
+          "LLM"
+        );
+
         log.error(
           {
             event:
@@ -1360,6 +1402,10 @@ ${VoiceResponsePolicy.getInstruction()}`;
         totalGenerationMs,
       },
       "Gemini stream finished"
+    );
+
+    CascadedTurnLatency.completeLlm(
+      callId
     );
 
     const rawFinalReply =
@@ -2123,11 +2169,14 @@ export async function runPostCallProcessing(
       >
     >;
 
+  const postTurnAnalysisStartedAt =
+    performance.now();
+
   try {
     log.info(
       {
         event:
-          "conversation.post_call.analysis_started",
+          "conversation.post_turn_analysis.started",
         transcriptCharacterCount:
           transcript.length,
       },
@@ -2138,15 +2187,33 @@ export async function runPostCallProcessing(
       await generateConversationAnalysis(
         transcript
       );
+
+    log.info(
+      {
+        event:
+          "conversation.post_turn_analysis.completed",
+        durationMs:
+          Math.round(
+            performance.now() -
+              postTurnAnalysisStartedAt
+          ),
+      },
+      "Post-call analysis completed"
+    );
   } catch (
     error
   ) {
     log.error(
       {
         event:
-          "conversation.post_call.analysis_failed",
+          "conversation.post_turn_analysis.failed",
         transcriptCharacterCount:
           transcript.length,
+        durationMs:
+          Math.round(
+            performance.now() -
+              postTurnAnalysisStartedAt
+          ),
         error:
           normalizeError(
             error

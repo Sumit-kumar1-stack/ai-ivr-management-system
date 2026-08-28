@@ -13,6 +13,7 @@ export type ConversationState =
   | "SPEAKING"
   | "INTERRUPTING"
   | "INTERRUPTED"
+  | "TERMINATING"
   | "ENDED";
 
 //--------------------------------------------------

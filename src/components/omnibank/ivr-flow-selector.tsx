@@ -11,6 +11,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { useRouter } from "next/navigation";
 
 //--------------------------------------------------
 // Flow
@@ -28,6 +29,9 @@ interface PublishedIvrFlow {
 
   version:
     number;
+
+  publishedVersionId:
+    string;
 }
 
 //--------------------------------------------------
@@ -93,6 +97,7 @@ export default function IvrFlowSelector({
     false,
   onBound,
 }: IvrFlowSelectorProps) {
+  const router = useRouter();
   const [
     flows,
     setFlows,
@@ -319,6 +324,8 @@ useEffect(
               JSON.stringify({
                 ivrFlowId:
                   selectedId,
+                ivrFlowVersionId:
+                  selectedFlow?.publishedVersionId,
               }),
           }
         );
@@ -386,6 +393,20 @@ useEffect(
           gap-4
         "
       >
+        {!disabled && (
+          <button
+            type="button"
+            onClick={() => {
+              router.push(
+                `/ivr-builder?campaignId=${encodeURIComponent(campaignId)}&returnTo=${encodeURIComponent(`/communication/campaigns/${campaignId}`)}`
+              );
+            }}
+            className="mt-5 rounded-full border border-[#0056ad] px-5 py-2.5 text-[13px] font-bold text-[#0056ad] transition hover:bg-[#eaf2ff]"
+          >
+            Create or choose IVR flow
+          </button>
+        )}
+
         <div
           className="
             flex

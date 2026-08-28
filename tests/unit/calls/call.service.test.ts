@@ -93,6 +93,12 @@ vi.mock(
           mocks.logger
       ),
 
+    createServerLogger:
+      vi.fn(
+        () =>
+          mocks.logger
+      ),
+
     getDurationMs:
       vi.fn(
         () =>

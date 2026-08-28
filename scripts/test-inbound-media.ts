@@ -29,6 +29,13 @@ async function run():
       "@/services/calls/inbound-call.service"
     );
 
+  const {
+    resolveActiveInboundConfiguration,
+  } =
+    await import(
+      "@/services/calls/inbound-number.service"
+    );
+
   //------------------------------------------------
   // Validate Environment
   //------------------------------------------------
@@ -109,6 +116,18 @@ async function run():
   // Create Internal Inbound Call
   //------------------------------------------------
 
+  const inboundConfiguration =
+    await resolveActiveInboundConfiguration({
+      provider: "TWILIO",
+      calledNumber: receivingNumber,
+    });
+
+  if (!inboundConfiguration.configured) {
+    throw new Error(
+      `No eligible inbound configuration for the test number (${inboundConfiguration.reason})`
+    );
+  }
+
   console.log(
     "Creating simulated inbound call..."
   );
@@ -123,7 +142,13 @@ async function run():
       receivingNumber,
 
     language:
-      "English",
+      inboundConfiguration.configuration.defaultLanguage,
+
+    tenantId:
+      inboundConfiguration.configuration.tenantId,
+
+    inboundProfileId:
+      inboundConfiguration.configuration.inboundProfileId,
   });
 
   console.log(
@@ -495,9 +520,7 @@ console.log(
   {
     status:
       statusResponse.status,
-
-    body:
-      statusResult,
+    success: statusResult?.success === true,
   }
 );
 

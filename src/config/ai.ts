@@ -13,14 +13,14 @@ function requireEnv(
   return value;
 }
 
+/*
+ * This module is consumed by Gemini text, TTS, and Live clients. Deepgram is
+ * configured by its own socket only when the Cascaded runtime is selected.
+ * Keep the key lazy so importing media modules never makes an unused provider
+ * a startup dependency.
+ */
 export const AI_CONFIG = {
-  geminiApiKey:
-    requireEnv(
-      "GEMINI_API_KEY"
-    ),
-
-  deepgramApiKey:
-    requireEnv(
-      "DEEPGRAM_API_KEY"
-    ),
+  get geminiApiKey(): string {
+    return requireEnv("GEMINI_API_KEY");
+  },
 };

@@ -60,6 +60,11 @@ const mocks =
         },
       };
 
+      const callService = {
+        getCall:
+          vi.fn(),
+      };
+
       const audioSession = {
         get:
           vi.fn(),
@@ -96,8 +101,53 @@ const mocks =
           ),
       };
 
+      const geminiLiveMedia = {
+        start:
+          vi.fn(),
+
+        beginConversation:
+          vi.fn(),
+
+        close:
+          vi.fn(),
+      };
+
       const eventPublisher = {
         publish:
+          vi.fn(),
+      };
+
+      const voiceWorker = {
+        start:
+          vi.fn(),
+
+        addText:
+          vi.fn(),
+      };
+
+      const flowSession = {
+        get:
+          vi.fn(),
+
+        set:
+          vi.fn(),
+
+        reset:
+          vi.fn(),
+      };
+
+      const standardInputRouter = {
+        routeStandardInput:
+          vi.fn(),
+      };
+
+      const ivrGraphExecutor = {
+        executeIVRGraphRoute:
+          vi.fn(),
+      };
+
+      const securitySession = {
+        getCallSecuritySession:
           vi.fn(),
       };
 
@@ -115,10 +165,19 @@ const mocks =
       return {
         logger,
         prisma,
+        callService,
         audioSession,
         sttProvider,
         providerFactory,
+        geminiLiveMedia,
         eventPublisher,
+        voiceWorker,
+        flowSession,
+        standardInputRouter,
+        ivrGraphExecutor,
+
+        securitySession,
+
         conversationState,
         startConversation,
       };
@@ -183,6 +242,14 @@ vi.mock(
 );
 
 vi.mock(
+  "@/services/calls/call.service",
+  () => ({
+    getCall:
+      mocks.callService.getCall,
+  })
+);
+
+vi.mock(
   "@/services/stt/providers/provider.factory",
   () => ({
     STTProviderFactory:
@@ -199,10 +266,61 @@ vi.mock(
 );
 
 vi.mock(
+  "@/services/voice/gemini-live-media.service",
+  () => ({
+    GeminiLiveMediaService:
+      mocks.geminiLiveMedia,
+  })
+);
+
+vi.mock(
+  "@/services/security/call-security-session.service",
+  () => ({
+    getCallSecuritySession:
+      mocks.securitySession
+        .getCallSecuritySession,
+  })
+);
+
+vi.mock(
   "@/services/conversations/conversation-state.service",
   () => ({
     ConversationStateService:
       mocks.conversationState,
+  })
+);
+
+vi.mock(
+  "@/services/ivr/ivr-flow-session.service",
+  () => ({
+    IVRFlowSessionService:
+      mocks.flowSession,
+  })
+);
+
+vi.mock(
+  "@/services/ivr/standard-input-router.service",
+  () => ({
+    routeStandardInput:
+      mocks.standardInputRouter
+        .routeStandardInput,
+  })
+);
+
+vi.mock(
+  "@/services/ivr/ivr-graph-executor.service",
+  () => ({
+    executeIVRGraphRoute:
+      mocks.ivrGraphExecutor
+        .executeIVRGraphRoute,
+  })
+);
+
+vi.mock(
+  "@/services/voice/voice-worker.service",
+  () => ({
+    VoiceWorker:
+      mocks.voiceWorker,
   })
 );
 
@@ -215,6 +333,15 @@ vi.mock(
 
       AUDIO_DISCONNECTED:
         "audio.disconnected",
+
+      AI_SESSION_STARTED:
+        "audit.ai_session_started",
+
+      FALLBACK_TRIGGERED:
+        "audit.fallback_triggered",
+
+      PROVIDER_CHANGED:
+        "audit.provider_changed",
 
       CONVERSATION_STARTED:
         "conversation.started",
@@ -388,6 +515,22 @@ function createAudioSession(
       overrides.voiceRuntime ??
       "CASCADED",
 
+    requestedRuntime:
+      overrides.requestedRuntime ??
+      "CASCADED",
+
+    effectiveRuntime:
+      overrides.effectiveRuntime ??
+      "CASCADED",
+
+    fallbackUsed:
+      overrides.fallbackUsed ??
+      false,
+
+    fallbackReason:
+      overrides.fallbackReason ??
+      null,
+
     createdAt:
       overrides.createdAt ??
       Date.now(),
@@ -530,6 +673,44 @@ function configureSuccessfulStart(): void {
     );
 
   mocks
+    .securitySession
+    .getCallSecuritySession
+    .mockResolvedValue({
+      callId:
+        CALL_ID,
+
+      campaignId:
+        "campaign-1",
+
+      contactId:
+        "contact-1",
+
+      direction:
+        CallDirection.OUTBOUND,
+
+      authenticationLevel:
+        "AUTH_LEVEL_1",
+
+      riskLevel:
+        "LOW",
+
+      authenticationVerifiedAt:
+        null,
+
+      securityFlags:
+        {},
+
+      allowedActions: [
+        "SEND_INFO",
+      ],
+
+      updatedAt:
+        new Date(
+          "2026-08-20T10:00:00.000Z"
+        ),
+    });
+
+  mocks
     .audioSession
     .get
     .mockReturnValue(
@@ -560,6 +741,27 @@ function configureSuccessfulStart(): void {
   mocks
     .sttProvider
     .disconnect
+    .mockResolvedValue(
+      undefined
+    );
+
+  mocks
+    .geminiLiveMedia
+    .start
+    .mockResolvedValue(
+      undefined
+    );
+
+  mocks
+    .geminiLiveMedia
+    .beginConversation
+    .mockResolvedValue(
+      undefined
+    );
+
+  mocks
+    .geminiLiveMedia
+    .close
     .mockResolvedValue(
       undefined
     );
@@ -850,6 +1052,34 @@ describe(
             direction:
               true,
 
+            tenantId:
+              true,
+
+            inboundProfileId:
+              true,
+
+            inboundProfile: {
+              select: {
+                voiceRuntime: true,
+              },
+            },
+
+            ivrFlowVersion: {
+              select: {
+                id: true,
+                flowId: true,
+                versionNumber: true,
+                nodes: true,
+                edges: true,
+              },
+            },
+
+            provider:
+              true,
+
+            requestedRuntime:
+              true,
+
             campaign: {
               select: {
                 communicationVoiceParent: {
@@ -859,6 +1089,12 @@ describe(
 
                     tier:
                       true,
+
+                    ownerUser: {
+                      select: {
+                        tenantId: true,
+                      },
+                    },
                   },
                 },
               },
@@ -978,6 +1214,277 @@ describe(
     //------------------------------------------------
 
     it(
+      "falls back from Gemini Live to cascaded and audits the runtime change",
+      async () => {
+        const socket =
+          createSocket();
+
+        mocks
+          .prisma
+          .call
+          .findUnique
+          .mockResolvedValue(
+            createStoredCall({
+              campaign: {
+                communicationVoiceParent: {
+                  id:
+                    "communication-voice-parent-1",
+
+                  tier:
+                    "PREMIUM",
+                },
+              },
+            })
+          );
+
+        mocks
+          .prisma
+          .conversationMessage
+          .count
+          .mockResolvedValue(
+            0
+          );
+
+        const fallbackSession =
+          createAudioSession(
+            socket.socket,
+            {
+              voiceRuntime:
+                "GEMINI_LIVE",
+
+              requestedRuntime:
+                "GEMINI_LIVE",
+
+              effectiveRuntime:
+                "GEMINI_LIVE",
+            }
+          );
+
+        mocks
+          .audioSession
+          .create
+          .mockReturnValue(
+            fallbackSession
+          );
+
+        mocks
+          .geminiLiveMedia
+          .start
+          .mockRejectedValueOnce(
+            new Error(
+              "gemini init failed"
+            )
+          );
+
+        await TwilioStreamGateway.handle(
+          socket.socket,
+          createStartMessage()
+        );
+
+        expect(
+          mocks
+            .eventPublisher
+            .publish
+        ).toHaveBeenCalledWith(
+          AppEvent.FALLBACK_TRIGGERED,
+          expect.objectContaining({
+            callId:
+              CALL_ID,
+
+            requestedRuntime:
+              "GEMINI_LIVE",
+
+            effectiveRuntime:
+              "CASCADED",
+          })
+        );
+
+        expect(
+          mocks
+            .eventPublisher
+            .publish
+        ).toHaveBeenCalledWith(
+          AppEvent.PROVIDER_CHANGED,
+          expect.objectContaining({
+            callId:
+              CALL_ID,
+
+            requestedRuntime:
+              "GEMINI_LIVE",
+
+            effectiveRuntime:
+              "CASCADED",
+          })
+        );
+
+        expect(
+          mocks
+            .audioSession
+            .create
+        ).toHaveBeenCalledWith(
+          expect.objectContaining({
+            voiceRuntime:
+              "GEMINI_LIVE",
+
+            fallbackUsed:
+              false,
+          })
+        );
+
+        expect(
+          mocks
+            .sttProvider
+            .connect
+        ).toHaveBeenCalledWith(
+          CALL_ID
+        );
+      }
+    );
+
+    it(
+      "blocks Gemini fallback when the conversation has already ended",
+      async () => {
+        const socket =
+          createSocket();
+
+        mocks
+          .prisma
+          .call
+          .findUnique
+          .mockResolvedValue(
+            createStoredCall({
+              campaign: {
+                communicationVoiceParent: {
+                  id:
+                    "communication-voice-parent-1",
+
+                  tier:
+                    "PREMIUM",
+                },
+              },
+            })
+          );
+
+        mocks
+          .prisma
+          .conversationMessage
+          .count
+          .mockResolvedValue(
+            0
+          );
+
+        mocks
+          .conversationState
+          .getState
+          .mockReturnValue(
+            "ENDED"
+          );
+
+        mocks
+          .securitySession
+          .getCallSecuritySession
+          .mockResolvedValue({
+            callId:
+              CALL_ID,
+
+            campaignId:
+              "campaign-1",
+
+            contactId:
+              "contact-1",
+
+            direction:
+              CallDirection.OUTBOUND,
+
+            authenticationLevel:
+              "AUTH_LEVEL_1",
+
+            riskLevel:
+              "LOW",
+
+            authenticationVerifiedAt:
+              null,
+
+            securityFlags:
+              {},
+
+            allowedActions: [
+              "SEND_INFO",
+            ],
+
+            updatedAt:
+              new Date(
+                "2026-08-20T10:00:00.000Z"
+              ),
+          });
+
+        mocks
+          .geminiLiveMedia
+          .start
+          .mockRejectedValueOnce(
+            new Error(
+              "gemini init failed"
+            )
+          );
+
+        await TwilioStreamGateway.handle(
+          socket.socket,
+          createStartMessage()
+        );
+
+        expect(
+          mocks
+            .logger.error
+        ).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event:
+              "twilio.stream.gemini_live_fallback_blocked",
+
+            fallbackReason:
+              "conversation_already_ended",
+
+            authenticationLevel:
+              "AUTH_LEVEL_1",
+
+            riskLevel:
+              "LOW",
+          }),
+          "Gemini Live initialization failed; fallback blocked to preserve security state"
+        );
+
+        expect(
+          mocks
+            .sttProvider
+            .connect
+        ).not.toHaveBeenCalled();
+
+        expect(
+          mocks
+            .eventPublisher
+            .publish
+        ).not.toHaveBeenCalledWith(
+          AppEvent.FALLBACK_TRIGGERED,
+          expect.anything()
+        );
+
+        expect(
+          mocks
+            .eventPublisher
+            .publish
+        ).not.toHaveBeenCalledWith(
+          AppEvent.PROVIDER_CHANGED,
+          expect.anything()
+        );
+
+        expectSocketClosed(
+          socket,
+          1011,
+          "Premium fallback blocked"
+        );
+      }
+    );
+
+    it(
       "associates a missing providerCallId before initializing the stream",
       async () => {
         const socket =
@@ -1023,22 +1530,24 @@ describe(
           mocks
             .audioSession
             .create
-        ).toHaveBeenCalledWith({
-          callId:
-            CALL_ID,
+        ).toHaveBeenCalledWith(
+          expect.objectContaining({
+            callId:
+              CALL_ID,
 
-          twilioCallSid:
-            PROVIDER_CALL_ID,
+            twilioCallSid:
+              PROVIDER_CALL_ID,
 
-          streamSid:
-            STREAM_SID,
+            streamSid:
+              STREAM_SID,
 
-          socket:
-            socket.socket,
+            socket:
+              socket.socket,
 
-          voiceRuntime:
-            "CASCADED",
-        });
+            voiceRuntime:
+              "CASCADED",
+          })
+        );
       }
     );
 
@@ -1259,7 +1768,8 @@ describe(
           mocks
             .audioSession
             .create
-        ).toHaveBeenCalledWith({
+        ).toHaveBeenCalledWith(
+          expect.objectContaining({
           callId:
             CALL_ID,
 
@@ -1274,7 +1784,8 @@ describe(
 
           voiceRuntime:
             "CASCADED",
-        });
+          })
+        );
       }
     );
 
@@ -1928,6 +2439,438 @@ describe(
             .close
         ).toHaveBeenCalledWith(
           STREAM_SID
+        );
+      }
+    );
+
+    //------------------------------------------------
+    // DTMF Result Handling
+    //------------------------------------------------
+
+    describe(
+      "DTMF result handling",
+      () => {
+        function configureDtmfCall(): void {
+          mocks
+            .callService
+            .getCall
+            .mockResolvedValue(
+              {
+                id: CALL_ID,
+                campaignId: "campaign-1",
+                ivrFlowVersionId: "v1",
+                ivrFlowVersion: {
+                  id: "v1",
+                  tenantId: "tenant-1",
+                  status: "PUBLISHED",
+                  nodes: [
+                    { id: "start", data: { nodeKind: "START", globalShortcuts: { "0": "DISABLED" } } },
+                    { id: "menu", data: { nodeKind: "HYBRID_MENU" } },
+                  ],
+                  edges: [
+                    { source: "start", target: "menu", data: { trigger: "DEFAULT" } },
+                  ],
+                },
+              } as never
+            );
+
+          mocks
+            .flowSession
+            .get
+            .mockResolvedValue({
+              flowId: "v1",
+              currentNodeId: "menu",
+              lastTrigger: "DEFAULT",
+              lastValue: null,
+            });
+
+          mocks
+            .audioSession
+            .get
+            .mockReturnValue(
+              createAudioSession(
+                createSocket().socket
+              )
+            );
+        }
+
+        it(
+          "queues non-terminal speech once and keeps the session active",
+          async () => {
+            const socket =
+              createSocket();
+
+            configureDtmfCall();
+            mocks
+              .audioSession
+              .get
+              .mockReturnValue(
+                createAudioSession(
+                  socket.socket
+                )
+              );
+
+            mocks
+              .standardInputRouter
+              .routeStandardInput
+              .mockReturnValue({
+                matched: true,
+                confidence: 1,
+                resultingNodeId: "menu",
+                transition: "MENU_OPTION",
+                action: "NAVIGATE",
+                optionLabel: "Continue",
+              });
+
+            mocks
+              .ivrGraphExecutor
+              .executeIVRGraphRoute
+              .mockResolvedValue({
+                status: "AWAITING_INPUT",
+                currentNodeId: "menu",
+                nextNodeId: null,
+                speechText: "Please continue.",
+                awaitInput: false,
+                endCall: false,
+                transitionReason: "DEFAULT",
+              });
+
+            mocks
+              .voiceWorker
+              .addText
+              .mockResolvedValue(true);
+
+            await TwilioStreamGateway.handle(
+              socket.socket,
+              JSON.stringify({
+                event: "dtmf",
+                streamSid: STREAM_SID,
+                dtmf: { digit: "1" },
+              })
+            );
+
+            expect(
+              mocks
+                .standardInputRouter
+                .routeStandardInput
+            ).toHaveBeenCalledTimes(1);
+
+            expect(
+              mocks
+                .ivrGraphExecutor
+                .executeIVRGraphRoute
+            ).toHaveBeenCalledTimes(1);
+
+            expect(
+              mocks
+                .voiceWorker
+                .addText
+            ).toHaveBeenCalledWith(
+              CALL_ID,
+              "Please continue."
+            );
+
+            expect(
+              mocks
+                .voiceWorker
+                .start
+            ).toHaveBeenCalledTimes(1);
+
+            expect(
+              mocks
+                .conversationState
+                .setState
+                .mock.calls
+                .some(
+                  call =>
+                    call[1] === "THINKING"
+                )
+            ).toBe(true);
+
+            expect(
+              mocks
+                .conversationState
+                .setState
+                .mock.calls
+                .some(
+                  call =>
+                    call[1] === "ENDED"
+                )
+            ).toBe(false);
+          }
+        );
+
+        it(
+          "returns to LISTENING when the executor asks for input",
+          async () => {
+            const socket =
+              createSocket();
+
+            configureDtmfCall();
+            mocks
+              .audioSession
+              .get
+              .mockReturnValue(
+                createAudioSession(
+                  socket.socket
+                )
+              );
+
+            mocks
+              .standardInputRouter
+              .routeStandardInput
+              .mockReturnValue({
+                matched: true,
+                confidence: 1,
+                resultingNodeId: "menu",
+                transition: "MENU_OPTION",
+                action: "NAVIGATE",
+                optionLabel: "Continue",
+              });
+
+            mocks
+              .ivrGraphExecutor
+              .executeIVRGraphRoute
+              .mockResolvedValue({
+                status: "AWAITING_INPUT",
+                currentNodeId: "menu",
+                nextNodeId: null,
+                speechText: null,
+                awaitInput: true,
+                endCall: false,
+                transitionReason: "DEFAULT",
+              });
+
+            await TwilioStreamGateway.handle(
+              socket.socket,
+              JSON.stringify({
+                event: "dtmf",
+                streamSid: STREAM_SID,
+                dtmf: { digit: "1" },
+              })
+            );
+
+            expect(
+              mocks
+                .conversationState
+                .setState
+            ).toHaveBeenCalledWith(
+              CALL_ID,
+              "LISTENING"
+            );
+
+            expect(
+              mocks
+                .voiceWorker
+                .addText
+            ).not.toHaveBeenCalled();
+          }
+        );
+
+        it(
+          "queues final speech before terminal shutdown for END_CALL",
+          async () => {
+            const socket =
+              createSocket();
+
+            configureDtmfCall();
+            mocks
+              .audioSession
+              .get
+              .mockReturnValue(
+                createAudioSession(
+                  socket.socket
+                )
+              );
+
+            mocks
+              .standardInputRouter
+              .routeStandardInput
+              .mockReturnValue({
+                matched: true,
+                confidence: 1,
+                resultingNodeId: "end",
+                transition: "END_CALL",
+                action: "NAVIGATE",
+                optionLabel: "End call",
+              });
+
+            mocks
+              .ivrGraphExecutor
+              .executeIVRGraphRoute
+              .mockResolvedValue({
+                status: "ENDED",
+                currentNodeId: "end",
+                nextNodeId: null,
+                speechText: "Thank you for calling. Goodbye.",
+                awaitInput: false,
+                endCall: true,
+                transitionReason: "END_CALL",
+              });
+
+            mocks
+              .voiceWorker
+              .addText
+              .mockResolvedValue(true);
+
+            mocks
+              .voiceWorker
+              .start
+              .mockImplementation(
+                async () => {
+                  mocks
+                    .conversationState
+                    .setState(
+                      CALL_ID,
+                      "ENDED"
+                    );
+                }
+              );
+
+            await TwilioStreamGateway.handle(
+              socket.socket,
+              JSON.stringify({
+                event: "dtmf",
+                streamSid: STREAM_SID,
+                dtmf: { digit: "0" },
+              })
+            );
+
+            const states =
+              mocks
+                .conversationState
+                .setState
+                .mock.calls
+                .map(call => call[1]);
+
+            expect(states).toContain(
+              "TERMINATING"
+            );
+            expect(states).toContain(
+              "ENDED"
+            );
+            expect(
+              states.indexOf(
+                "TERMINATING"
+              )
+            ).toBeLessThan(
+              states.lastIndexOf(
+                "ENDED"
+              )
+            );
+          }
+        );
+
+        it(
+          "terminates directly when END_CALL has no speech",
+          async () => {
+            const socket =
+              createSocket();
+
+            configureDtmfCall();
+            mocks
+              .audioSession
+              .get
+              .mockReturnValue(
+                createAudioSession(
+                  socket.socket
+                )
+              );
+
+            mocks
+              .standardInputRouter
+              .routeStandardInput
+              .mockReturnValue({
+                matched: true,
+                confidence: 1,
+                resultingNodeId: "end",
+                transition: "END_CALL",
+                action: "NAVIGATE",
+                optionLabel: "End call",
+              });
+
+            mocks
+              .ivrGraphExecutor
+              .executeIVRGraphRoute
+              .mockResolvedValue({
+                status: "ENDED",
+                currentNodeId: "end",
+                nextNodeId: null,
+                speechText: null,
+                awaitInput: false,
+                endCall: true,
+                transitionReason: "END_CALL",
+              });
+
+            await TwilioStreamGateway.handle(
+              socket.socket,
+              JSON.stringify({
+                event: "dtmf",
+                streamSid: STREAM_SID,
+                dtmf: { digit: "0" },
+              })
+            );
+
+            expect(
+              mocks
+                .voiceWorker
+                .addText
+            ).not.toHaveBeenCalled();
+
+            expect(
+              mocks
+                .conversationState
+                .setState
+            ).toHaveBeenCalledWith(
+              CALL_ID,
+              "ENDED"
+            );
+          }
+        );
+
+        it(
+          "ignores DTMF after the session starts terminating",
+          async () => {
+            const socket =
+              createSocket();
+
+            mocks
+              .audioSession
+              .get
+              .mockReturnValue(
+                createAudioSession(
+                  socket.socket
+                )
+              );
+
+            mocks
+              .conversationState
+              .getState
+              .mockReturnValue(
+                "TERMINATING"
+              );
+
+            await TwilioStreamGateway.handle(
+              socket.socket,
+              JSON.stringify({
+                event: "dtmf",
+                streamSid: STREAM_SID,
+                dtmf: { digit: "1" },
+              })
+            );
+
+            expect(
+              mocks
+                .standardInputRouter
+                .routeStandardInput
+            ).not.toHaveBeenCalled();
+
+            expect(
+              mocks
+                .ivrGraphExecutor
+                .executeIVRGraphRoute
+            ).not.toHaveBeenCalled();
+          }
         );
       }
     );

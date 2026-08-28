@@ -12,6 +12,11 @@ import {
 } from "@/services/voice-runtime/turn-coordinator.service";
 
 import {
+  CascadedTurnLatency,
+  type CascadedRouteClassification,
+} from "@/services/voice-runtime/cascaded-turn-latency.service";
+
+import {
   createCallLogger,
   createServerLogger,
   normalizeError,
@@ -31,8 +36,8 @@ import {
 } from "@/core/events";
 
 import {
-  routeLiveTurn,
-} from "@/services/conversations/live-turn-router.service";
+  routeRealtimeCallInput,
+} from "@/services/conversations/realtime-input.service";
 
 import {
   CallPayload,
@@ -53,6 +58,9 @@ import {
 import {
   VoiceWorker,
 } from "@/services/voice/voice-worker.service";
+
+import { STANDARD_REALTIME_CONFIG } from "@/config/standard-realtime";
+import { StandardPartialPrefetch } from "@/services/voice-runtime/standard-partial-prefetch.service";
 
 //--------------------------------------------------
 // Logger
@@ -103,7 +111,7 @@ const DUPLICATE_WINDOW_MS =
  * from one spoken sentence to be merged.
  */
 const DEFAULT_UTTERANCE_MERGE_WINDOW_MS =
-  500;
+  STANDARD_REALTIME_CONFIG.finalMergeMs;
 
 const configuredUtteranceMergeWindowMs =
   Number(
@@ -116,7 +124,7 @@ const UTTERANCE_MERGE_WINDOW_MS =
     configuredUtteranceMergeWindowMs
   ) &&
   configuredUtteranceMergeWindowMs >=
-    200 &&
+    0 &&
   configuredUtteranceMergeWindowMs <=
     2_000
     ? configuredUtteranceMergeWindowMs
@@ -262,6 +270,10 @@ export class TranscriptSubscriber {
     //--------------------------------------------
 
     this.lastTranscripts.delete(
+      callId
+    );
+
+    StandardPartialPrefetch.clear(
       callId
     );
 
@@ -676,6 +688,10 @@ AudioSessionService.onClose(
           return;
         }
 
+        CascadedTurnLatency.markMergeWindowStart(
+          callId
+        );
+
         /*
          * Remember the incoming fragment after it is
          * accepted. This suppresses exact repeated
@@ -723,6 +739,15 @@ AudioSessionService.onClose(
       );
     }
 
+    const newest = this.pendingTranscripts
+      .get(callId)
+      ?.at(-1);
+
+    const delayMs =
+      newest && /[.!?]$/.test(newest.text)
+        ? STANDARD_REALTIME_CONFIG.punctuationMergeMs
+        : UTTERANCE_MERGE_WINDOW_MS;
+
     const timer =
       setTimeout(
         () => {
@@ -734,7 +759,7 @@ AudioSessionService.onClose(
             callId
           );
         },
-        UTTERANCE_MERGE_WINDOW_MS
+        delayMs
       );
 
     this.drainTimers.set(
@@ -1285,11 +1310,23 @@ AudioSessionService.onClose(
 
         const {
           turnId,
+          generationId,
           signal,
         } =
           TurnCoordinator.beginTurn(
             callId
           );
+
+        StandardPartialPrefetch.claimFinal(
+          callId,
+          nextTranscript.text,
+          turnId,
+          generationId
+        );
+
+        CascadedTurnLatency.markMergeWindowComplete(
+          callId
+        );
 
         log.info(
           {
@@ -1322,13 +1359,72 @@ try {
   // Route Business Workflow Before Normal AI
   //------------------------------------------------
 
-  const liveRoute =
-    await routeLiveTurn(
-      callId,
-      nextTranscript.text,
-      signal,
-      turnId
-    );
+        CascadedTurnLatency.startRoutingPass(
+          callId,
+          "realtimeInput"
+        );
+
+        const realtimeRoute = await routeRealtimeCallInput({
+          type: "VOICE",
+          callId,
+          provider: "TWILIO",
+          text: nextTranscript.text,
+          isFinal: true,
+          timestamp: nextTranscript.timestamp,
+        }, { turnId, recordConversationMessage: true });
+
+        const liveRoute = realtimeRoute.liveRoute ?? {
+          handled: realtimeRoute.handled,
+          response: realtimeRoute.speechText,
+          reason: "BUSINESS_WORKFLOW" as const,
+          audioQueued: realtimeRoute.handled,
+        };
+
+        const liveRouteClassification:
+          CascadedRouteClassification =
+          liveRoute.handled
+            ? "IVR_HANDLED"
+            : "GENERAL_AI";
+
+        CascadedTurnLatency.completeRoutingPass(
+          callId,
+          "realtimeInput",
+          liveRouteClassification
+        );
+
+        if (
+          liveRoute.outcome
+        ) {
+          log.info(
+            {
+              event:
+                "transcript.processing.voice_outcome",
+
+              turnId,
+
+              intent:
+                liveRoute.outcome.intent,
+
+              confidence:
+                liveRoute.outcome.confidence,
+
+              requestedAction:
+                liveRoute.outcome.requestedAction,
+
+              requiresConfirmation:
+                liveRoute.outcome.requiresConfirmation,
+
+              handled:
+                liveRoute.outcome.handled,
+
+              responsePresent:
+                Boolean(
+                  liveRoute.outcome.response
+                ),
+            },
+            "Structured voice outcome resolved"
+          );
+        }
 
   //------------------------------------------------
   // Normal Conversation Only If Not Handled
@@ -1337,12 +1433,13 @@ try {
   if (
     !liveRoute.handled
   ) {
-    await processUserMessage(
-      callId,
-      nextTranscript.text,
-      signal,
-      turnId
-    );
+          await processUserMessage(
+            callId,
+            nextTranscript.text,
+            signal,
+            turnId,
+            generationId
+          );
   } else {
     log.info(
       {

@@ -10,6 +10,10 @@ import {
   AudioSessionService,
 } from "./audio-session.service";
 
+import {
+  CascadedTurnLatency,
+} from "@/services/voice-runtime/cascaded-turn-latency.service";
+
 const SOCKET_TIMEOUT_MS =
   20_000;
 
@@ -122,6 +126,11 @@ export async function streamAudioToTwilio(
   if (
     !sent
   ) {
+    CascadedTurnLatency.fail(
+      normalizedCallId,
+      "OUTPUT"
+    );
+
     throw new Error(
       "Failed to send audio to Twilio"
     );

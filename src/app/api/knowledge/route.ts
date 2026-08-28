@@ -1,33 +1,92 @@
-import { prisma } from "@/lib/prisma";
+import { UserRole } from "@prisma/client";
+
+import {
+  createRateLimitResponse,
+  ensureRateLimit,
+  readClientAddress,
+} from "@/lib/abuse-control";
+
 import { NextResponse } from "next/server";
+import { requireRole } from "@/lib/auth";
+import { listKnowledgeDocuments } from "@/services/knowledge/knowledge-document.service";
+import type { KnowledgeDocumentSummary } from "@/features/knowledge/knowledge.types";
 
 export async function GET(request: Request) {
+  const currentUser = await requireRole([
+    UserRole.AGENT,
+    UserRole.ADMIN,
+    UserRole.SUPER_ADMIN,
+  ]);
+
   const { searchParams } = new URL(request.url);
 
   const search = searchParams.get("search");
 
-  const documents =
-    await prisma.knowledgeDocument.findMany({
-      where: search
-        ? {
-            originalName: {
-              contains: search,
-              mode: "insensitive",
-            },
-          }
-        : {},
+  try {
+    await ensureRateLimit({
+      scope:
+        "knowledge-lookup",
 
-      include: {
-        chunks: true,
-      },
+      limit:
+        30,
 
-      orderBy: {
-        uploadedAt: "desc",
-      },
+      windowMs:
+        60 *
+        1000,
+
+      keyParts: [
+        currentUser.id,
+
+        search ?? "",
+
+        readClientAddress(
+          request
+        ),
+      ],
     });
+  } catch (error) {
+    const rateLimitResponse =
+      createRateLimitResponse(
+        error
+      );
+
+    if (
+      rateLimitResponse
+    ) {
+      return rateLimitResponse;
+    }
+
+    throw error;
+  }
+
+  const documents = await listKnowledgeDocuments(currentUser, search);
 
   return NextResponse.json({
     success: true,
-    data: documents,
+    data: documents.map(
+      document =>
+        ({
+          id: document.id,
+          originalName: document.originalName,
+          mimeType: document.mimeType,
+          size: document.size,
+          path: `/api/knowledge/${document.id}/content`,
+          classification: document.classification,
+          status: document.status,
+          uploadedAt: document.uploadedAt.toISOString(),
+          archivedAt: document.archivedAt
+            ? document.archivedAt.toISOString()
+            : null,
+          chunkCount: document._count.chunks,
+          campaignCount: document.dependencySummary.campaignCount,
+          isIndexed: document._count.chunks > 0,
+          dependencySummary: document.dependencySummary,
+          campaignNames: document.campaignLinks.map(link => ({
+            id: link.campaign.id,
+            name: link.campaign.name,
+            status: link.campaign.status,
+          })),
+        } satisfies KnowledgeDocumentSummary)
+    ),
   });
 }

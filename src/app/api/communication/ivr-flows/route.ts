@@ -34,12 +34,14 @@ const ROLES = [
 export async function GET():
   Promise<NextResponse> {
   try {
-    await requireRole(
+    const currentUser = await requireRole(
       ROLES
     );
 
     const flows =
-      await listPublishedCommunicationIvrFlows();
+      await listPublishedCommunicationIvrFlows(
+        currentUser.tenantId
+      );
 
     return NextResponse.json(
       {

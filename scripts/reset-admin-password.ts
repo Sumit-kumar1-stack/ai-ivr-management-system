@@ -4,6 +4,7 @@ import {
 } from "@prisma/client";
 
 import bcrypt from "bcrypt";
+import { readAdminPasswordResetInput } from "../src/lib/admin-password-reset-guard";
 
 const prisma =
   new PrismaClient();
@@ -11,14 +12,7 @@ const prisma =
 async function main():
   Promise<void> {
 
-  const email =
-    "admin@gmail.com";
-
-  const newPassword =
-    "Admin@123456";
-
-  const fullName =
-    "System Admin";
+  const { email, password: newPassword, fullName } = readAdminPasswordResetInput();
 
   const hashedPassword =
     await bcrypt.hash(
@@ -84,8 +78,8 @@ async function main():
       });
 
     console.log(
-      "Admin password reset successfully:",
-      updatedUser
+      "Admin password reset successfully for user:",
+      updatedUser.id
     );
 
     return;
@@ -128,7 +122,7 @@ async function main():
 
   console.log(
     "Admin user created successfully:",
-    createdUser
+    createdUser.id
   );
 }
 
@@ -139,10 +133,7 @@ main()
         unknown
     ) => {
 
-      console.error(
-        "Failed to create or reset admin:",
-        error
-      );
+      console.error("Failed to create or reset admin.");
 
       process.exit(
         1

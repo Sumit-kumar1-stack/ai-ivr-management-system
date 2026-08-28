@@ -23,6 +23,10 @@ import {
   resolveOutboundSchedule,
 } from "@/services/campaigns/outbound-schedule.service";
 
+import {
+  transitionCampaignInTransaction,
+} from "@/services/campaigns/campaign-transition.service";
+
 //--------------------------------------------------
 // Result
 //--------------------------------------------------
@@ -217,40 +221,39 @@ export async function startCampaignExecution(
   const result =
     await prisma.$transaction(
       async transaction => {
-        const claimed =
-          await transaction
-            .campaign
-            .updateMany({
-              where: {
-                id:
-                  campaign.id,
+        try {
+          await transitionCampaignInTransaction(
+            transaction,
+            {
+              campaignId:
+                campaign.id,
 
-                status: {
-                  in: [
-                    CampaignStatus.DRAFT,
-                    CampaignStatus.PAUSED,
-                    CampaignStatus.COMPLETED,
-                    CampaignStatus.FAILED,
-                  ],
-                },
-              },
+              actor:
+                null,
 
-              data: {
-                status:
-                  targetCampaignStatus,
+              requestedTransition:
+                "LAUNCH",
 
-                startedAt:
-                  null,
-
-                completedAt:
-                  null,
-              },
-            });
-
-        if (
-          claimed.count ===
-          0
+              targetStatus:
+                targetCampaignStatus,
+            }
+          );
+        } catch (
+          error
         ) {
+          const message =
+            error instanceof Error
+              ? error.message
+              : "";
+
+          if (
+            !message.includes(
+              "Campaign"
+            )
+          ) {
+            throw error;
+          }
+
           const current =
             await transaction
               .campaign
@@ -552,6 +555,34 @@ function validateProviderConfiguration():
       );
     }
 
+    return;
+  }
+
+  if (
+    provider ===
+    "exotel"
+  ) {
+    const requiredVariables = [
+      "EXOTEL_ACCOUNT_SID",
+      "EXOTEL_API_KEY",
+      "EXOTEL_API_TOKEN",
+      "EXOTEL_SUBDOMAIN",
+      "EXOTEL_CALLER_ID",
+      "EXOTEL_PUBLIC_BASE_URL",
+      "EXOTEL_WEBHOOK_SECRET",
+    ] as const;
+
+    const missingVariables = requiredVariables.filter(name => !process.env[name]?.trim());
+    if (missingVariables.length > 0) {
+      throw new ProviderUnavailableError("Exotel provider is not configured", { missingVariables: [...missingVariables] });
+    }
+    return;
+  }
+
+  if (provider === "plivo") {
+    const requiredVariables = ["PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN", "PLIVO_CALLER_ID", "PLIVO_PUBLIC_BASE_URL"] as const;
+    const missingVariables = requiredVariables.filter(name => !process.env[name]?.trim());
+    if (missingVariables.length > 0) throw new ProviderUnavailableError("Plivo provider is not configured", { missingVariables: [...missingVariables] });
     return;
   }
 

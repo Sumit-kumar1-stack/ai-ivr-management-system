@@ -3,4 +3,5 @@ export enum TelephonyProviderName {
   TWILIO = "twilio",
   TELNYX = "telnyx",
   EXOTEL = "exotel",
+  PLIVO = "plivo",
 }

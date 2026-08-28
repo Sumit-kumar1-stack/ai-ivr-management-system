@@ -19,13 +19,15 @@ export async function generateAIResponse(
  */
 export async function* generateAIResponseStream(
   prompt: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onUsage?: (usage: { inputTokens?: number | null; outputTokens?: number | null }) => void
 ): AsyncGenerator<string> {
 
   for await (
     const chunk of askAIStream(
       prompt,
-      signal
+      signal,
+      onUsage
     )
   ) {
 

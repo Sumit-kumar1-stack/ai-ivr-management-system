@@ -13,13 +13,15 @@ export async function askAI(
 
 export async function* askAIStream(
   prompt: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onUsage?: (usage: { inputTokens?: number | null; outputTokens?: number | null }) => void
 ): AsyncGenerator<string> {
 
   for await (
     const chunk of askGeminiStream(
       prompt,
-      signal
+      signal,
+      onUsage
     )
   ) {
 

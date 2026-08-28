@@ -172,6 +172,12 @@ const CALLER_NUMBER =
 const CALLED_NUMBER =
   "+914012345678";
 
+const TENANT_ID =
+  "tenant-1";
+
+const INBOUND_PROFILE_ID =
+  "inbound-profile-1";
+
 //--------------------------------------------------
 // Default Mock Setup
 //--------------------------------------------------
@@ -279,6 +285,12 @@ describe(
 
             calledNumber:
               CALLED_NUMBER,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
           })
         ).rejects.toThrow(
           "Provider CallSid is required"
@@ -305,6 +317,12 @@ describe(
 
             calledNumber:
               CALLED_NUMBER,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
           })
         ).rejects.toThrow(
           "Caller phone number is required"
@@ -331,6 +349,12 @@ describe(
 
             calledNumber:
               "   ",
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
           })
         ).rejects.toThrow(
           "Called phone number is required"
@@ -357,6 +381,12 @@ describe(
 
             calledNumber:
               CALLED_NUMBER,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
           })
         ).rejects.toThrow(
           "Caller phone number is required"
@@ -383,6 +413,12 @@ describe(
 
             calledNumber:
               "+1234567890123456",
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
           })
         ).rejects.toThrow(
           "Called phone number is required"
@@ -407,6 +443,12 @@ describe(
 
             calledNumber:
               "+91 (40) 1234-5678",
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
           });
 
         expect(
@@ -435,6 +477,12 @@ describe(
 
             status:
               true,
+
+            tenantId:
+              true,
+
+            inboundProfileId:
+              true,
           },
         });
 
@@ -446,8 +494,10 @@ describe(
         ).toHaveBeenCalledWith(
           expect.objectContaining({
             where: {
-              phone:
-                CALLER_NUMBER,
+              tenantId_phone: {
+                tenantId: TENANT_ID,
+                phone: CALLER_NUMBER,
+              },
             },
           })
         );
@@ -469,6 +519,12 @@ describe(
 
                 calledNumber:
                   CALLED_NUMBER,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
               }),
           })
         );
@@ -484,6 +540,12 @@ describe(
 
           campaignId:
             CAMPAIGN_ID,
+
+          tenantId:
+            TENANT_ID,
+
+          inboundProfileId:
+            INBOUND_PROFILE_ID,
 
           created:
             true,
@@ -514,6 +576,12 @@ describe(
 
             direction:
               CallDirection.INBOUND,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
           });
 
         const result =
@@ -526,6 +594,12 @@ describe(
 
             calledNumber:
               CALLED_NUMBER,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
           });
 
         expect(
@@ -539,6 +613,12 @@ describe(
 
           campaignId:
             CAMPAIGN_ID,
+
+          tenantId:
+            TENANT_ID,
+
+          inboundProfileId:
+            INBOUND_PROFILE_ID,
 
           created:
             false,
@@ -584,6 +664,12 @@ describe(
 
             calledNumber:
               CALLED_NUMBER,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
           })
         ).rejects.toThrow(
           "Provider CallSid is already associated with an outbound call"
@@ -614,6 +700,12 @@ describe(
           calledNumber:
             CALLED_NUMBER,
 
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
+
           language:
             "Hindi",
         });
@@ -625,8 +717,8 @@ describe(
             .upsert
         ).toHaveBeenCalledWith({
           where: {
-            systemKey:
-              "INBOUND_ENQUIRIES",
+              systemKey:
+                `INBOUND_ENQUIRIES:${TENANT_ID}`,
           },
 
           update: {
@@ -644,8 +736,8 @@ describe(
             description:
               "System campaign used to track incoming enquiry calls.",
 
-            systemKey:
-              "INBOUND_ENQUIRIES",
+              systemKey:
+                `INBOUND_ENQUIRIES:${TENANT_ID}`,
 
             language:
               "Hindi",
@@ -683,6 +775,12 @@ describe(
           calledNumber:
             CALLED_NUMBER,
 
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
+
           language:
             "Hindi",
         });
@@ -693,10 +791,12 @@ describe(
             .contact
             .upsert
         ).toHaveBeenCalledWith({
-          where: {
-            phone:
-              CALLER_NUMBER,
-          },
+            where: {
+              tenantId_phone: {
+                tenantId: TENANT_ID,
+                phone: CALLER_NUMBER,
+              },
+            },
 
           update: {
             language:
@@ -707,8 +807,11 @@ describe(
             fullName:
               "Inbound Caller 3210",
 
-            phone:
-              CALLER_NUMBER,
+              phone:
+                CALLER_NUMBER,
+
+              tenantId:
+                TENANT_ID,
 
             language:
               "Hindi",
@@ -744,6 +847,12 @@ describe(
           calledNumber:
             CALLED_NUMBER,
 
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
+
           language:
             "Hindi",
         });
@@ -777,6 +886,12 @@ describe(
 
           calledNumber:
             CALLED_NUMBER,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
         });
 
         expect(
@@ -804,6 +919,12 @@ describe(
 
               calledNumber:
                 CALLED_NUMBER,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
 
               campaignId:
                 CAMPAIGN_ID,
@@ -875,6 +996,33 @@ describe(
     );
 
     it(
+      "pins the inbound call to the profile-selected IVR version and Premium runtime",
+      async () => {
+        await createOrGetInboundCall({
+          providerCallId: PROVIDER_CALL_ID,
+          callerNumber: CALLER_NUMBER,
+          calledNumber: CALLED_NUMBER,
+          tenantId: TENANT_ID,
+          inboundProfileId: INBOUND_PROFILE_ID,
+          ivrFlowVersionId: "published-version-2",
+          requestedRuntime: "GEMINI_LIVE",
+        });
+
+        expect(mocks.transaction.call.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({
+              ivrFlowVersionId: "published-version-2",
+              requestedRuntime: "GEMINI_LIVE",
+              effectiveRuntime: null,
+              fallbackUsed: false,
+              fallbackReason: null,
+            }),
+          })
+        );
+      }
+    );
+
+    it(
       "uses English when no language is provided",
       async () => {
         await createOrGetInboundCall({
@@ -886,6 +1034,12 @@ describe(
 
           calledNumber:
             CALLED_NUMBER,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
         });
 
         expect(
@@ -918,6 +1072,12 @@ describe(
 
             calledNumber:
               CALLED_NUMBER,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
           });
 
         expect(
@@ -931,6 +1091,12 @@ describe(
 
           campaignId:
             CAMPAIGN_ID,
+
+          tenantId:
+            TENANT_ID,
+
+          inboundProfileId:
+            INBOUND_PROFILE_ID,
 
           created:
             true,
@@ -948,13 +1114,18 @@ describe(
             direction:
               CallDirection.INBOUND,
 
+            tenantId:
+              TENANT_ID,
+
+          inboundProfileId:
+            INBOUND_PROFILE_ID,
+
             callerNumber:
               "***3210",
 
-            calledNumber:
-              "***5678",
-
-          }),
+          calledNumber:
+            "***5678",
+        }),
           "Inbound call record created"
         );
       }
@@ -1005,6 +1176,12 @@ describe(
 
             direction:
               CallDirection.INBOUND,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
           });
 
         mocks
@@ -1024,6 +1201,12 @@ describe(
 
             calledNumber:
               CALLED_NUMBER,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
           });
 
         expect(
@@ -1037,6 +1220,12 @@ describe(
 
           campaignId:
             CAMPAIGN_ID,
+
+          tenantId:
+            TENANT_ID,
+
+          inboundProfileId:
+            INBOUND_PROFILE_ID,
 
           created:
             false,
@@ -1105,6 +1294,12 @@ describe(
 
             calledNumber:
               CALLED_NUMBER,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
           })
         ).rejects.toBe(
           duplicateError
@@ -1153,6 +1348,12 @@ describe(
 
             calledNumber:
               CALLED_NUMBER,
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
           })
         ).rejects.toBe(
           databaseError
@@ -1172,6 +1373,12 @@ describe(
 
             calledNumber:
               "***5678",
+
+            tenantId:
+              TENANT_ID,
+
+            inboundProfileId:
+              INBOUND_PROFILE_ID,
 
 
             error: {

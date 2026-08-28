@@ -1,8 +1,18 @@
 import {
+  AppEvent,
+  EventPublisher,
+} from "@/core/events";
+
+import {
   createServerLogger,
   getDurationMs,
   normalizeError,
 } from "@/lib/logger";
+
+import {
+  Prisma,
+  CallAuthenticationLevel,
+} from "@prisma/client";
 
 import {
   prisma,
@@ -16,6 +26,13 @@ import {
   rerankKnowledge,
 } from "./reranker.service";
 
+import {
+  CascadedTurnLatency,
+} from "@/services/voice-runtime/cascaded-turn-latency.service";
+
+import { STANDARD_REALTIME_CONFIG } from "@/config/standard-realtime";
+import { StandardRuntimeUsage } from "@/services/voice-runtime/standard-runtime-usage.service";
+
 //--------------------------------------------------
 // Types
 //--------------------------------------------------
@@ -28,6 +45,9 @@ export interface RetrievedKnowledgeChunk {
   documentId: string;
 
   chunkIndex: number;
+
+  classification:
+    string;
 }
 
 interface ScoredKnowledgeChunk {
@@ -38,6 +58,36 @@ interface ScoredKnowledgeChunk {
   documentId: string;
 
   chunkIndex: number;
+
+  classification:
+    string;
+}
+
+export type KnowledgeDocumentClassification =
+  | "PUBLIC_PRODUCT_INFO"
+  | "INTERNAL"
+  | "CUSTOMER_PERSONAL"
+  | "SENSITIVE"
+  | "RESTRICTED";
+
+export interface KnowledgeRetrievalOptions {
+  knowledgeDocumentIds:
+    string[];
+
+  tenantId:
+    string | null;
+
+  ownerUserId?:
+    string | null;
+
+  callAuthenticationLevel?:
+    CallAuthenticationLevel | null;
+
+  callId?:
+    string | null;
+
+  /** Cancellation is advisory for database reads and hard for reranker streams. */
+  signal?: AbortSignal;
 }
 
 //--------------------------------------------------
@@ -60,7 +110,7 @@ const DEFAULT_MAX_SCAN_CHUNKS =
   5_000;
 
 const DEFAULT_RERANK_TIMEOUT_MS =
-  1_500;
+  STANDARD_REALTIME_CONFIG.rerankerTimeoutMs;
 
 const DEFAULT_DOMINANCE_RATIO =
   2.25;
@@ -176,10 +226,15 @@ class KnowledgeRerankTimeoutError
 // Rerank With Timeout
 //--------------------------------------------------
 
-async function rerankWithTimeout(
+export async function rerankWithTimeoutForTesting(
   question: string,
-  candidates: ScoredKnowledgeChunk[]
+  candidates: ScoredKnowledgeChunk[],
+  signal?: AbortSignal
 ): Promise<ScoredKnowledgeChunk[]> {
+  const controller = new AbortController();
+  const abort = (): void => controller.abort();
+  if (signal?.aborted) controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
   let timer:
     ReturnType<
       typeof setTimeout
@@ -188,10 +243,7 @@ async function rerankWithTimeout(
 
   try {
     return await Promise.race([
-      rerankKnowledge(
-        question,
-        candidates
-      ),
+      rerankKnowledge(question, candidates, controller.signal),
 
       new Promise<
         never
@@ -203,6 +255,7 @@ async function rerankWithTimeout(
           timer =
             setTimeout(
               () => {
+                controller.abort();
                 reject(
                   new KnowledgeRerankTimeoutError(
                     RERANK_TIMEOUT_MS
@@ -222,6 +275,8 @@ async function rerankWithTimeout(
         timer
       );
     }
+    controller.abort();
+    signal?.removeEventListener("abort", abort);
   }
 }
 
@@ -244,7 +299,53 @@ function toResult(
 
     chunkIndex:
       candidate.chunkIndex,
+
+    classification:
+      candidate.classification,
   };
+}
+
+export function resolveAllowedKnowledgeClassifications(
+  callAuthenticationLevel:
+    CallAuthenticationLevel | null | undefined
+): KnowledgeDocumentClassification[] {
+  const level =
+    callAuthenticationLevel ??
+    "AUTH_LEVEL_0";
+
+  switch (
+    level
+  ) {
+    case "AUTH_LEVEL_3":
+      return [
+        "PUBLIC_PRODUCT_INFO",
+        "INTERNAL",
+        "CUSTOMER_PERSONAL",
+        "SENSITIVE",
+      ];
+
+    case "AUTH_LEVEL_2":
+      return [
+        "PUBLIC_PRODUCT_INFO",
+        "INTERNAL",
+        "CUSTOMER_PERSONAL",
+        "SENSITIVE",
+      ];
+
+    case "AUTH_LEVEL_1":
+      return [
+        "PUBLIC_PRODUCT_INFO",
+        "INTERNAL",
+        "CUSTOMER_PERSONAL",
+      ];
+
+    case "AUTH_LEVEL_0":
+    default:
+      return [
+        "PUBLIC_PRODUCT_INFO",
+        "INTERNAL",
+      ];
+  }
 }
 
 //--------------------------------------------------
@@ -326,12 +427,19 @@ function canSkipReranking(
 
 export async function retrieveKnowledge(
   question: string,
-  limit = 5
+  limit = 5,
+  options: KnowledgeRetrievalOptions
 ): Promise<
   RetrievedKnowledgeChunk[]
 > {
   const startedAt =
     process.hrtime.bigint();
+
+  const throwIfAborted = (): void => {
+    if (options.signal?.aborted) throw new DOMException("Knowledge retrieval aborted", "AbortError");
+  };
+
+  throwIfAborted();
 
   const normalizedQuestion =
     question.trim();
@@ -370,15 +478,129 @@ export async function retrieveKnowledge(
       )
     );
 
+  const scopedDocumentIds =
+    options.knowledgeDocumentIds
+      .map(
+        documentId =>
+          documentId.trim()
+      )
+      .filter(Boolean);
+
+  const ownerUserId =
+    options.ownerUserId
+      ?.trim() ?? "";
+
+  const tenantId =
+    options.tenantId
+      ?.trim() ?? "";
+
+  const allowedClassifications =
+    resolveAllowedKnowledgeClassifications(
+      options.callAuthenticationLevel
+    );
+
+  const allowedClassificationParameters =
+    allowedClassifications.map(
+      classification =>
+        Prisma.sql`${classification}::"KnowledgeDocumentClassification"`
+    );
+
+  const callId =
+    options.callId?.trim() ??
+    "";
+
+  if (
+    scopedDocumentIds.length ===
+    0 ||
+    !tenantId
+  ) {
+    log.info(
+      {
+        event:
+          "knowledge.retrieval.no_scope_documents",
+
+        queryCharacterCount:
+          normalizedQuestion.length,
+
+        ownerUserIdPresent:
+          Boolean(
+            ownerUserId
+          ),
+
+        tenantIdPresent:
+          Boolean(
+            tenantId
+          ),
+      },
+      "Knowledge retrieval skipped because the secure knowledge scope is empty"
+    );
+
+    return [];
+  }
+
+  const ownerFilter =
+    ownerUserId
+      ? Prisma.sql`AND kd."ownerUserId" = ${ownerUserId}`
+      : Prisma.empty;
+
+  if (
+    callId
+  ) {
+    void EventPublisher.publish(
+      AppEvent.RAG_QUERY,
+      {
+        callId,
+
+        queryCharacterCount:
+          normalizedQuestion.length,
+
+        scopedDocumentCount:
+          scopedDocumentIds.length,
+
+        allowedClassificationCount:
+          allowedClassifications.length,
+
+        actorType:
+          "AI",
+
+        timestamp:
+          Date.now(),
+      }
+    );
+  }
+
   try {
     //------------------------------------------------
     // Count Before Scan
     //------------------------------------------------
 
+    const chunkCountResult =
+      await prisma.$queryRaw<
+        Array<{
+          count: bigint;
+        }>
+      >`
+        SELECT COUNT(*)::bigint AS count
+        FROM "KnowledgeChunk" kc
+        INNER JOIN "KnowledgeDocument" kd
+          ON kd.id = kc."documentId"
+        INNER JOIN "User" ku
+          ON ku.id = kd."ownerUserId"
+        WHERE kc."documentId" IN (${Prisma.join(
+          scopedDocumentIds
+        )})
+          AND ku."tenantId" = ${tenantId}
+          ${ownerFilter}
+          AND kd."classification" IN (${Prisma.join(
+            allowedClassificationParameters
+          )})
+      `;
+
     const chunkCount =
-      await prisma
-        .knowledgeChunk
-        .count();
+      Number(
+        chunkCountResult[0]?.count ??
+        0
+      );
 
     //------------------------------------------------
     // Production Guard
@@ -415,20 +637,39 @@ export async function retrieveKnowledge(
     //------------------------------------------------
 
     const chunks =
-      await prisma
-        .knowledgeChunk
-        .findMany({
-          select: {
-            content:
-              true,
+      await prisma.$queryRaw<
+        Array<{
+          content: string;
+          documentId: string;
+          chunkIndex: number;
+          classification:
+            KnowledgeDocumentClassification;
+        }>
+      >`
+        SELECT
+          kc."content",
+          kc."documentId",
+          kc."chunkIndex",
+          kd."classification"
+        FROM "KnowledgeChunk" kc
+        INNER JOIN "KnowledgeDocument" kd
+          ON kd.id = kc."documentId"
+        INNER JOIN "User" ku
+          ON ku.id = kd."ownerUserId"
+        WHERE kc."documentId" IN (${Prisma.join(
+          scopedDocumentIds
+        )})
+          AND ku."tenantId" = ${tenantId}
+          ${ownerFilter}
+          AND kd."classification" IN (${Prisma.join(
+            allowedClassificationParameters
+          )})
+        ORDER BY
+          kc."documentId" ASC,
+          kc."chunkIndex" ASC
+      `;
 
-            documentId:
-              true,
-
-            chunkIndex:
-              true,
-          },
-        });
+    throwIfAborted();
 
     log.debug(
       {
@@ -441,8 +682,17 @@ export async function retrieveKnowledge(
         availableChunkCount:
           chunkCount,
 
+        scopedDocumentCount:
+          scopedDocumentIds.length,
+
         loadedChunkCount:
           chunks.length,
+
+        ownerUserIdPresent:
+          true,
+
+        allowedClassificationCount:
+          allowedClassifications.length,
 
         requestedLimit:
           normalizedLimit,
@@ -482,6 +732,9 @@ export async function retrieveKnowledge(
 
             chunkIndex:
               chunk.chunkIndex,
+
+            classification:
+              chunk.classification,
 
             score:
               bm25Score(
@@ -648,6 +901,10 @@ export async function retrieveKnowledge(
     const rerankStartedAt =
       process.hrtime.bigint();
 
+    CascadedTurnLatency.startRerank(
+      callId
+    );
+
     let reranked:
       ScoredKnowledgeChunk[];
 
@@ -660,9 +917,10 @@ export async function retrieveKnowledge(
 
     try {
       reranked =
-        await rerankWithTimeout(
+        await rerankWithTimeoutForTesting(
           normalizedQuestion,
-          rerankCandidates
+          rerankCandidates,
+          options.signal
         );
     } catch (
       error
@@ -675,6 +933,21 @@ export async function retrieveKnowledge(
           KnowledgeRerankTimeoutError
           ? "timeout"
           : "reranker_error";
+
+      if (rerankFallbackReason === "timeout") {
+        StandardRuntimeUsage.recordRerankerTimeout(callId);
+      }
+
+      log.warn(
+        {
+          event: rerankFallbackReason === "timeout"
+            ? "standard.reranker.timeout"
+            : "standard.reranker.cancelled",
+          candidateCount: rerankCandidates.length,
+          rerankTimeoutMs: RERANK_TIMEOUT_MS,
+        },
+        "Standard reranker result discarded; BM25 fallback retained"
+      );
 
       log.warn(
         {
@@ -714,6 +987,10 @@ export async function retrieveKnowledge(
         rerankStartedAt
       );
 
+    CascadedTurnLatency.completeRerank(
+      callId
+    );
+
     //------------------------------------------------
     // Results
     //------------------------------------------------
@@ -727,6 +1004,39 @@ export async function retrieveKnowledge(
         .map(
           toResult
         );
+
+    throwIfAborted();
+
+    if (
+      callId &&
+      results.length > 0
+    ) {
+      void EventPublisher.publish(
+        AppEvent.DOCUMENT_ACCESSED,
+        {
+          callId,
+
+          documentIds:
+            [
+              ...new Set(
+                results.map(
+                  result =>
+                    result.documentId
+                )
+              ),
+            ],
+
+          retrievedChunkCount:
+            results.length,
+
+          actorType:
+            "AI",
+
+          timestamp:
+            Date.now(),
+        }
+      );
+    }
 
     //------------------------------------------------
     // Final Metrics

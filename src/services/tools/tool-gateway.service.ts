@@ -1,5 +1,6 @@
 import {
   ToolExecutionStatus,
+  CallAuthenticationLevel,
 } from "@prisma/client";
 
 import {
@@ -11,6 +12,12 @@ import {
   getDurationMs,
   normalizeError,
 } from "@/lib/logger";
+
+import { StandardRuntimeUsage } from "@/services/voice-runtime/standard-runtime-usage.service";
+
+import {
+  enforceRateLimit,
+} from "@/lib/abuse-control";
 
 import {
   getBusinessTool,
@@ -125,6 +132,22 @@ export async function executeBusinessTool(
 
           contactId:
             true,
+
+          tenantId:
+            true,
+
+          authenticationLevel:
+            true,
+
+          campaign: {
+            select: {
+              ownerUser: {
+                select: {
+                  tenantId: true,
+                },
+              },
+            },
+          },
         },
       });
 
@@ -156,32 +179,24 @@ export async function executeBusinessTool(
   }
 
   //--------------------------------------------------
-  // Tenant Scope Boundary
+  // Authentication Boundary
   //--------------------------------------------------
 
-  const tenantId =
-    request.tenantId
-      ?.trim();
-
-  /*
-   * Current schema does NOT place tenantId on Call,
-   * Campaign or Contact.
-   *
-   * Therefore accepting a tenant-scoped request here
-   * would only record the tenant string on the audit;
-   * it would NOT prove that the call belongs to that
-   * tenant.
-   *
-   * Fail closed until real ownership exists.
-   */
+  const requiredAuthLevel =
+    normalizeAuthLevel(
+      definition.requiredAuthLevel
+    );
 
   if (
-    tenantId
+    !hasSufficientAuthLevel(
+      call.authenticationLevel,
+      requiredAuthLevel
+    )
   ) {
-    log.error(
+    log.warn(
       {
         event:
-          "business_tool.tenant_scope_unverifiable",
+          "business_tool.authentication_required",
 
         callId,
 
@@ -191,17 +206,66 @@ export async function executeBusinessTool(
         requestedBy:
           request.requestedBy,
 
-        tenantScopePresent:
-          true,
+        currentAuthLevel:
+          call.authenticationLevel,
+
+        requiredAuthLevel,
       },
-      "Tenant-scoped tool execution rejected because call ownership cannot be verified"
+      "Business tool rejected because customer authentication is insufficient"
     );
 
     return failure(
       request,
       startedAt,
-      "TENANT_SCOPE_NOT_CONFIGURED",
-      "Tenant-scoped tool execution is unavailable until calls have durable tenant ownership"
+      "AUTH_LEVEL_REQUIRED",
+      `Additional customer authentication is required before executing ${definition.name}`
+    );
+  }
+
+  //--------------------------------------------------
+  // Tenant Scope Boundary
+  //--------------------------------------------------
+
+  const requestedTenantId =
+    request.tenantId
+      ?.trim() ?? "";
+
+  const tenantId =
+    call.tenantId ??
+    call.campaign?.ownerUser?.tenantId ??
+    null;
+
+  if (
+    !tenantId ||
+    (
+      requestedTenantId &&
+      requestedTenantId !== tenantId
+    )
+  ) {
+    log.error(
+      {
+        event: "business_tool.tenant_scope_denied",
+
+        callId,
+
+        tool:
+          definition.name,
+
+        requestedBy:
+          request.requestedBy,
+
+        tenantScopePresent: Boolean(
+          requestedTenantId
+        ),
+      },
+      "Business tool rejected because the call tenant scope is missing or mismatched"
+    );
+
+    return failure(
+      request,
+      startedAt,
+      "TENANT_SCOPE_DENIED",
+      "Business tool call context is not authorized for this tenant"
     );
   }
 
@@ -317,7 +381,7 @@ export async function executeBusinessTool(
           callId,
 
           tenantId:
-            undefined,
+            tenantId,
 
           idempotencyKey,
         },
@@ -376,6 +440,88 @@ export async function executeBusinessTool(
 
   const executionId =
     audit.executionId;
+
+  //--------------------------------------------------
+  // Abuse Protection
+  //--------------------------------------------------
+
+  const rateLimit =
+    await enforceRateLimit({
+      scope:
+        definition.name ===
+        "searchKnowledgeBase"
+          ? "tool-search"
+          : "tool-mutation",
+
+      limit:
+        definition.name ===
+        "searchKnowledgeBase"
+          ? 30
+          : 10,
+
+      windowMs:
+        60 *
+        1000,
+
+      keyParts: [
+        callId,
+
+        definition.name,
+
+        request.requestedBy,
+      ],
+    });
+
+  if (
+    !rateLimit.allowed
+  ) {
+    log.warn(
+      {
+        event:
+          "business_tool.rate_limited",
+
+        callId,
+
+        tool:
+          definition.name,
+
+        requestedBy:
+          request.requestedBy,
+
+        current:
+          rateLimit.current,
+
+        limit:
+          rateLimit.limit,
+      },
+      "Business tool execution rate limited"
+    );
+
+    await completeToolExecutionAudit({
+      executionId,
+
+      durationMs:
+        getDurationMs(
+          startedAt
+        ),
+
+      status:
+        ToolExecutionStatus.ABORTED,
+
+      errorCode:
+        "RATE_LIMITED",
+
+      errorMessage:
+        "Business tool execution rate limit exceeded",
+    });
+
+    return failure(
+      request,
+      startedAt,
+      "RATE_LIMITED",
+      "Too many requests for this business action"
+    );
+  }
 
   //--------------------------------------------------
   // Abort Controller
@@ -526,6 +672,10 @@ export async function executeBusinessTool(
       "Business tool execution started"
     );
 
+    StandardRuntimeUsage.recordTool(
+      callId
+    );
+
 const result =
   await definition.handler(
     parsed.data,
@@ -533,9 +683,7 @@ const result =
       callId,
 
       tenantId:
-        request.tenantId
-          ?.trim() ||
-        undefined,
+        tenantId,
 
       idempotencyKey,
 
@@ -1041,4 +1189,59 @@ function failure(
       message,
     },
   };
+}
+
+function hasSufficientAuthLevel(
+  currentLevel:
+    CallAuthenticationLevel | string | null | undefined,
+  requiredLevel:
+    CallAuthenticationLevel
+): boolean {
+  return (
+    authLevelRank(
+      currentLevel
+    ) >=
+    authLevelRank(
+      requiredLevel
+    )
+  );
+}
+
+function normalizeAuthLevel(
+  level:
+    CallAuthenticationLevel | string | null | undefined
+): CallAuthenticationLevel {
+  if (
+    level === "AUTH_LEVEL_1" ||
+    level === "AUTH_LEVEL_2" ||
+    level === "AUTH_LEVEL_3"
+  ) {
+    return level;
+  }
+
+  return "AUTH_LEVEL_0";
+}
+
+function authLevelRank(
+  level:
+    CallAuthenticationLevel | string | null | undefined
+): number {
+  switch (
+    normalizeAuthLevel(
+      level
+    )
+  ) {
+    case "AUTH_LEVEL_1":
+      return 1;
+
+    case "AUTH_LEVEL_2":
+      return 2;
+
+    case "AUTH_LEVEL_3":
+      return 3;
+
+    case "AUTH_LEVEL_0":
+    default:
+      return 0;
+  }
 }

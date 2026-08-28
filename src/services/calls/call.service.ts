@@ -4,6 +4,11 @@ import {
 } from "@prisma/client";
 
 import {
+  AppEvent,
+  EventPublisher,
+} from "@/core/events";
+
+import {
   prisma,
 } from "@/lib/prisma";
 
@@ -45,6 +50,8 @@ const serviceLog =
 //--------------------------------------------------
 
 export interface CreateCallData {
+  provider?: string;
+
   campaignId: string;
 
   campaignRunId?: string;
@@ -199,6 +206,12 @@ export async function createCall(
     const call =
       await prisma.call.create({
         data: {
+          provider:
+            data.provider
+              ?.trim()
+              .toUpperCase() ||
+            "TWILIO",
+
           campaignId:
             data.campaignId,
 
@@ -240,6 +253,26 @@ export async function createCall(
             CallStatus.QUEUED,
         },
       });
+
+    void EventPublisher.publish(
+      AppEvent.CALL_CREATED,
+      {
+        callId:
+          call.id,
+
+        campaignId:
+          call.campaignId,
+
+        contactId:
+          call.contactId,
+
+        actorType:
+          "SYSTEM",
+
+        timestamp:
+          Date.now(),
+      }
+    );
 
     createCallLogger(
       call.id,
@@ -387,7 +420,7 @@ export async function createCall(
 export async function updateCall(
   id: string,
   data: {
-    providerCallId?: string;
+    providerCallId?: string | null;
 
     status?: CallStatus;
 
@@ -531,6 +564,21 @@ export async function getCall(
 
     include: {
       campaign:
+        {
+          include: {
+            ownerUser: true,
+          },
+        },
+
+      inboundProfile:
+        {
+          select: {
+            knowledgeDocumentIds: true,
+            callbackEnabled: true,
+          },
+        },
+
+      ivrFlowVersion:
         true,
 
       campaignRun:

@@ -36,6 +36,10 @@
     "**/*.mts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "ai-ivr-phase4-latest",
+    "ai-ivr-phase4-latest/**",
+    "ai-ivr-system-review",
+    "ai-ivr-system-review/**"
   ]
 }

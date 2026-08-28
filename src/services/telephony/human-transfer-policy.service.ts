@@ -58,60 +58,6 @@ export function resolveHumanTransferPolicy():
   }
 
   //------------------------------------------------
-  // Destination
-  //------------------------------------------------
-
-  const destination =
-    process.env
-      .HUMAN_TRANSFER_DESTINATION
-      ?.trim() ||
-    "";
-
-  if (
-    !destination
-  ) {
-    return {
-      allowed:
-        false,
-
-      destination:
-        null,
-
-      announcement:
-        null,
-
-      timeoutSeconds:
-        30,
-
-      reason:
-        "Human transfer destination is not configured.",
-    };
-  }
-
-  if (
-    !isValidDestination(
-      destination
-    )
-  ) {
-    return {
-      allowed:
-        false,
-
-      destination:
-        null,
-
-      announcement:
-        null,
-
-      timeoutSeconds:
-        30,
-
-      reason:
-        "Human transfer destination configuration is invalid.",
-    };
-  }
-
-  //------------------------------------------------
   // Optional Service Window
   //------------------------------------------------
 
@@ -173,7 +119,9 @@ export function resolveHumanTransferPolicy():
     allowed:
       true,
 
-    destination,
+    // Selected tenant User records provide destinations at runtime; an
+    // environment value must never route a customer call.
+    destination: null,
 
     announcement:
       process.env
@@ -306,27 +254,6 @@ function parseHour(
   }
 
   return parsed;
-}
-
-//--------------------------------------------------
-// Destination Validation
-//--------------------------------------------------
-
-function isValidDestination(
-  value:
-    string
-): boolean {
-  const normalized =
-    value
-      .trim()
-      .replace(
-        /[\s()-]/g,
-        ""
-      );
-
-  return /^\+[1-9]\d{7,14}$/.test(
-    normalized
-  );
 }
 
 //--------------------------------------------------

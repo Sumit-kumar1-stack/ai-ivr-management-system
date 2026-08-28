@@ -13,6 +13,7 @@ import type {
   IVREdge,
   IVRNode,
 } from "@/components/ivr/types";
+import type { IVRBuilderTargetContext } from "@/services/ivr/ivr-builder-catalog.service";
 
 import {
   api,
@@ -44,6 +45,9 @@ export function useSaveFlow() {
 
           edges:
             IVREdge[];
+
+          context?:
+            IVRBuilderTargetContext;
         }
       ) => {
         const {

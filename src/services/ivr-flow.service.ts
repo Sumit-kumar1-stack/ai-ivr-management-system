@@ -1,10 +1,29 @@
 import {
+  IVRFlowLifecycle,
+  IVRFlowValidationStatus,
   Prisma,
 } from "@prisma/client";
 
 import {
+  createHash,
+} from "crypto";
+
+import {
   prisma,
 } from "@/lib/prisma";
+import { ConflictError, NotFoundError } from "@/lib/app-error";
+
+import {
+  validateIVRFlowDefinition,
+} from "@/services/ivr/ivr-flow-validator.service";
+
+import {
+  normalizeIVRMenuRouting,
+} from "@/services/ivr/ivr-menu-routing.service";
+
+import type {
+  ValidateIVRFlowInput,
+} from "@/services/ivr/ivr-flow-validator.service";
 
 import type {
   IVRAction,
@@ -393,11 +412,18 @@ function resolveRuntimeMenuFromNodes(
       continue;
     }
 
-    const nested =
-      parseRuntimeMenu(
-        node.data
-          .runtimeMenu
-      );
+    const runtimeMenu = isRecord(node.data.runtimeMenu)
+      ? node.data.runtimeMenu
+      : {};
+    const options = Array.isArray(node.data.options)
+      ? node.data.options
+      : Array.isArray(node.data.menuOptions)
+        ? node.data.menuOptions
+        : runtimeMenu.options;
+    const nested = parseRuntimeMenu({
+      ...runtimeMenu,
+      options,
+    });
 
     if (
       nested
@@ -438,6 +464,59 @@ function validateNodesAndEdges(
   }
 }
 
+function createFlowContentHash(
+  nodes: Prisma.JsonValue,
+  edges: Prisma.JsonValue
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ nodes, edges }))
+    .digest("hex");
+}
+
+// New drafts persist top-level `options` and the canonical `digit` field.
+// This read/upgrade step accepts historical menuOptions and runtimeMenu.options
+// only long enough to write the canonical shape on the next create or update.
+export function normalizePersistedMenuDigits(
+  nodes: Prisma.InputJsonValue[]
+): Prisma.InputJsonValue[] {
+  return nodes.map(node => {
+    const rawNode: unknown = node;
+    if (!isRecord(rawNode) || !isRecord(rawNode.data)) return node;
+
+    const data = { ...rawNode.data };
+    const runtimeMenu = isRecord(data.runtimeMenu) ? { ...data.runtimeMenu } : null;
+    const sourceOptions = Array.isArray(data.options)
+      ? data.options
+      : Array.isArray(data.menuOptions)
+        ? data.menuOptions
+        : Array.isArray(runtimeMenu?.options)
+          ? runtimeMenu.options
+          : null;
+    if (!sourceOptions) return node;
+
+    data.options = sourceOptions.map((option: unknown) => {
+      if (!isRecord(option)) return option;
+      const normalized = { ...option };
+      if (typeof normalized.digit !== "string" && typeof normalized.dtmf === "string") {
+        normalized.digit = normalized.dtmf;
+      }
+      delete normalized.dtmf;
+      return normalized;
+    });
+
+    delete data.menuOptions;
+    if (runtimeMenu) {
+      delete runtimeMenu.options;
+      data.runtimeMenu = runtimeMenu;
+    }
+
+    return {
+      ...rawNode,
+      data,
+    } as Prisma.InputJsonValue;
+  });
+}
+
 //--------------------------------------------------
 // Service
 //--------------------------------------------------
@@ -463,6 +542,14 @@ export class IVRFlowService {
 
       edges:
         Prisma.InputJsonValue[];
+
+      ownerUserId?:
+        string;
+
+      tenantId?:
+        string | null;
+
+      updatedByUserId?: string;
     }
   ) {
     const name =
@@ -481,6 +568,12 @@ export class IVRFlowService {
       data.nodes,
       data.edges
     );
+    const normalizedGraph = normalizeIVRMenuRouting({
+      nodes: normalizePersistedMenuDigits(data.nodes) as never,
+      edges: data.edges as never,
+    });
+    const nodes = normalizedGraph.nodes as Prisma.InputJsonValue[];
+    const edges = normalizedGraph.edges as Prisma.InputJsonValue[];
 
     return prisma.iVRFlow.create({
       data: {
@@ -496,14 +589,34 @@ export class IVRFlowService {
             ?.trim() ||
           null,
 
-        nodes:
-          data.nodes,
+        nodes,
 
-        edges:
-          data.edges,
+        edges,
 
         isPublished:
           false,
+
+        lifecycle: IVRFlowLifecycle.DRAFT,
+
+        validationStatus: IVRFlowValidationStatus.NOT_VALIDATED,
+
+        ownerUserId:
+          data.ownerUserId
+            ?.trim() ||
+          null,
+
+        tenantId:
+          data.tenantId?.trim() ||
+          (data.ownerUserId
+            ? (
+                await prisma.user.findUnique({
+                  where: { id: data.ownerUserId },
+                  select: { tenantId: true },
+                })
+              )?.tenantId ?? null
+            : null),
+
+        updatedByUserId: data.updatedByUserId?.trim() || data.ownerUserId?.trim() || null,
       },
     });
   }
@@ -512,11 +625,50 @@ export class IVRFlowService {
   // All
   //------------------------------------------------
 
-  static async findAll() {
+  static async findAll(tenantId?: string | null, includeArchived = false) {
+    const resolvedTenantId = tenantId?.trim() ?? "";
+    if (!resolvedTenantId) {
+      return [];
+    }
+
     return prisma.iVRFlow.findMany({
+      where: {
+        tenantId: resolvedTenantId,
+        ...(includeArchived ? {} : { lifecycle: { not: IVRFlowLifecycle.ARCHIVED } }),
+      },
+
       orderBy: {
         updatedAt:
           "desc",
+      },
+      include: {
+        ownerUser: { select: { id: true, fullName: true, email: true } },
+        inboundProfiles: {
+          select: {
+            id: true,
+            name: true,
+            active: true,
+            voiceRuntime: true,
+            ivrFlowVersionId: true,
+            numbers: { select: { provider: true, providerNumber: true, active: true } },
+          },
+        },
+        versions: {
+          select: {
+            id: true,
+            versionNumber: true,
+            status: true,
+            validationStatus: true,
+            validatedAt: true,
+            publishedAt: true,
+            createdAt: true,
+            createdByUser: { select: { fullName: true } },
+            approvedByUser: { select: { fullName: true } },
+            publishedByUser: { select: { fullName: true } },
+            inboundProfiles: { select: { id: true, name: true, active: true } },
+          },
+          orderBy: { versionNumber: "desc" },
+        },
       },
     });
   }
@@ -526,13 +678,55 @@ export class IVRFlowService {
   //------------------------------------------------
 
   static async findById(
-    id: string
+    id: string,
+    ownerUserId?: string
   ) {
-    return prisma.iVRFlow.findUnique({
+    const flow = await prisma.iVRFlow.findFirst({
       where: {
         id,
+        ...(ownerUserId
+          ? {
+              ownerUserId,
+            }
+          : {}),
+      },
+      include: {
+        versions: {
+          orderBy: {
+            versionNumber: "desc",
+          },
+          select: {
+            id: true,
+            flowId: true,
+            tenantId: true,
+            versionNumber: true,
+            status: true,
+            publishedAt: true,
+            createdAt: true,
+            updatedAt: true,
+            createdByUserId: true,
+          },
+        },
       },
     });
+
+    if (!flow || !Array.isArray(flow.nodes) || !Array.isArray(flow.edges)) {
+      return flow;
+    }
+
+    // The editor always receives the canonical top-level options shape. This
+    // is a read-only upgrade for saved legacy flows; create/update perform the
+    // corresponding persistent normalization.
+    const normalized = normalizeIVRMenuRouting({
+      nodes: normalizePersistedMenuDigits(flow.nodes as Prisma.InputJsonValue[]) as never,
+      edges: flow.edges as never,
+    });
+
+    return {
+      ...flow,
+      nodes: normalized.nodes as Prisma.JsonValue,
+      edges: normalized.edges as Prisma.JsonValue,
+    };
   }
 
   //------------------------------------------------
@@ -640,12 +834,20 @@ export class IVRFlowService {
 
       edges:
         Prisma.InputJsonValue[];
+
+      updatedByUserId?: string;
     }
   ) {
     validateNodesAndEdges(
       data.nodes,
       data.edges
     );
+    const normalizedGraph = normalizeIVRMenuRouting({
+      nodes: normalizePersistedMenuDigits(data.nodes) as never,
+      edges: data.edges as never,
+    });
+    const nodes = normalizedGraph.nodes as Prisma.InputJsonValue[];
+    const edges = normalizedGraph.edges as Prisma.InputJsonValue[];
 
     const existing =
       await prisma.iVRFlow
@@ -705,14 +907,39 @@ export class IVRFlowService {
               null
             : existing.campaignId,
 
-        nodes:
-          data.nodes,
+        nodes,
 
-        edges:
-          data.edges,
+        edges,
 
         isPublished:
           false,
+
+        lifecycle: IVRFlowLifecycle.DRAFT,
+
+        validationStatus: IVRFlowValidationStatus.NOT_VALIDATED,
+
+        validatedAt: null,
+
+        submittedAt: null,
+
+        submittedByUserId: null,
+
+        approvedAt: null,
+
+        approvedByUserId: null,
+
+        rejectedAt: null,
+
+        rejectedByUserId: null,
+
+        rejectionReason: null,
+
+        updatedByUserId: data.updatedByUserId?.trim() || existing.updatedByUserId,
+
+        version:
+          existing.isPublished
+            ? existing.version + 1
+            : existing.version,
       },
     });
   }
@@ -722,7 +949,17 @@ export class IVRFlowService {
   //------------------------------------------------
 
   static async validateForPublish(
-    id: string
+    id: string,
+    resourceAuthorization: Pick<
+      ValidateIVRFlowInput,
+      | "allowedKnowledgeDocumentIds"
+      | "allowedActionCodes"
+      | "allowedTransferDestinationIds"
+      | "allowedCallbackDestinationIds"
+      | "allowedTemplateIds"
+      | "allowedBusinessHoursPolicyIds"
+      | "allowedAuthenticationLevels"
+    > = {}
   ) {
     const flow =
       await this.findById(
@@ -737,62 +974,88 @@ export class IVRFlowService {
       );
     }
 
-    if (
-      !flow.campaignId
-        ?.trim()
-    ) {
-      throw new Error(
-        "A campaign must be assigned before publishing the IVR flow."
-      );
-    }
+    const validation =
+      validateIVRFlowDefinition({
+        nodes:
+          Array.isArray(flow.nodes)
+            ? flow.nodes
+            : [],
 
-    //------------------------------------------------
-    // Campaign Must Exist
-    //------------------------------------------------
+        edges:
+          Array.isArray(flow.edges)
+            ? flow.edges
+            : [],
 
-    const campaign =
-      await prisma.campaign
-        .findUnique({
-          where: {
-            id:
-              flow.campaignId,
-          },
+        tenantId:
+          flow.tenantId ?? null,
 
-          select: {
-            id:
-              true,
-          },
-        });
-
-    if (
-      !campaign
-    ) {
-      throw new Error(
-        "The assigned campaign does not exist."
-      );
-    }
-
-    //------------------------------------------------
-    // Runtime Menu Must Be Valid
-    //------------------------------------------------
-
-    const menu =
-      this.getRuntimeMenu(
-        flow
-      );
-
-    if (
-      !menu
-    ) {
-      throw new Error(
-        "The flow must contain one valid DTMF menu before publishing."
-      );
-    }
+        ...resourceAuthorization,
+      });
 
     return {
       flow,
-      menu,
+      validation,
     };
+  }
+
+  static async recordValidation(
+    id: string,
+    resourceAuthorization: Parameters<typeof IVRFlowService.validateForPublish>[1] = {}
+  ) {
+    const result = await this.validateForPublish(id, resourceAuthorization);
+    const flow = await prisma.iVRFlow.update({
+      where: { id },
+      data: {
+        lifecycle: result.validation.valid ? IVRFlowLifecycle.VALIDATED : IVRFlowLifecycle.DRAFT,
+        validationStatus: result.validation.valid ? IVRFlowValidationStatus.VALID : IVRFlowValidationStatus.INVALID,
+        validatedAt: new Date(),
+      },
+    });
+    return { flow, validation: result.validation };
+  }
+
+  static async submitForApproval(id: string, submittedByUserId: string) {
+    const flow = await prisma.iVRFlow.findUnique({ where: { id } });
+    if (!flow || flow.lifecycle !== IVRFlowLifecycle.VALIDATED || flow.validationStatus !== IVRFlowValidationStatus.VALID) {
+      throw new ConflictError("A valid IVR draft is required before submission for approval.", "IVR_FLOW_NOT_VALIDATED");
+    }
+    return prisma.iVRFlow.update({ where: { id }, data: { lifecycle: IVRFlowLifecycle.PENDING_APPROVAL, submittedAt: new Date(), submittedByUserId, rejectionReason: null, rejectedAt: null, rejectedByUserId: null } });
+  }
+
+  static async withdrawSubmission(id: string, withdrawnByUserId: string) {
+    const flow = await prisma.iVRFlow.findUnique({ where: { id } });
+    if (!flow) throw new NotFoundError("IVR flow", id);
+    if (flow.lifecycle !== IVRFlowLifecycle.PENDING_APPROVAL) {
+      throw new ConflictError("Only a submitted IVR flow can be withdrawn.", "IVR_FLOW_NOT_SUBMITTED");
+    }
+
+    return prisma.iVRFlow.update({
+      where: { id },
+      data: {
+        lifecycle: IVRFlowLifecycle.DRAFT,
+        validationStatus: IVRFlowValidationStatus.NOT_VALIDATED,
+        validatedAt: null,
+        submittedAt: null,
+        submittedByUserId: null,
+        updatedByUserId: withdrawnByUserId,
+      },
+    });
+  }
+
+  static async approve(id: string, approvedByUserId: string) {
+    const flow = await prisma.iVRFlow.findUnique({ where: { id } });
+    if (!flow || flow.lifecycle !== IVRFlowLifecycle.PENDING_APPROVAL) throw new ConflictError("Only submitted IVR flows can be approved.", "IVR_FLOW_NOT_SUBMITTED");
+    if (flow.ownerUserId === approvedByUserId || flow.submittedByUserId === approvedByUserId) throw new ConflictError("A flow creator cannot approve their own submitted flow.", "IVR_FLOW_SELF_APPROVAL_BLOCKED");
+    return prisma.iVRFlow.update({ where: { id }, data: { lifecycle: IVRFlowLifecycle.APPROVED, approvedAt: new Date(), approvedByUserId } });
+  }
+
+  static async reject(id: string, rejectedByUserId: string, reason: string) {
+    const flow = await prisma.iVRFlow.findUnique({ where: { id } });
+    if (!flow || flow.lifecycle !== IVRFlowLifecycle.PENDING_APPROVAL) throw new ConflictError("Only submitted IVR flows can be rejected.", "IVR_FLOW_NOT_SUBMITTED");
+    if (flow.ownerUserId === rejectedByUserId || flow.submittedByUserId === rejectedByUserId) throw new ConflictError("A flow creator cannot reject their own submitted flow.", "IVR_FLOW_SELF_APPROVAL_BLOCKED");
+    const rejectionReason = reason.trim();
+    if (!rejectionReason) throw new ConflictError("A rejection reason is required.", "IVR_FLOW_REJECTION_REASON_REQUIRED");
+    return prisma.iVRFlow.update({ where: { id }, data: { lifecycle: IVRFlowLifecycle.REJECTED, rejectedAt: new Date(), rejectedByUserId, rejectionReason } });
   }
 
   //------------------------------------------------
@@ -800,25 +1063,35 @@ export class IVRFlowService {
   //------------------------------------------------
 
   static async publish(
-    id: string
+    id: string,
+    resourceAuthorization: Pick<
+      ValidateIVRFlowInput,
+      | "allowedKnowledgeDocumentIds"
+      | "allowedActionCodes"
+      | "allowedTransferDestinationIds"
+      | "allowedCallbackDestinationIds"
+      | "allowedTemplateIds"
+      | "allowedBusinessHoursPolicyIds"
+      | "allowedAuthenticationLevels"
+    > = {},
+    publishedByUserId?: string
   ) {
     const {
       flow,
+      validation,
     } =
       await this
         .validateForPublish(
-          id
+          id,
+          resourceAuthorization
         );
 
-    const campaignId =
-      flow.campaignId;
+    if (!validation.valid) {
+      throw new Error(validation.errors.map(issue => issue.message).join(" "));
+    }
 
-    if (
-      !campaignId
-    ) {
-      throw new Error(
-        "Campaign is required."
-      );
+    if (flow.lifecycle !== IVRFlowLifecycle.APPROVED || flow.validationStatus !== IVRFlowValidationStatus.VALID) {
+      throw new Error("An approved, valid IVR flow is required before publishing.");
     }
 
     /*
@@ -826,29 +1099,65 @@ export class IVRFlowService {
      */
     return prisma.$transaction(
       async transaction => {
-        await transaction
-          .iVRFlow
-          .updateMany({
-            where: {
-              campaignId,
+        const contentHash = createFlowContentHash(flow.nodes, flow.edges);
+        const existingVersion = await transaction.iVRFlowVersion.findUnique({
+          where: {
+            flowId_versionNumber: {
+              flowId: flow.id,
+              versionNumber: flow.version,
+            },
+          },
+        });
 
-              isPublished:
-                true,
+        if (existingVersion?.status === "PUBLISHED") {
+          throw new Error("This IVR flow version is already published and immutable.");
+        }
 
-              NOT: {
-                id,
+        const version = existingVersion
+          ? await transaction.iVRFlowVersion.update({
+              where: { id: existingVersion.id },
+              data: {
+                status: "PUBLISHED",
+                nodes: flow.nodes as Prisma.InputJsonValue,
+                edges: flow.edges as Prisma.InputJsonValue,
+                contentHash,
+                validationStatus: IVRFlowValidationStatus.VALID,
+                validatedAt: new Date(),
+                approvedByUserId: flow.approvedByUserId,
+                publishedByUserId: publishedByUserId?.trim() || flow.ownerUserId,
+                publishedAt: new Date(),
               },
-            },
+            })
+          : await transaction.iVRFlowVersion.create({
+              data: {
+                flowId: flow.id,
+                tenantId: flow.tenantId,
+                versionNumber: flow.version,
+                status: "PUBLISHED",
+                nodes: flow.nodes as Prisma.InputJsonValue,
+                edges: flow.edges as Prisma.InputJsonValue,
+                contentHash,
+                createdByUserId: flow.ownerUserId,
+                validationStatus: IVRFlowValidationStatus.VALID,
+                validatedAt: new Date(),
+                approvedByUserId: flow.approvedByUserId,
+                publishedByUserId: publishedByUserId?.trim() || flow.ownerUserId,
+                publishedAt: new Date(),
+              },
+            });
 
-            data: {
-              isPublished:
-                false,
+        if (flow.campaignId) {
+          await transaction.iVRFlow.updateMany({
+            where: {
+              campaignId: flow.campaignId,
+              isPublished: true,
+              NOT: { id },
             },
+            data: { isPublished: false },
           });
+        }
 
-        return transaction
-          .iVRFlow
-          .update({
+        await transaction.iVRFlow.update({
             where: {
               id,
             },
@@ -856,10 +1165,39 @@ export class IVRFlowService {
             data: {
               isPublished:
                 true,
+              lifecycle: IVRFlowLifecycle.PUBLISHED,
             },
           });
+
+        return {
+          ...flow,
+          isPublished: true,
+          publishedVersion: version,
+        };
       }
     );
+  }
+
+  static async findPublishedVersion(
+    flowId: string
+  ) {
+    return prisma.iVRFlowVersion.findFirst({
+      where: {
+        flowId: flowId.trim(),
+        status: "PUBLISHED",
+      },
+      orderBy: { versionNumber: "desc" },
+    });
+  }
+
+  static async findVersionById(
+    versionId: string
+  ) {
+    const id = versionId.trim();
+
+    return id
+      ? prisma.iVRFlowVersion.findUnique({ where: { id } })
+      : null;
   }
 
   //------------------------------------------------
@@ -869,10 +1207,46 @@ export class IVRFlowService {
   static async delete(
     id: string
   ) {
+    const dependencies = await prisma.iVRFlow.findUnique({
+      where: { id },
+      select: {
+        lifecycle: true,
+        isPublished: true,
+        inboundProfiles: { select: { id: true } },
+        versions: { select: { id: true } },
+      },
+    });
+
+    if (!dependencies) throw new NotFoundError("IVR flow", id);
+    if (dependencies.lifecycle !== IVRFlowLifecycle.DRAFT && dependencies.lifecycle !== IVRFlowLifecycle.VALIDATED) {
+      throw new ConflictError("Only disposable draft or validated IVR flows can be deleted.", "IVR_FLOW_DELETE_LIFECYCLE_BLOCKED");
+    }
+    if (dependencies.isPublished || dependencies.inboundProfiles.length || dependencies.versions.length) {
+      throw new ConflictError("This IVR flow has published or applied history and must be retained.", "IVR_FLOW_DELETE_DEPENDENCY_BLOCKED");
+    }
+
     return prisma.iVRFlow.delete({
       where: {
         id,
       },
+    });
+  }
+
+  static async archive(id: string) {
+    const flow = await prisma.iVRFlow.findUnique({ where: { id }, select: { lifecycle: true } });
+    if (!flow) throw new NotFoundError("IVR flow", id);
+    if (flow.lifecycle === IVRFlowLifecycle.ARCHIVED) {
+      throw new ConflictError("This IVR flow is already archived.", "IVR_FLOW_ALREADY_ARCHIVED");
+    }
+    const activeBindings = await prisma.inboundProfile.count({
+      where: { ivrFlowId: id, active: true, ivrFlowVersionId: { not: null } },
+    });
+    if (activeBindings > 0) {
+      throw new ConflictError("Unapply or rebind this flow before archiving it.", "IVR_FLOW_ACTIVE_DEPLOYMENT_BLOCKED");
+    }
+    return prisma.iVRFlow.update({
+      where: { id },
+      data: { lifecycle: IVRFlowLifecycle.ARCHIVED, archivedAt: new Date() },
     });
   }
 }

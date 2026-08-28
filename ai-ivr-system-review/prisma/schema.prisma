@@ -1,0 +1,1427 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ======================================================
+// USER
+// ======================================================
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  AGENT
+}
+
+enum AccountStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  LOCKED
+  DEACTIVATED
+}
+
+enum TenantStatus {
+  PENDING
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  TERMINATED
+}
+
+enum TenantInvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  SUSPENDED
+  EXPIRED
+}
+
+enum SubscriptionPlanTier {
+  STANDARD
+  PREMIUM
+  ENTERPRISE
+}
+
+enum SubscriptionEventStatus {
+  RECEIVED
+  APPLIED
+  IGNORED
+  FAILED
+}
+
+enum AuditEventOutcome {
+  SUCCEEDED
+  DENIED
+  FAILED
+  SKIPPED
+}
+
+enum ApiKeyStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+enum WebhookEndpointStatus {
+  ACTIVE
+  PAUSED
+  REVOKED
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+}
+
+enum CallAuthenticationLevel {
+  AUTH_LEVEL_0
+  AUTH_LEVEL_1
+  AUTH_LEVEL_2
+  AUTH_LEVEL_3
+}
+
+enum CallRiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model User {
+  id        String        @id @default(cuid())
+  fullName  String
+  email     String        @unique
+  password  String
+  role      UserRole      @default(ADMIN)
+  campaignCapabilities String[] @default([])
+  phone     String?
+  avatar    String?
+  tenantId  String?
+  tenant    Tenant?       @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  accountStatus AccountStatus @default(ACTIVE)
+  emailVerifiedAt DateTime?
+  invitedAt DateTime?
+  invitedByUserId String?
+  invitedByUser User?     @relation("UserInvitedBy", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+  onboardingCompletedAt DateTime?
+  isActive  Boolean       @default(true)
+  lastLogin DateTime?
+
+  createdTenants Tenant[] @relation("TenantCreatedBy")
+  createdTenantInvitations TenantInvitation[] @relation("TenantInvitationCreatedBy")
+  acceptedTenantInvitations TenantInvitation[] @relation("TenantInvitationAcceptedBy")
+  invitedUsers User[] @relation("UserInvitedBy")
+
+  communicationCampaigns CommunicationCampaign[]
+  communicationCampaignsSubmitted CommunicationCampaign[] @relation("CommunicationCampaignSubmittedBy")
+  communicationCampaignsApproved CommunicationCampaign[] @relation("CommunicationCampaignApprovedBy")
+  communicationCampaignsArchived CommunicationCampaign[] @relation("CommunicationCampaignArchivedBy")
+  auditEvents AuditEvent[] @relation("AuditEventActor")
+  apiKeys ApiKey[]
+  webhookEndpoints WebhookEndpoint[]
+  campaigns Campaign[]
+  ivrFlows IVRFlow[]
+  knowledgeDocuments KnowledgeDocument[]
+  contacts Contact[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([accountStatus])
+}
+
+model Tenant {
+  id          String        @id @default(cuid())
+  name        String
+  slug        String        @unique
+  status      TenantStatus  @default(PENDING)
+  ownerUserId String?
+  ownerUser   User?         @relation("TenantCreatedBy", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  activatedAt DateTime?
+  trialEndsAt DateTime?
+  suspendedAt DateTime?
+  terminatedAt DateTime?
+
+  members     User[]
+  invitations TenantInvitation[]
+  subscription TenantSubscription?
+  paymentEvents TenantPaymentEvent[]
+  auditEvents AuditEvent[]
+  apiKeys ApiKey[]
+  webhookEndpoints WebhookEndpoint[]
+  webhookDeliveries WebhookDelivery[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([ownerUserId])
+}
+
+model TenantInvitation {
+  id              String                @id @default(cuid())
+  tenantId        String
+  tenant          Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  email           String
+  fullName        String?
+  role            UserRole              @default(ADMIN)
+  status          TenantInvitationStatus @default(PENDING)
+  tokenHash       String                @unique
+  createdByUserId String?
+  createdByUser   User?                 @relation("TenantInvitationCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  acceptedByUserId String?
+  acceptedByUser  User?                 @relation("TenantInvitationAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  invitedAt       DateTime              @default(now())
+  acceptedAt      DateTime?
+  expiresAt       DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([email])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+model TenantSubscription {
+  id String @id @default(cuid())
+
+  tenantId String @unique
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  provider String?
+  providerCustomerId String?
+  providerSubscriptionId String? @unique
+  providerPriceId String?
+  contractReference String?
+
+  planTier SubscriptionPlanTier @default(STANDARD)
+  status SubscriptionStatus @default(TRIALING)
+  entitlements String[] @default([])
+
+  currentPeriodStart DateTime?
+  currentPeriodEnd DateTime?
+  trialEndsAt DateTime?
+  activatedAt DateTime?
+  suspendedAt DateTime?
+  cancelledAt DateTime?
+  expiredAt DateTime?
+
+  lastProviderEventId String?
+  lastProviderEventType String?
+
+  paymentEvents TenantPaymentEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([planTier])
+  @@index([providerSubscriptionId])
+}
+
+model TenantPaymentEvent {
+  id String @id @default(cuid())
+
+  tenantId String
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  subscriptionId String?
+  subscription TenantSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  provider String
+  providerEventId String @unique
+  eventType String
+  status SubscriptionEventStatus @default(RECEIVED)
+  payload Json
+  signatureVerified Boolean @default(false)
+
+  receivedAt DateTime @default(now())
+  processedAt DateTime?
+  appliedAt DateTime?
+  skippedReason String?
+  errorMessage String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([subscriptionId])
+  @@index([provider])
+  @@index([eventType])
+  @@index([status])
+}
+
+model AuditEvent {
+  id String @id @default(cuid())
+
+  tenantId String
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  actorUserId String?
+  actorUser User? @relation("AuditEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorRole UserRole?
+  actorType String? @default("USER")
+
+  entityType String
+  entityId String?
+  resourceType String?
+  resourceId String?
+  action String
+  outcome AuditEventOutcome
+  result String?
+  reason String?
+  ipAddress String?
+  correlationId String?
+
+  beforeState Json?
+  afterState Json?
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([actorUserId])
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([outcome])
+  @@index([resourceType, resourceId])
+  @@index([correlationId])
+  @@index([createdAt])
+}
+
+model ApiKey {
+  id String @id @default(cuid())
+
+  tenantId String
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdByUserId String?
+  createdByUser User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  name String
+  prefix String
+  hash String @unique
+  scopes String[] @default([])
+  status ApiKeyStatus @default(ACTIVE)
+  expiresAt DateTime?
+  revokedAt DateTime?
+  lastUsedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([prefix])
+  @@index([expiresAt])
+  @@index([createdByUserId])
+}
+
+model WebhookEndpoint {
+  id String @id @default(cuid())
+
+  tenantId String
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdByUserId String?
+  createdByUser User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  name String
+  url String
+  description String?
+  secretHash String
+  secretPrefix String
+  events String[] @default([])
+  status WebhookEndpointStatus @default(ACTIVE)
+  lastDeliveredAt DateTime?
+
+  deliveries WebhookDelivery[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([createdByUserId])
+}
+
+model WebhookDelivery {
+  id String @id @default(cuid())
+
+  tenantId String
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  endpointId String
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  eventName String
+  status WebhookDeliveryStatus @default(PENDING)
+  attemptCount Int @default(0)
+  requestPayload Json
+  responseStatus Int?
+  responseBody String?
+  errorMessage String?
+  deliveredAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([endpointId])
+  @@index([eventName])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ======================================================
+// CONTACT
+// ======================================================
+
+enum ContactStatus {
+  PENDING
+  CALLED
+  ANSWERED
+  FAILED
+  BLOCKED
+}
+
+model Contact {
+  id       String        @id @default(cuid())
+  fullName String
+  phone    String        @unique
+  email    String?
+  company  String?
+  language String        @default("English")
+  status   ContactStatus @default(PENDING)
+  notes    String?
+
+  ownerUserId String?
+  ownerUser   User? @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaigns CampaignContact[]
+  calls     Call[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([ownerUserId])
+}
+
+// ======================================================
+// CAMPAIGN
+// ======================================================
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  QUEUED
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum CampaignRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum OutboundCampaignPurpose {
+  GENERAL
+  REMINDER
+  CALLBACK
+  FOLLOW_UP
+}
+
+// ======================================================
+// OMNICHANNEL COMMUNICATION CAMPAIGN
+// ======================================================
+
+enum CommunicationTier {
+  STANDARD
+  PREMIUM
+}
+
+enum CommunicationChannel {
+  SMS
+  WHATSAPP
+  AI_VOICE
+  IVR
+}
+
+enum CommunicationFallbackPolicy {
+  NONE
+  WHATSAPP_TO_SMS
+  OMNICHANNEL
+}
+
+enum CommunicationCampaignStatus {
+  DRAFT
+  READY
+  SCHEDULED
+  QUEUED
+  RUNNING
+  DISPATCHED
+  COMPLETED
+  FAILED
+  CANCELLED
+  ARCHIVED
+}
+
+enum CommunicationCampaignApprovalStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum CampaignActionType {
+  MOCK
+  WEBHOOK
+}
+
+enum CommunicationRecipientStatus {
+  PENDING
+  PROCESSING
+  DISPATCHED
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
+// ======================================================
+// EXISTING VOICE CAMPAIGN
+// ======================================================
+
+model Campaign {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+
+  ownerUserId String?
+  ownerUser   User? @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+
+  systemKey String? @unique
+
+  language String  @default("English")
+  voice    String  @default("Female")
+  prompt   String?
+
+  purpose OutboundCampaignPurpose @default(GENERAL)
+
+  status CampaignStatus @default(DRAFT)
+
+  scheduledAt DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  contacts CampaignContact[]
+  calls    Call[]
+  runs     CampaignRun[]
+  knowledgeDocuments CampaignKnowledgeDocument[]
+
+  // ----------------------------------------------------
+  // OmniConnect child-campaign relationships
+  // ----------------------------------------------------
+
+  communicationVoiceParent CommunicationCampaign? @relation("CommunicationVoiceCampaign")
+  communicationIvrParent   CommunicationCampaign? @relation("CommunicationIvrCampaign")
+
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([createdAt])
+  @@index([ownerUserId])
+}
+
+// ======================================================
+// COMMUNICATION CAMPAIGN
+// ======================================================
+
+model CommunicationCampaign {
+  id String @id @default(cuid())
+
+  name String
+
+  description String?
+
+  prompt String?
+
+  knowledgeDocumentIds Json?
+
+  ownerUserId String?
+  ownerUser   User? @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+
+  submittedByUserId String?
+  submittedByUser   User? @relation("CommunicationCampaignSubmittedBy", fields: [submittedByUserId], references: [id], onDelete: SetNull)
+  submittedAt       DateTime?
+
+  approvedByUserId String?
+  approvedByUser   User? @relation("CommunicationCampaignApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  approvedAt       DateTime?
+  approvalReason   String?
+  approvalStatus   CommunicationCampaignApprovalStatus @default(DRAFT)
+  approvalRequired Boolean @default(false)
+  currentRevision  Int @default(1)
+  approvedRevision Int?
+  attemptedContactCount Int @default(0)
+
+  // ----------------------------------------------------
+  // Audience boundary
+  // ----------------------------------------------------
+
+  audienceSourceId   String?
+  audienceSourceName String
+  recipientCount     Int     @default(0)
+
+  // ----------------------------------------------------
+  // Subscription snapshot
+  // ----------------------------------------------------
+
+  tier CommunicationTier @default(STANDARD)
+
+  // ----------------------------------------------------
+  // Channels
+  // ----------------------------------------------------
+
+  channels CommunicationChannel[]
+
+  smartChanneling Boolean @default(false)
+
+  fallbackPolicy CommunicationFallbackPolicy @default(NONE)
+
+  // ----------------------------------------------------
+  // Lifecycle
+  // ----------------------------------------------------
+
+  status CommunicationCampaignStatus @default(DRAFT)
+
+  archivedAt DateTime?
+  archivedByUserId String?
+  archivedByUser User? @relation("CommunicationCampaignArchivedBy", fields: [archivedByUserId], references: [id], onDelete: SetNull)
+
+  launchImmediately Boolean @default(true)
+
+  scheduledAt DateTime?
+
+  // ----------------------------------------------------
+  // AI Voice child campaign
+  // ----------------------------------------------------
+
+  voiceCampaignId String?   @unique
+  voiceCampaign   Campaign? @relation("CommunicationVoiceCampaign", fields: [voiceCampaignId], references: [id], onDelete: SetNull)
+
+  // ----------------------------------------------------
+  // Classic IVR child campaign
+  // ----------------------------------------------------
+
+  ivrCampaignId String?   @unique
+  ivrCampaign   Campaign? @relation("CommunicationIvrCampaign", fields: [ivrCampaignId], references: [id], onDelete: SetNull)
+
+  // ----------------------------------------------------
+  // Operator-selected source IVR flow
+  // ----------------------------------------------------
+
+  ivrFlowId String?
+  ivrFlow   IVRFlow? @relation("CommunicationSelectedIvrFlow", fields: [ivrFlowId], references: [id], onDelete: SetNull)
+
+  // ----------------------------------------------------
+  // Runtime IVR snapshot
+  // ----------------------------------------------------
+
+  ivrRuntimeFlowId String?  @unique
+  ivrRuntimeFlow   IVRFlow? @relation("CommunicationRuntimeIvrFlow", fields: [ivrRuntimeFlowId], references: [id], onDelete: SetNull)
+
+  // ----------------------------------------------------
+  // Communication execution
+  // ----------------------------------------------------
+
+  recipients        CommunicationCampaignRecipient[]
+  messages          OutboundMessage[]
+  usageReservations CommunicationCampaignUsage[]
+  actions           CampaignAction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([approvalStatus])
+  @@index([tier])
+  @@index([scheduledAt])
+  @@index([ivrFlowId])
+  @@index([ownerUserId])
+  @@index([submittedByUserId])
+  @@index([approvedByUserId])
+  @@index([archivedByUserId])
+  @@index([createdAt])
+}
+
+model CampaignAction {
+  id String @id @default(cuid())
+
+  communicationCampaignId String
+
+  communicationCampaign CommunicationCampaign @relation(fields: [communicationCampaignId], references: [id], onDelete: Cascade)
+
+  name String
+
+  actionCode String
+
+  type CampaignActionType @default(MOCK)
+
+  endpoint String?
+
+  integrationRef String?
+
+  requiredAuthLevel CallAuthenticationLevel @default(AUTH_LEVEL_0)
+
+  requiresConfirmation Boolean @default(false)
+
+  timeoutMs Int @default(10000)
+
+  enabled Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([communicationCampaignId, actionCode])
+  @@index([communicationCampaignId])
+  @@index([actionCode])
+  @@index([enabled])
+}
+
+model CommunicationCampaignUsage {
+  id String @id @default(cuid())
+
+  campaignId String
+  campaign   CommunicationCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  // Subscription tier snapshot used for quota accounting.
+  tier CommunicationTier
+
+  // UTC calendar day whose allowance this launch consumes.
+  usageDate DateTime @db.Date
+
+  recipientCount Int
+
+  reservedAt DateTime  @default(now())
+  releasedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([campaignId, usageDate])
+  @@index([tier, usageDate, releasedAt])
+  @@index([campaignId])
+}
+
+model CommunicationCampaignRecipient {
+  id String @id @default(cuid())
+
+  campaignId String
+
+  campaign CommunicationCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  externalRecipientId String?
+
+  fullName String?
+
+  phone String
+
+  language String @default("English")
+
+  status CommunicationRecipientStatus @default(PENDING)
+
+  lastError String?
+
+  messages OutboundMessage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([campaignId, phone])
+  @@index([campaignId])
+  @@index([phone])
+  @@index([status])
+}
+
+// ======================================================
+// CAMPAIGN CONTACT
+// ======================================================
+
+model CampaignContact {
+  id String @id @default(cuid())
+
+  campaignId String
+  contactId  String
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([campaignId, contactId])
+  @@index([campaignId])
+  @@index([contactId])
+}
+
+// ======================================================
+// CAMPAIGN RUN
+// ======================================================
+
+model CampaignRun {
+  id         String            @id @default(cuid())
+  campaignId String
+  status     CampaignRunStatus @default(QUEUED)
+
+  total      Int @default(0)
+  processed  Int @default(0)
+  successful Int @default(0)
+  failed     Int @default(0)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  calls Call[]
+
+  @@index([campaignId])
+  @@index([campaignId, status])
+  @@index([status])
+}
+
+// ======================================================
+// IVR FLOW
+// ======================================================
+
+model IVRFlow {
+  id String @id @default(cuid())
+
+  name        String
+  description String?
+  campaignId  String?
+  ownerUserId String?
+  ownerUser   User? @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+
+  nodes Json
+  edges Json
+
+  isPublished Boolean @default(false)
+  version     Int     @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ----------------------------------------------------
+  // OmniConnect IVR relationships
+  // ----------------------------------------------------
+
+  selectedByCommunicationCampaigns CommunicationCampaign[] @relation("CommunicationSelectedIvrFlow")
+
+  runtimeForCommunicationCampaign CommunicationCampaign? @relation("CommunicationRuntimeIvrFlow")
+
+  @@index([campaignId])
+  @@index([isPublished])
+  @@index([ownerUserId])
+}
+
+// ======================================================
+// KNOWLEDGE BASE
+// ======================================================
+
+enum KnowledgeDocumentClassification {
+  PUBLIC_PRODUCT_INFO
+  INTERNAL
+  CUSTOMER_PERSONAL
+  SENSITIVE
+  RESTRICTED
+}
+
+enum KnowledgeDocumentStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model KnowledgeDocument {
+  id String @id @default(cuid())
+
+  fileName     String
+  originalName String
+  mimeType     String
+  size         Int
+  path         String
+  classification KnowledgeDocumentClassification @default(INTERNAL)
+  status         KnowledgeDocumentStatus         @default(ACTIVE)
+  archivedAt     DateTime?
+
+  ownerUserId String?
+  ownerUser   User? @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+
+  uploadedAt DateTime @default(now())
+
+  chunks KnowledgeChunk[]
+  campaignLinks CampaignKnowledgeDocument[]
+
+  @@index([uploadedAt])
+  @@index([ownerUserId])
+}
+
+model CampaignKnowledgeDocument {
+  id String @id @default(cuid())
+
+  campaignId String
+  knowledgeDocumentId String
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  knowledgeDocument KnowledgeDocument @relation(fields: [knowledgeDocumentId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([campaignId, knowledgeDocumentId])
+  @@index([campaignId])
+  @@index([knowledgeDocumentId])
+}
+
+model KnowledgeChunk {
+  id String @id @default(cuid())
+
+  documentId String
+  document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  chunkIndex Int
+  content    String
+
+  createdAt DateTime @default(now())
+
+  @@unique([documentId, chunkIndex])
+  @@index([documentId])
+}
+
+// ======================================================
+// CALL
+// ======================================================
+
+enum CallDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum CallStatus {
+  QUEUED
+  RINGING
+  ANSWERED
+  COMPLETED
+  FAILED
+  BUSY
+  NO_ANSWER
+  CANCELED
+}
+
+model Call {
+  id             String  @id @default(cuid())
+  providerCallId String? @unique
+
+  direction CallDirection @default(OUTBOUND)
+
+  callerNumber String?
+  calledNumber String?
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  campaignRunId String?
+  campaignRun   CampaignRun? @relation(fields: [campaignRunId], references: [id], onDelete: SetNull)
+
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  // ====================================================
+  // RETRY TRACKING
+  // ====================================================
+
+  retryOfCallId String?
+  retryOfCall   Call?   @relation("CallRetries", fields: [retryOfCallId], references: [id], onDelete: SetNull)
+  retryAttempts Call[]  @relation("CallRetries")
+
+  attemptNumber Int @default(1)
+  maxAttempts   Int @default(3)
+
+  nextRetryAt DateTime?
+  retryReason String?
+
+  // ====================================================
+  // DESTINATION TRACKING
+  // ====================================================
+
+  contactPhoneSnapshot      String?
+  providerDestination       String?
+  usedDevelopmentOverride   Boolean @default(false)
+  destinationOverrideSource String?
+
+  language String
+
+  status CallStatus @default(QUEUED)
+
+  authenticationLevel CallAuthenticationLevel @default(AUTH_LEVEL_0)
+  authenticationVerifiedAt DateTime?
+  riskLevel CallRiskLevel @default(LOW)
+  securityFlags Json?
+
+  duration     Int?
+  recordingUrl String?
+  transcript   String?
+  summary      String?
+
+  events CallEvent[]
+
+  // ====================================================
+  // CALL LIFECYCLE TIMESTAMPS
+  // ====================================================
+
+  requestedAt DateTime  @default(now())
+  queuedAt    DateTime?
+  ringingAt   DateTime?
+  answeredAt  DateTime?
+  completedAt DateTime?
+  failedAt    DateTime?
+
+  startedAt DateTime?
+  endedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  conversation Conversation?
+
+  @@unique([campaignRunId, contactId, attemptNumber])
+  @@index([campaignId])
+  @@index([campaignRunId])
+  @@index([campaignRunId, contactId])
+  @@index([contactId])
+  @@index([retryOfCallId])
+  @@index([nextRetryAt])
+  @@index([providerDestination])
+  @@index([direction])
+  @@index([callerNumber])
+  @@index([calledNumber])
+  @@index([status])
+  @@index([authenticationLevel])
+  @@index([riskLevel])
+  @@index([requestedAt])
+  @@index([answeredAt])
+  @@index([completedAt])
+}
+
+// ======================================================
+// CONVERSATION
+// ======================================================
+
+enum ConversationRole {
+  SYSTEM
+  USER
+  ASSISTANT
+}
+
+model Conversation {
+  id String @id @default(cuid())
+
+  callId String @unique
+  call   Call   @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  summary   String?
+  intent    String?
+  sentiment String?
+  priority  String?
+
+  followUp Boolean @default(false)
+
+  actionItems Json?
+
+  tokenUsage Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages ConversationMessage[]
+
+  @@index([createdAt])
+}
+
+model ConversationMessage {
+  id String @id @default(cuid())
+
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  role    ConversationRole
+  content String
+
+  createdAt DateTime @default(now())
+
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
+  @@index([role])
+}
+
+// ======================================================
+// CALL EVENTS
+// ======================================================
+
+enum CallEventType {
+  STARTED
+  CALL_CREATED
+  RINGING
+  ANSWERED
+  CALL_TERMINATED
+  THINKING
+  SPEAKING
+  LISTENING
+  INTERRUPTED
+  COMPLETED
+  FAILED
+  CAMPAIGN_SELECTED
+  CUSTOMER_MATCHED
+  AI_SESSION_STARTED
+  INTENT_DETECTED
+  RAG_QUERY
+  DOCUMENT_ACCESSED
+  AUTH_REQUESTED
+  AUTH_SUCCEEDED
+  AUTH_FAILED
+  ACTION_REQUESTED
+  POLICY_ALLOWED
+  POLICY_DENIED
+  ACTION_EXECUTED
+  ACTION_FAILED
+  FALLBACK_TRIGGERED
+  PROVIDER_CHANGED
+  HUMAN_TRANSFER
+}
+
+model CallEvent {
+  id String @id @default(cuid())
+
+  callId String
+  type   CallEventType
+
+  message  String?
+  payload  Json?
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId])
+  @@index([type])
+  @@index([createdAt])
+  @@index([callId, createdAt])
+}
+
+// ======================================================
+// CALLBACK REQUEST
+// ======================================================
+
+enum CallbackRequestStatus {
+  REQUESTED
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+model CallbackRequest {
+  id String @id @default(cuid())
+
+  callId String
+
+  phone String
+
+  requestedAt DateTime @default(now())
+
+  scheduledFor DateTime
+
+  timezone String
+
+  reason String?
+
+  status CallbackRequestStatus @default(REQUESTED)
+
+  idempotencyKey String @unique
+
+  requestedBy String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([callId])
+  @@index([phone])
+  @@index([scheduledFor])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ======================================================
+// BUSINESS TOOL EXECUTION
+// ======================================================
+
+enum ToolExecutionStatus {
+  STARTED
+  SUCCEEDED
+  FAILED
+  ABORTED
+  TIMED_OUT
+}
+
+model ToolExecution {
+  id String @id @default(cuid())
+
+  callId String
+
+  tool String
+
+  requestedBy String
+
+  tenantId String?
+
+  idempotencyKey String?
+
+  status ToolExecutionStatus @default(STARTED)
+
+  requiresConfirmation Boolean @default(false)
+  confirmed            Boolean @default(false)
+
+  mutating Boolean @default(false)
+
+  durationMs Int?
+
+  errorCode    String?
+  errorMessage String?
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tool, idempotencyKey])
+  @@index([callId])
+  @@index([tool])
+  @@index([status])
+  @@index([createdAt])
+  @@index([callId, createdAt])
+}
+
+// ======================================================
+// LEAD
+// ======================================================
+
+enum LeadStatus {
+  NEW
+  QUALIFIED
+  CONTACTED
+  CONVERTED
+  CLOSED
+}
+
+model Lead {
+  id String @id @default(cuid())
+
+  callId String
+
+  fullName String?
+
+  phone String?
+
+  email String?
+
+  interest String
+
+  notes String?
+
+  status LeadStatus @default(NEW)
+
+  source String @default("AI_IVR")
+
+  idempotencyKey String @unique
+
+  createdBy String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([callId])
+  @@index([status])
+  @@index([phone])
+  @@index([email])
+  @@index([createdAt])
+}
+
+// ======================================================
+// MESSAGING
+// ======================================================
+
+enum MessagingChannel {
+  SMS
+  WHATSAPP
+}
+
+enum MessageConsentStatus {
+  OPTED_IN
+  OPTED_OUT
+  UNKNOWN
+}
+
+enum OutboundMessageStatus {
+  PROCESSING
+  ACCEPTED
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  UNDELIVERED
+}
+
+model MessageConsent {
+  id String @id @default(cuid())
+
+  phone String
+
+  channel MessagingChannel
+
+  status MessageConsentStatus @default(UNKNOWN)
+
+  source String?
+
+  consentedAt DateTime?
+  revokedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([phone, channel])
+  @@index([phone])
+  @@index([channel])
+  @@index([status])
+}
+
+model OutboundMessage {
+  id String @id @default(cuid())
+
+  callId String?
+
+  communicationCampaignId String?
+
+  communicationCampaign CommunicationCampaign? @relation(fields: [communicationCampaignId], references: [id], onDelete: SetNull)
+
+  communicationRecipientId String?
+
+  communicationRecipient CommunicationCampaignRecipient? @relation(fields: [communicationRecipientId], references: [id], onDelete: SetNull)
+
+  channel MessagingChannel
+
+  provider String
+
+  recipient String
+
+  templateKey String
+
+  idempotencyKey String @unique
+
+  providerMessageId String? @unique
+
+  status OutboundMessageStatus @default(PROCESSING)
+
+  errorCode    String?
+  errorMessage String?
+
+  acceptedAt  DateTime?
+  sentAt      DateTime?
+  deliveredAt DateTime?
+  readAt      DateTime?
+  failedAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([callId])
+  @@index([communicationCampaignId])
+  @@index([communicationRecipientId])
+  @@index([channel])
+  @@index([recipient])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ======================================================
+// CONSENT EVIDENCE / HISTORY
+// ======================================================
+
+enum ConsentEvidenceAction {
+  OPT_IN
+  OPT_OUT
+}
+
+model ConsentEvidence {
+  id String @id @default(cuid())
+
+  phone   String
+  channel MessagingChannel
+
+  action ConsentEvidenceAction
+
+  source String
+
+  callId String?
+
+  requestedBy String?
+
+  evidenceText String?
+
+  previousStatus  MessageConsentStatus?
+  resultingStatus MessageConsentStatus
+
+  idempotencyKey String? @unique
+
+  occurredAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([phone])
+  @@index([channel])
+  @@index([action])
+  @@index([callId])
+  @@index([occurredAt])
+  @@index([phone, channel, occurredAt])
+}

@@ -1,4 +1,9 @@
 import {
+  UserRole,
+  AuditEventOutcome,
+} from "@prisma/client";
+
+import {
   NextRequest,
 } from "next/server";
 
@@ -11,8 +16,24 @@ import {
 } from "@/lib/async-handler";
 
 import {
+  requireRole,
+} from "@/lib/auth";
+
+import {
   IVRFlowService,
 } from "@/services/ivr-flow.service";
+
+import {
+  assertIvrFlowOwnership,
+} from "@/services/security/tenant-access.service";
+import { assertIvrFlowPermission, buildIvrFlowPermissions } from "@/services/ivr/ivr-flow-permissions";
+import { ConflictError } from "@/lib/app-error";
+import { recordAuditEvent } from "@/services/audit/audit-event.service";
+
+const FLOW_ROLES = [
+  UserRole.SUPER_ADMIN,
+  UserRole.ADMIN,
+] as const;
 
 //--------------------------------------------------
 // GET
@@ -32,10 +53,17 @@ export const GET =
           }>;
       }
     ) => {
+      const currentUser = await requireRole(FLOW_ROLES);
+
       const {
         id,
       } =
         await params;
+
+      await assertIvrFlowOwnership(
+        id,
+        currentUser
+      );
 
       const flow =
         await IVRFlowService
@@ -43,9 +71,10 @@ export const GET =
             id
           );
 
-      return success(
-        flow
-      );
+      return success(flow ? {
+        ...flow,
+        permissions: buildIvrFlowPermissions(currentUser, flow),
+      } : null);
     }
   );
 
@@ -69,6 +98,8 @@ export const PUT =
           }>;
       }
     ) => {
+      const currentUser = await requireRole(FLOW_ROLES);
+
       const {
         id,
       } =
@@ -76,6 +107,18 @@ export const PUT =
 
       const body =
         await request.json();
+
+      await assertIvrFlowOwnership(
+        id,
+        currentUser
+      );
+
+      const existing = await IVRFlowService.findById(id);
+      if (!existing) throw new Error("IVR flow not found.");
+      assertIvrFlowPermission(
+        buildIvrFlowPermissions(currentUser, existing).canEdit,
+        "This IVR flow is not editable in its current state or you lack edit permission."
+      );
 
       const flow =
         await IVRFlowService
@@ -96,14 +139,6 @@ export const PUT =
                   ? body.description
                   : undefined,
 
-              campaignId:
-                body.campaignId ===
-                  null ||
-                typeof body.campaignId ===
-                  "string"
-                  ? body.campaignId
-                  : undefined,
-
               nodes:
                 Array.isArray(
                   body.nodes
@@ -117,8 +152,12 @@ export const PUT =
                 )
                   ? body.edges
                   : [],
+
+              updatedByUserId: currentUser.id,
             }
           );
+
+      await recordAuditEvent({ tenantId: existing.tenantId ?? "", actor: currentUser, entityType: "IVR_FLOW", entityId: id, action: "ivr.flow.updated", outcome: AuditEventOutcome.SUCCEEDED, beforeState: { lifecycle: existing.lifecycle, version: existing.version }, afterState: { lifecycle: flow.lifecycle, version: flow.version } });
 
       return success(
         flow,
@@ -146,15 +185,34 @@ export const DELETE =
           }>;
       }
     ) => {
+      const currentUser = await requireRole(FLOW_ROLES);
+
       const {
         id,
       } =
         await params;
 
+      await assertIvrFlowOwnership(
+        id,
+        currentUser
+      );
+
+      const existing = await IVRFlowService.findById(id);
+      if (!existing) throw new Error("IVR flow not found.");
+      if (!["DRAFT", "VALIDATED"].includes(existing.lifecycle)) {
+        throw new ConflictError("Only a disposable draft or validated IVR flow can be deleted.", "IVR_FLOW_DELETE_LIFECYCLE_BLOCKED");
+      }
+      assertIvrFlowPermission(
+        buildIvrFlowPermissions(currentUser, existing).canDelete,
+        "Only unreferenced draft IVR flows can be deleted. Archive published or applied flows instead."
+      );
+
       await IVRFlowService
         .delete(
           id
         );
+
+      await recordAuditEvent({ tenantId: existing.tenantId ?? "", actor: currentUser, entityType: "IVR_FLOW", entityId: id, action: "ivr.flow.deleted", outcome: AuditEventOutcome.SUCCEEDED, beforeState: { lifecycle: existing.lifecycle, version: existing.version } });
 
       return success(
         null,

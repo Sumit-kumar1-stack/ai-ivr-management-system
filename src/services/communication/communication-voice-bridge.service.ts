@@ -1,4 +1,8 @@
 import {
+  randomUUID,
+} from "node:crypto";
+
+import {
   CampaignRunStatus,
   CampaignStatus,
   CommunicationChannel,
@@ -191,7 +195,8 @@ async function startCommunicationVoiceCampaignForRuntime(
 
   const contactIds =
     await ensureCommunicationContacts(
-      campaign.recipients
+      campaign.recipients,
+      campaign.ownerUserId
     );
 
   //------------------------------------------------
@@ -220,6 +225,9 @@ async function startCommunicationVoiceCampaignForRuntime(
           description:
             `AI Voice ${actualRuntime} child campaign for communication campaign ${campaign.id}`,
 
+          ownerUserId:
+            campaign.ownerUserId,
+
           systemKey,
 
           language:
@@ -246,6 +254,9 @@ async function startCommunicationVoiceCampaignForRuntime(
           description:
             `AI Voice ${actualRuntime} child campaign for communication campaign ${campaign.id}`,
 
+          ownerUserId:
+            campaign.ownerUserId,
+
           scheduledAt:
             campaign
               .launchImmediately
@@ -255,44 +266,108 @@ async function startCommunicationVoiceCampaignForRuntime(
         },
       });
 
-  //------------------------------------------------
-  // Assign Contacts
-  //------------------------------------------------
+  const selectedKnowledgeDocumentIds =
+    normalizeJsonStringArray(
+      campaign.knowledgeDocumentIds
+    );
 
-  await prisma
-    .campaignContact
-    .createMany({
-      data:
-        contactIds.map(
-          contactId => ({
-            campaignId:
-              voiceCampaign.id,
+  const childDescription =
+    campaign.description
+      ?.trim() ||
+    `AI Voice ${actualRuntime} child campaign for communication campaign ${campaign.id}`;
 
-            contactId,
-          })
-        ),
+  const childPrompt =
+    campaign.prompt
+      ?.trim() ||
+    null;
 
-      skipDuplicates:
-        true,
-    });
+  await prisma.$transaction(
+    async transaction => {
+      await transaction.campaign.update({
+        where: {
+          id:
+            voiceCampaign.id,
+        },
 
-  //------------------------------------------------
-  // Parent Link
-  //------------------------------------------------
+        data: {
+          description:
+            childDescription,
 
-  await prisma
-    .communicationCampaign
-    .update({
-      where: {
-        id:
-          campaign.id,
-      },
+          prompt:
+            childPrompt,
 
-      data: {
-        voiceCampaignId:
-          voiceCampaign.id,
-      },
-    });
+          scheduledAt:
+            campaign.launchImmediately
+              ? null
+              : campaign.scheduledAt,
+        },
+      });
+
+      await transaction.campaignContact.deleteMany({
+        where: {
+          campaignId:
+            voiceCampaign.id,
+        },
+      });
+
+      await transaction.campaignContact.createMany({
+        data:
+          contactIds.map(
+            contactId => ({
+              campaignId:
+                voiceCampaign.id,
+
+              contactId,
+            })
+          ),
+
+        skipDuplicates:
+          true,
+      });
+
+      await transaction.campaignKnowledgeDocument.deleteMany({
+        where: {
+          campaignId:
+            voiceCampaign.id,
+        },
+      });
+
+      if (
+        selectedKnowledgeDocumentIds.length >
+        0
+      ) {
+        await transaction.campaignKnowledgeDocument.createMany({
+          data:
+            selectedKnowledgeDocumentIds.map(
+              knowledgeDocumentId => ({
+                id:
+                  randomUUID(),
+
+                campaignId:
+                  voiceCampaign.id,
+
+                knowledgeDocumentId,
+              })
+            ),
+
+          skipDuplicates:
+            true,
+        });
+      }
+
+      await transaction.communicationCampaign.update({
+        where: {
+          id:
+            campaign.id,
+        },
+
+        data: {
+          voiceCampaignId:
+            voiceCampaign.id,
+        },
+      });
+    }
+  );
 
   //------------------------------------------------
   // Retry / Duplicate Worker Guard
@@ -394,4 +469,33 @@ function isActiveCampaignStatus(
     status ===
       CampaignStatus.RUNNING
   );
+}
+
+function normalizeJsonStringArray(
+  value:
+    unknown
+): string[] {
+  if (
+    !Array.isArray(
+      value
+    )
+  ) {
+    return [];
+  }
+
+  return value
+    .filter(
+      (
+        item
+      ): item is string =>
+        typeof item ===
+        "string"
+    )
+    .map(
+      item =>
+        item.trim()
+    )
+    .filter(
+      Boolean
+    );
 }

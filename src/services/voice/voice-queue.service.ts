@@ -6,6 +6,7 @@ import {
   TTSAudioChunk,
 } from "./types";
 
+
 //--------------------------------------------------
 // Voice Queue
 //--------------------------------------------------
@@ -32,13 +33,8 @@ class VoiceQueue {
       );
     }
 
-    this.queues
-      .get(
-        callId
-      )!
-      .push(
-        chunk
-      );
+    const queue = this.queues.get(callId)!;
+    queue.push(chunk);
 
     const log =
       createCallLogger(

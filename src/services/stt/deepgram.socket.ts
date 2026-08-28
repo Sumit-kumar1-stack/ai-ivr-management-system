@@ -11,6 +11,12 @@ import {
   DeepgramPayload,
 } from "./deepgram.events";
 
+import {
+  CascadedTurnLatency,
+} from "@/services/voice-runtime/cascaded-turn-latency.service";
+
+import { STANDARD_REALTIME_CONFIG } from "@/config/standard-realtime";
+
 //--------------------------------------------------
 // Deepgram Session
 //--------------------------------------------------
@@ -188,8 +194,8 @@ export class DeepgramSocket {
       "&sample_rate=8000",
       "&channels=1",
       "&interim_results=true",
-      "&endpointing=700",
-      "&utterance_end_ms=1200",
+      `&endpointing=${STANDARD_REALTIME_CONFIG.endpointingMs}`,
+      `&utterance_end_ms=${STANDARD_REALTIME_CONFIG.utteranceEndMs}`,
     ].join(
       ""
     ),
@@ -305,6 +311,11 @@ export class DeepgramSocket {
         } catch (
           error
         ) {
+          CascadedTurnLatency.fail(
+            callId,
+            "STT"
+          );
+
           /*
            * Never log the message payload because it
            * may contain speech transcripts.
@@ -399,6 +410,11 @@ export class DeepgramSocket {
     socket.on(
       "error",
       error => {
+        CascadedTurnLatency.fail(
+          callId,
+          "STT"
+        );
+
         log.error(
           {
             event:
@@ -445,6 +461,11 @@ export class DeepgramSocket {
     } catch (
       error
     ) {
+      CascadedTurnLatency.fail(
+        callId,
+        "STT"
+      );
+
       const currentSession =
         sessions.get(
           callId
@@ -797,6 +818,11 @@ export class DeepgramSocket {
     } catch (
       error
     ) {
+      CascadedTurnLatency.fail(
+        callId,
+        "STT"
+      );
+
       log.error(
         {
           event:

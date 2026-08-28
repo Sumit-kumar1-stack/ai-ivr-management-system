@@ -18,6 +18,13 @@ import {
   VoiceWorker,
 } from "@/services/voice/voice-worker.service";
 
+import {
+  CascadedTurnLatency,
+} from "@/services/voice-runtime/cascaded-turn-latency.service";
+
+import { STANDARD_REALTIME_CONFIG } from "@/config/standard-realtime";
+import { StandardPartialPrefetch } from "@/services/voice-runtime/standard-partial-prefetch.service";
+
 //--------------------------------------------------
 // Types
 //--------------------------------------------------
@@ -100,7 +107,7 @@ export class DeepgramEvents {
           "THINKING"
       ) &&
       transcript.length >=
-        2
+        STANDARD_REALTIME_CONFIG.bargeInMinCharacters
     ) {
       const interruptedTurnId =
         TurnCoordinator.interrupt(
@@ -135,6 +142,11 @@ export class DeepgramEvents {
               ),
           },
           "Caller speech interrupted active AI turn"
+        );
+
+        createCallLogger(callId).info(
+          { event: "standard.barge_in", interruptedTurnId },
+          "Standard generation invalidated by caller interruption"
         );
       } catch (
         error
@@ -193,6 +205,19 @@ export class DeepgramEvents {
         payload.is_final
       );
 
+    CascadedTurnLatency.markSttPartial(
+      callId
+    );
+
+    createCallLogger(callId).debug(
+      {
+        event: isFinal ? "standard.stt.final" : "standard.stt.partial",
+        characterCount: transcript.length,
+        confidence: alternative?.confidence ?? null,
+      },
+      "Standard STT progress recorded"
+    );
+
     const log =
       createCallLogger(
         callId
@@ -202,6 +227,13 @@ export class DeepgramEvents {
       callId,
       transcript
     );
+
+    if (!isFinal) {
+      if (transcript.length >= STANDARD_REALTIME_CONFIG.stablePartialMinCharacters) {
+        CascadedTurnLatency.markSttStablePartial(callId);
+      }
+      StandardPartialPrefetch.observePartial(callId, transcript);
+    }
 
     log.debug(
       {
@@ -228,6 +260,10 @@ export class DeepgramEvents {
     if (
       isFinal
     ) {
+      CascadedTurnLatency.markSttFinal(
+        callId
+      );
+
       TranscriptBuffer.flush(
         callId
       );
