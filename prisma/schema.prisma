@@ -560,6 +560,7 @@ enum CommunicationCampaignStatus {
   SCHEDULED
   QUEUED
   RUNNING
+  PAUSED
   DISPATCHED
   COMPLETED
   FAILED
@@ -585,6 +586,24 @@ enum CommunicationRecipientStatus {
   DISPATCHED
   COMPLETED
   FAILED
+  SKIPPED
+}
+
+enum CommunicationOutboundAttemptStatus {
+  QUEUED
+  CLAIMED
+  PROVIDER_REQUESTING
+  PROVIDER_ACCEPTED
+  RINGING
+  ANSWERED
+  COMPLETED
+  BUSY
+  NO_ANSWER
+  REJECTED
+  FAILED
+  INVALID_NUMBER
+  PROVIDER_ERROR
+  CANCELED
   SKIPPED
 }
 
@@ -704,6 +723,15 @@ model CommunicationCampaign {
   launchImmediately Boolean @default(true)
 
   scheduledAt DateTime?
+  timezone String?
+  businessHoursPolicy Json?
+
+  // Optional E.2 execution controls. A missing limit is intentionally
+  // unbounded at the campaign dimension; tenant/provider/global limits
+  // still apply. Provider is a non-secret routing identifier only.
+  concurrencyLimit Int?
+  outboundProvider String?
+  maxAttempts Int @default(3)
 
   // ----------------------------------------------------
   // AI Voice child campaign
@@ -744,6 +772,9 @@ model CommunicationCampaign {
   recipients        CommunicationCampaignRecipient[]
   messages          OutboundMessage[]
   usageReservations CommunicationCampaignUsage[]
+  outboundAttempts  CommunicationOutboundAttempt[]
+  outboundCapacityLeases CommunicationOutboundCapacityLease[]
+  calls Call[] @relation("CommunicationCampaignCalls")
   actions           CampaignAction[]
 
   createdAt DateTime @default(now())
@@ -836,11 +867,22 @@ model CommunicationCampaignRecipient {
 
   language String @default("English")
 
+  // Immutable launch snapshot plus mutable compliance re-check fields.
+  consentStatus String @default("OPTED_IN")
+  dnc Boolean @default(false)
+  suppressed Boolean @default(false)
+  timezone String?
+
   status CommunicationRecipientStatus @default(PENDING)
 
   lastError String?
 
+  // Incremented only by an atomic execution claim, never by queue fan-out.
+  attemptCount Int @default(0)
+  nextAttemptAt DateTime?
+
   messages OutboundMessage[]
+  outboundAttempts CommunicationOutboundAttempt[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -849,6 +891,65 @@ model CommunicationCampaignRecipient {
   @@index([campaignId])
   @@index([phone])
   @@index([status])
+}
+
+model CommunicationOutboundAttempt {
+  id String @id @default(cuid())
+
+  tenantId String
+  campaignId String
+  campaign CommunicationCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaignRecipientId String
+  campaignRecipient CommunicationCampaignRecipient @relation(fields: [campaignRecipientId], references: [id], onDelete: Cascade)
+  contactId String
+  attemptNumber Int
+  status CommunicationOutboundAttemptStatus @default(QUEUED)
+  scheduledFor DateTime
+  claimedAt DateTime?
+  provider String?
+  providerRequestId String? @unique
+  providerCallId String? @unique
+  rawProviderStatus String?
+  rawProviderCause String?
+  requestedRuntime String?
+  effectiveRuntime String?
+  providerRequestedAt DateTime?
+  providerAcceptedAt DateTime?
+  ringingAt DateTime?
+  answeredAt DateTime?
+  completedAt DateTime?
+  failureReason String?
+
+  capacityLease CommunicationOutboundCapacityLease?
+  call Call? @relation("CommunicationOutboundAttemptCall")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([campaignRecipientId, attemptNumber])
+  @@index([tenantId, status])
+  @@index([campaignId, status])
+  @@index([provider, status])
+  @@index([scheduledFor, status])
+}
+
+model CommunicationOutboundCapacityLease {
+  id String @id @default(cuid())
+
+  attemptId String @unique
+  attempt CommunicationOutboundAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  tenantId String
+  campaignId String
+  campaign CommunicationCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  provider String
+  expiresAt DateTime
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, expiresAt])
+  @@index([campaignId, expiresAt])
+  @@index([provider, expiresAt])
+  @@index([expiresAt])
 }
 
 // ======================================================
@@ -1124,14 +1225,20 @@ model Call {
   ivrFlowVersionId String?
   ivrFlowVersion   IVRFlowVersion? @relation(fields: [ivrFlowVersionId], references: [id], onDelete: SetNull)
 
-  campaignId String
-  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaignId String?
+  campaign   Campaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  communicationCampaignId String?
+  communicationCampaign CommunicationCampaign? @relation("CommunicationCampaignCalls", fields: [communicationCampaignId], references: [id], onDelete: Cascade)
+
+  communicationOutboundAttemptId String? @unique
+  communicationOutboundAttempt CommunicationOutboundAttempt? @relation("CommunicationOutboundAttemptCall", fields: [communicationOutboundAttemptId], references: [id], onDelete: Cascade)
 
   campaignRunId String?
   campaignRun   CampaignRun? @relation(fields: [campaignRunId], references: [id], onDelete: SetNull)
 
-  contactId String
-  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id], onDelete: Cascade)
 
   // ====================================================
   // RETRY TRACKING
@@ -1205,6 +1312,7 @@ model Call {
 
   @@unique([campaignRunId, contactId, attemptNumber])
   @@index([campaignId])
+  @@index([communicationCampaignId])
   @@index([campaignRunId])
   @@index([campaignRunId, contactId])
   @@index([contactId])

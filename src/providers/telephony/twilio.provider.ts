@@ -15,6 +15,14 @@ import {
 } from "@/lib/logger";
 
 import {
+  createErrorTwiml,
+} from "@/providers/telephony/twilio-media-twiml.service";
+
+import {
+  SAFE_TTS_FAILURE_MESSAGE,
+} from "@/services/voice/standard-tts-fallback.constants";
+
+import {
   ProviderCallRequest,
   CallResponse,
 } from "@/services/telephony/types";
@@ -38,6 +46,24 @@ export class TwilioProvider
     supportsGeminiLive: true,
     supportsCallControlUpdate: false,
   } as const;
+
+  async applyStandardTtsFallback(
+    callId: string,
+    providerCallId: string
+  ): Promise<void> {
+    void callId;
+
+    await twilioClient
+      .calls(
+        providerCallId
+      )
+      .update({
+        twiml:
+          createErrorTwiml(
+            SAFE_TTS_FAILURE_MESSAGE
+          ),
+      });
+  }
 
   //--------------------------------------------------
   // Normalize Phone Number

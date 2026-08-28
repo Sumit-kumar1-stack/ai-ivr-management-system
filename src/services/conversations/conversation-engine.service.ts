@@ -54,6 +54,10 @@ import {
 } from "./voice-response-policy.service";
 
 import {
+  StreamingTtsState,
+} from "./streaming-tts-state.service";
+
+import {
   routeLocalIntent,
 } from "./local-intent-router.service";
 
@@ -197,57 +201,6 @@ const EARLY_SPEECH_MAX_WORDS =
   configuredEarlySpeechMaxWords <= 40
     ? configuredEarlySpeechMaxWords
     : DEFAULT_EARLY_SPEECH_MAX_WORDS;
-
-function countWords(
-  text: string
-): number {
-  return text
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .length;
-}
-
-function getRemainingSpeech(
-  finalReply: string,
-  earlySentence: string | null
-): string {
-  if (
-    !earlySentence
-  ) {
-    return finalReply;
-  }
-
-  const normalizedReply =
-    finalReply
-      .replace(
-        /\s+/g,
-        " "
-      )
-      .trim();
-
-  const normalizedEarlySentence =
-    earlySentence
-      .replace(
-        /\s+/g,
-        " "
-      )
-      .trim();
-
-  if (
-    normalizedReply.startsWith(
-      normalizedEarlySentence
-    )
-  ) {
-    return normalizedReply
-      .slice(
-        normalizedEarlySentence.length
-      )
-      .trim();
-  }
-
-  return normalizedReply;
-}
 
 //--------------------------------------------------
 // Handle Non-AI IVR Voice Action
@@ -972,16 +925,17 @@ ${VoiceResponsePolicy.getInstruction()}`;
     let wasAborted =
       false;
 
-    let earlySentence:
-      string | null =
-      null;
+    const streamingTts =
+      new StreamingTtsState(
+        EARLY_SPEECH_MAX_WORDS
+      );
 
-    let earlySpeechDecisionMade =
-      false;
+    let streamingTtsPromise:
+      Promise<void> =
+      Promise.resolve();
 
-    let earlySpeechPromise:
-      Promise<boolean> | null =
-      null;
+    let streamingPhraseCount =
+      0;
 
     let firstSpeechQueuedAt:
       number | null =
@@ -1023,6 +977,83 @@ ${VoiceResponsePolicy.getInstruction()}`;
     throwIfTurnAborted(
       signal
     );
+
+    const scheduleStreamingPhrase =
+      (phrase: string): void => {
+        const phraseIndex =
+          streamingPhraseCount;
+
+        streamingPhraseCount +=
+          1;
+
+        CascadedTurnLatency.markLlmFirstPhrase(
+          callId
+        );
+
+        streamingTtsPromise =
+          streamingTtsPromise.then(
+            async () => {
+              if (
+                controller.signal.aborted ||
+                signal?.aborted
+              ) {
+                return;
+              }
+
+              const startedAt =
+                performance.now();
+
+              const result =
+                await streamingTts.attemptPhrase(
+                  phrase,
+                  text =>
+                    VoiceWorker.addText(
+                      callId,
+                      text,
+                      turnId
+                    ),
+                  {
+                    firstPhrase:
+                      phraseIndex === 0,
+                  }
+                );
+
+              if (
+                result.queued &&
+                firstSpeechQueuedAt === null
+              ) {
+                firstSpeechQueuedAt =
+                  performance.now();
+              }
+
+              log.info(
+                {
+                  event:
+                    "conversation.streaming_tts.phrase_completed",
+                  turnId:
+                    turnId ?? null,
+                  phraseIndex,
+                  phraseCharacterCount:
+                    phrase.trim().length,
+                  attempted:
+                    result.attempted,
+                  audioQueued:
+                    result.queued,
+                  reason:
+                    result.reason,
+                  durationMs:
+                    Math.round(
+                      performance.now() -
+                        startedAt
+                    ),
+                },
+                result.queued
+                  ? "Streaming TTS phrase queued"
+                  : "Streaming TTS phrase retained for final speech"
+              );
+            }
+          );
+      };
 
     log.info(
       {
@@ -1121,151 +1152,15 @@ ${VoiceResponsePolicy.getInstruction()}`;
             callId,
             async sentence => {
               if (
-                earlySpeechDecisionMade
-              ) {
-                CascadedTurnLatency.markLlmFirstPhrase(callId);
-                earlySentence = [earlySentence, sentence]
-                  .filter(Boolean)
-                  .join(" ");
-
-                earlySpeechPromise = (earlySpeechPromise ?? Promise.resolve(true))
-                  .then(() => {
-                    if (controller.signal.aborted || signal?.aborted) return false;
-                    return VoiceWorker.addText(callId, sentence, turnId);
-                  });
-
-                log.debug(
-                  {
-                    event: "standard.tts.phrase_queued",
-                    turnId: turnId ?? null,
-                    phraseCharacterCount: sentence.length,
-                  },
-                  "Subsequent completed phrase queued behind active TTS work"
-                );
-                return;
-              }
-
-              if (
                 controller.signal.aborted ||
                 signal?.aborted
               ) {
                 return;
               }
 
-              earlySpeechDecisionMade =
-                true;
-
-              CascadedTurnLatency.markLlmFirstPhrase(callId);
-
-              const sentenceWordCount =
-                countWords(
-                  sentence
-                );
-
-              if (
-                sentenceWordCount >
-                EARLY_SPEECH_MAX_WORDS
-              ) {
-                log.debug(
-                  {
-                    event:
-                      "conversation.early_speech.skipped",
-                    reason:
-                      "first_sentence_too_long",
-                    sentenceWordCount,
-                    maximumWordCount:
-                      EARLY_SPEECH_MAX_WORDS,
-                  },
-                  "Early speech skipped because first sentence is too long"
-                );
-
-                return;
-              }
-
-              earlySentence =
-                sentence;
-
-              const earlySpeechStartedAt =
-                performance.now();
-
-              log.info(
-                {
-                  event:
-                    "conversation.early_speech.started",
-                  turnId:
-                    turnId ?? null,
-                  sentenceCharacterCount:
-                    sentence.length,
-                  sentenceWordCount,
-                  generationElapsedMs:
-                    Math.round(
-                      earlySpeechStartedAt -
-                        generationStartedAt
-                    ),
-                },
-                "Early first-sentence speech synthesis started"
+              scheduleStreamingPhrase(
+                sentence
               );
-
-              earlySpeechPromise =
-                VoiceWorker.addText(
-                  callId,
-                  sentence,
-                  turnId
-                )
-                  .then(
-                    queued => {
-                      if (
-                        queued
-                      ) {
-                        firstSpeechQueuedAt =
-                          performance.now();
-                      }
-
-                      log.info(
-                        {
-                          event:
-                            "conversation.early_speech.completed",
-                          turnId:
-                            turnId ?? null,
-                          audioQueued:
-                            queued,
-                          sentenceCharacterCount:
-                            sentence.length,
-                          generationToSpeechQueueMs:
-                            firstSpeechQueuedAt
-                              ? Math.round(
-                                  firstSpeechQueuedAt -
-                                    generationStartedAt
-                                )
-                              : null,
-                        },
-                        queued
-                          ? "Early first-sentence speech queued"
-                          : "Early first-sentence speech was not queued"
-                      );
-
-                      return queued;
-                    }
-                  )
-                  .catch(
-                    error => {
-                      log.error(
-                        {
-                          event:
-                            "conversation.early_speech.failed",
-                          turnId:
-                            turnId ?? null,
-                          error:
-                            normalizeError(
-                              error
-                            ),
-                        },
-                        "Early first-sentence speech failed"
-                      );
-
-                      return false;
-                    }
-                  );
             }
           );
       }
@@ -1275,14 +1170,9 @@ ${VoiceResponsePolicy.getInstruction()}`;
           callId,
           async residual => {
             if (!residual.trim()) return;
-            earlySentence = [earlySentence, residual]
-              .filter(Boolean)
-              .join(" ");
-            earlySpeechPromise = (earlySpeechPromise ?? Promise.resolve(true))
-              .then(() => {
-                if (controller.signal.aborted || signal?.aborted) return false;
-                return VoiceWorker.addText(callId, residual, turnId);
-              });
+            scheduleStreamingPhrase(
+              residual
+            );
           }
         );
     } catch (
@@ -1476,27 +1366,24 @@ ${VoiceResponsePolicy.getInstruction()}`;
     const ttsStartedAt =
       performance.now();
 
-    let earlyAudioQueued =
-      false;
+    await streamingTtsPromise;
 
-    if (
-      earlySpeechPromise
-    ) {
-      earlyAudioQueued =
-        await earlySpeechPromise;
+    throwIfTurnAborted(
+      signal
+    );
 
-      throwIfTurnAborted(
-        signal
+    const streamingSummary =
+      streamingTts.complete(
+        finalReply
       );
-    }
+
+    const earlyAudioQueued =
+      streamingSummary
+        .queuedPhrases.length > 0;
 
     const remainingSpeech =
-      earlyAudioQueued
-        ? getRemainingSpeech(
-            finalReply,
-            earlySentence
-          )
-        : finalReply;
+      streamingSummary
+        .finalRemainingSpeech;
 
     let remainingAudioQueued =
       false;
@@ -1538,16 +1425,18 @@ ${VoiceResponsePolicy.getInstruction()}`;
         turnId:
           turnId ?? null,
         earlySpeechUsed:
-          Boolean(
-            earlySentence
-          ),
+          earlyAudioQueued,
         earlyAudioQueued,
         remainingAudioQueued,
-        earlySentenceCharacterCount:
-          String(
-            earlySentence ??
-              ""
-          ).length,
+        streamingAttemptedPhraseCount:
+          streamingSummary
+            .attemptedPhrases.length,
+        streamingQueuedPhraseCount:
+          streamingSummary
+            .queuedPhrases.length,
+        streamingFailedPhraseCount:
+          streamingSummary
+            .failedPhrases.length,
         remainingSpeechCharacterCount:
           remainingSpeech.length,
         totalResponseCharacterCount:

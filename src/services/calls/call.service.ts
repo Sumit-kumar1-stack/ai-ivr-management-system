@@ -570,6 +570,12 @@ export async function getCall(
           },
         },
 
+      communicationCampaign: {
+        include: {
+          ownerUser: true,
+        },
+      },
+
       inboundProfile:
         {
           select: {
@@ -1285,7 +1291,9 @@ export async function updateCallStatus(
 
     if (
       existingIsTerminal &&
-      duplicateStatus
+      duplicateStatus &&
+      existingCall.campaignId &&
+      existingCall.contactId
     ) {
       retryScheduled =
         await scheduleCallRetryIfEligible({
@@ -1415,7 +1423,9 @@ export async function updateCallStatus(
     false;
 
   if (
-    terminalTransition
+    terminalTransition &&
+    existingCall.campaignId &&
+    existingCall.contactId
   ) {
     retryScheduled =
       await scheduleCallRetryIfEligible({

@@ -950,9 +950,11 @@ async function resolveKnowledgeScope(
           profileKnowledgeDocumentIds: graph.call.inboundProfile?.knowledgeDocumentIds,
           ivrFlowVersion: graph.version,
         })
-      : await resolveSecureCampaignKnowledgeDocumentIds(graph.call.campaignId, {
+      : graph.call.campaignId
+        ? await resolveSecureCampaignKnowledgeDocumentIds(graph.call.campaignId, {
           ownerUserId: graph.call.campaign?.ownerUserId ?? null,
-        });
+        })
+        : normalizeDocumentIds(graph.call.communicationCampaign?.knowledgeDocumentIds);
 
   if (explicitIds.length === 0) {
     return fallbackIds;
@@ -960,6 +962,14 @@ async function resolveKnowledgeScope(
 
   const fallbackSet = new Set(fallbackIds);
   return explicitIds.filter(id => fallbackSet.has(id));
+}
+
+function normalizeDocumentIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map(item => item.trim())
+    .filter(Boolean);
 }
 
 async function resolveKnowledgeQuery(

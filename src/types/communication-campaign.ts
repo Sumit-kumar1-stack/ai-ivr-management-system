@@ -47,6 +47,7 @@ export type CommunicationCampaignStatus =
   | "SCHEDULED"
   | "QUEUED"
   | "RUNNING"
+  | "PAUSED"
   | "DISPATCHED"
   | "COMPLETED"
   | "FAILED"

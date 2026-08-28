@@ -39,6 +39,11 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 vi.mock("@/lib/logger", () => ({
+  createLogger: vi.fn(() => ({
+    warn: mocks.warn,
+    info: mocks.info,
+    error: mocks.error,
+  })),
   createServerLogger: vi.fn(() => ({
     warn: mocks.warn,
     info: mocks.info,
@@ -135,12 +140,12 @@ describe("communication campaign runner preflight", () => {
     mocks.recordAuditEvent.mockResolvedValue(undefined);
   });
 
-  it("drops duplicate running jobs before dispatching work", async () => {
+  it("drops duplicate terminal jobs before dispatching work", async () => {
     mocks.updateMany.mockResolvedValueOnce({
       count: 0,
     });
     mocks.findUnique.mockResolvedValueOnce({
-      status: CommunicationCampaignStatus.RUNNING,
+      status: CommunicationCampaignStatus.COMPLETED,
     });
 
     const result = await runCommunicationCampaign("campaign-1");
@@ -200,5 +205,39 @@ describe("communication campaign runner preflight", () => {
         result: "DENIED",
       })
     );
+  });
+
+  it("preserves the execution-time tenant subscription gate after the runner split", async () => {
+    mocks.updateMany.mockResolvedValueOnce({ count: 1 });
+    mocks.findUnique.mockResolvedValueOnce({
+      id: "campaign-1",
+      name: "Campaign",
+      status: CommunicationCampaignStatus.RUNNING,
+      approvalRequired: false,
+      approvalStatus: CommunicationCampaignApprovalStatus.APPROVED,
+      currentRevision: 1,
+      approvedRevision: 1,
+      archivedAt: null,
+      tier: "STANDARD",
+      channels: [CommunicationChannel.SMS],
+      smartChanneling: false,
+      fallbackPolicy: CommunicationFallbackPolicy.NONE,
+      ownerUserId: "owner-1",
+      ownerUser: { tenantId: "tenant-1" },
+      _count: { recipients: 1 },
+    });
+    mocks.resolveBillingContext.mockResolvedValueOnce({
+      tenantId: "tenant-1",
+      tenantStatus: "SUSPENDED",
+      subscription: { status: "SUSPENDED" },
+      effectiveCampaignTier: "STANDARD",
+    });
+    mocks.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    await expect(runCommunicationCampaign("campaign-1")).rejects.toThrow("Tenant subscription is not active");
+    expect(mocks.assertEntitlements).not.toHaveBeenCalled();
+    expect(mocks.dispatchSms).not.toHaveBeenCalled();
+    expect(mocks.voiceRuntime).not.toHaveBeenCalled();
+    expect(mocks.ivrBridge).not.toHaveBeenCalled();
   });
 });

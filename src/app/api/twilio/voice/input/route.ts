@@ -206,6 +206,10 @@ export async function POST(
     // Published Menu
     //------------------------------------------------
 
+    if (!call.campaignId) {
+      return NextResponse.json({ success: false, message: "Legacy campaign context is unavailable" }, { status: 400 });
+    }
+
     const menu =
       await IVRFlowService
         .findRuntimeMenuForCampaign(

@@ -789,9 +789,7 @@ export class TwilioStreamGateway {
     //----------------------------------------------
 
     const communicationVoiceParent =
-      call
-        .campaign
-        .communicationVoiceParent;
+      call.campaign?.communicationVoiceParent ?? null;
 
     const billingContext =
       call.tenantId
@@ -819,8 +817,10 @@ export class TwilioStreamGateway {
     const selectedRuntimeFromProfile =
       normalizeCommunicationRuntime(call.inboundProfile?.voiceRuntime);
 
+    const pinnedRuntime = normalizeCommunicationRuntime(call.requestedRuntime);
+
     const runtimeSelection =
-      call.ivrFlowVersion
+      !pinnedRuntime && call.ivrFlowVersion
         ? selectRuntime({
             tenant: {
               tenantId: call.tenantId ?? null,
@@ -845,8 +845,8 @@ export class TwilioStreamGateway {
         : null;
 
     const selectedRuntime =
+      pinnedRuntime ??
       runtimeSelection?.selectedRuntime ??
-      normalizeCommunicationRuntime(call.requestedRuntime) ??
       (communicationVoiceParent ? normalizeCommunicationRuntime(resolveCommunicationVoiceRuntime(communicationVoiceParent.tier)) : null) ??
       "STANDARD";
 
@@ -882,11 +882,11 @@ export class TwilioStreamGateway {
           "AUTO",
         selectedRuntime,
         reasonCode:
-          runtimeSelection?.reasonCode ??
-          "LEGACY_RUNTIME",
+          pinnedRuntime ? "PINNED_RUNTIME" : runtimeSelection?.reasonCode ?? "LEGACY_RUNTIME",
         reasonText:
-          runtimeSelection?.reasonText ??
-          "Existing persisted runtime configuration was used.",
+          pinnedRuntime
+            ? "The runtime selected before provider execution was preserved."
+            : runtimeSelection?.reasonText ?? "Existing persisted runtime configuration was used.",
         provider: call.provider,
       },
       "IVR runtime selected at call entry"
@@ -904,11 +904,11 @@ export class TwilioStreamGateway {
         lastValue: null,
         selectedRuntime,
         runtimeReasonCode:
-          runtimeSelection?.reasonCode ??
-          "LEGACY_RUNTIME",
+          pinnedRuntime ? "PINNED_RUNTIME" : runtimeSelection?.reasonCode ?? "LEGACY_RUNTIME",
         runtimeReasonText:
-          runtimeSelection?.reasonText ??
-          "Existing persisted runtime configuration was used.",
+          pinnedRuntime
+            ? "The runtime selected before provider execution was preserved."
+            : runtimeSelection?.reasonText ?? "Existing persisted runtime configuration was used.",
         inputExperience:
           startNode?.data?.inputExperience === "STAGED_HYBRID"
             ? "STAGED_HYBRID"

@@ -57,10 +57,15 @@ export class DeepgramEvents {
     callId: string,
     payload: DeepgramPayload
   ): Promise<void> {
+    const utteranceEnded =
+      payload.type ===
+      "UtteranceEnd";
+
     if (
       payload.type &&
       payload.type !==
-        "Results"
+        "Results" &&
+      !utteranceEnded
     ) {
       return;
     }
@@ -75,9 +80,32 @@ export class DeepgramEvents {
         ?.trim() ??
       "";
 
-    if (
-      !transcript
-    ) {
+    if (utteranceEnded) {
+      if (
+        TranscriptBuffer.flush(
+          callId
+        )
+      ) {
+        CascadedTurnLatency.markSttFinal(
+          callId
+        );
+      }
+
+      return;
+    }
+
+    if (!transcript) {
+      if (
+        payload.speech_final &&
+        TranscriptBuffer.flush(
+          callId
+        )
+      ) {
+        CascadedTurnLatency.markSttFinal(
+          callId
+        );
+      }
+
       return;
     }
 
@@ -199,10 +227,14 @@ export class DeepgramEvents {
       }
     }
 
-    const isFinal =
+    const segmentFinal =
       Boolean(
-        payload.speech_final ||
         payload.is_final
+      );
+
+    const utteranceFinal =
+      Boolean(
+        payload.speech_final
       );
 
     CascadedTurnLatency.markSttPartial(
@@ -211,7 +243,11 @@ export class DeepgramEvents {
 
     createCallLogger(callId).debug(
       {
-        event: isFinal ? "standard.stt.final" : "standard.stt.partial",
+        event: utteranceFinal
+          ? "standard.stt.final"
+          : segmentFinal
+            ? "standard.stt.segment_final"
+            : "standard.stt.partial",
         characterCount: transcript.length,
         confidence: alternative?.confidence ?? null,
       },
@@ -223,12 +259,19 @@ export class DeepgramEvents {
         callId
       );
 
-    await TranscriptBuffer.setPartial(
-      callId,
-      transcript
-    );
+    if (segmentFinal) {
+      TranscriptBuffer.commitFinalSegment(
+        callId,
+        transcript
+      );
+    } else {
+      await TranscriptBuffer.setPartial(
+        callId,
+        transcript
+      );
+    }
 
-    if (!isFinal) {
+    if (!segmentFinal) {
       if (transcript.length >= STANDARD_REALTIME_CONFIG.stablePartialMinCharacters) {
         CascadedTurnLatency.markSttStablePartial(callId);
       }
@@ -238,11 +281,15 @@ export class DeepgramEvents {
     log.debug(
       {
         event:
-          isFinal
+          segmentFinal
             ? "deepgram.transcript.final_received"
             : "deepgram.transcript.partial_received",
 
-        isFinal,
+        isFinal:
+          segmentFinal,
+
+        speechFinal:
+          utteranceFinal,
 
         characterCount:
           transcript.length,
@@ -252,19 +299,18 @@ export class DeepgramEvents {
             ?.confidence ??
           null,
       },
-      isFinal
-        ? "Deepgram final transcript received"
+      segmentFinal
+        ? "Deepgram finalized transcript segment received"
         : "Deepgram partial transcript received"
     );
 
     if (
-      isFinal
+      utteranceFinal &&
+      TranscriptBuffer.flush(
+        callId
+      )
     ) {
       CascadedTurnLatency.markSttFinal(
-        callId
-      );
-
-      TranscriptBuffer.flush(
         callId
       );
     }

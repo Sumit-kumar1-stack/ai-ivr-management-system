@@ -5,16 +5,11 @@ import {
 
 import {
   createCallLogger,
-  normalizeError,
 } from "@/lib/logger";
 
 import {
-  createErrorTwiml,
-} from "@/providers/telephony/twilio-media-twiml.service";
-
-import {
-  twilioClient,
-} from "@/providers/twilio/twilio.client";
+  ProviderFactory,
+} from "@/providers/telephony/provider.factory";
 
 import {
   getCall,
@@ -24,8 +19,9 @@ import {
   ConversationStateService,
 } from "@/services/conversations/conversation-state.service";
 
-const SAFE_TTS_FAILURE_MESSAGE =
-  "We're sorry, but we're having technical difficulties. Please try again later.";
+import {
+  SAFE_TTS_FAILURE_MESSAGE,
+} from "./standard-tts-fallback.constants";
 
 export async function playStandardTtsFallback(
   callId: string,
@@ -33,17 +29,26 @@ export async function playStandardTtsFallback(
 ): Promise<boolean> {
   const log = createCallLogger(callId);
 
+  void cause;
+
   try {
     const call = await getCall(callId);
     const providerCallId = call?.providerCallId?.trim();
+    const providerName = call?.provider?.trim();
 
-    if (!providerCallId) {
+    if (!providerCallId || !providerName) {
       return false;
     }
 
-    await twilioClient.calls(providerCallId).update({
-      twiml: createErrorTwiml(SAFE_TTS_FAILURE_MESSAGE),
-    });
+    const provider =
+      ProviderFactory.getProviderForName(
+        providerName
+      );
+
+    await provider.applyStandardTtsFallback(
+      callId,
+      providerCallId
+    );
 
     ConversationStateService.setState(callId, "ENDED");
 
@@ -51,7 +56,8 @@ export async function playStandardTtsFallback(
       callId,
       fallbackType: "STANDARD_TTS_FAILURE",
       safeMessage: SAFE_TTS_FAILURE_MESSAGE,
-      cause: normalizeError(cause).message,
+      provider:
+        provider.name.toUpperCase(),
       actorType: "SYSTEM",
       timestamp: Date.now(),
     });
@@ -59,17 +65,19 @@ export async function playStandardTtsFallback(
     log.warn(
       {
         event: "voice.tts.safe_fallback_applied",
-        providerCallId,
+        provider:
+          provider.name.toUpperCase(),
       },
-      "Applied static Twilio TTS fallback after synthesis failed"
+      "Applied provider-safe static fallback after synthesis failed"
     );
 
     return true;
   } catch (error) {
+    void error;
+
     log.error(
       {
         event: "voice.tts.safe_fallback_failed",
-        error: normalizeError(error),
       },
       "Could not apply the static TTS fallback"
     );

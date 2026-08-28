@@ -189,6 +189,14 @@ async function executeKnowledgeSearch(
             },
           },
         },
+
+        communicationCampaign: {
+          select: {
+            knowledgeDocumentIds: true,
+            ownerUserId: true,
+            ownerUser: { select: { tenantId: true } },
+          },
+        },
       },
     });
 
@@ -215,17 +223,19 @@ async function executeKnowledgeSearch(
             profileKnowledgeDocumentIds: call.inboundProfile?.knowledgeDocumentIds,
             ivrFlowVersion: call.ivrFlowVersion,
           })
-        : await resolveSecureCampaignKnowledgeDocumentIds(
-            call.campaignId,
-            {
-              ownerUserId:
-                call.campaign.ownerUserId,
-            }
-          );
+        : call.communicationCampaign
+          ? normalizeDocumentIds(call.communicationCampaign.knowledgeDocumentIds)
+          : call.campaignId && call.campaign
+            ? await resolveSecureCampaignKnowledgeDocumentIds(
+                call.campaignId,
+                { ownerUserId: call.campaign.ownerUserId }
+              )
+            : [];
 
     const tenantId =
       call.tenantId ??
-      call.campaign.ownerUser?.tenantId ??
+      call.communicationCampaign?.ownerUser?.tenantId ??
+      call.campaign?.ownerUser?.tenantId ??
       null;
 
     const results =
@@ -239,7 +249,7 @@ async function executeKnowledgeSearch(
         tenantId,
 
         ownerUserId:
-          call.campaign.ownerUserId,
+          call.communicationCampaign?.ownerUserId ?? call.campaign?.ownerUserId ?? null,
 
         callAuthenticationLevel:
           call.authenticationLevel,
@@ -323,4 +333,12 @@ async function executeKnowledgeSearch(
 
     chunks,
   };
+}
+
+function normalizeDocumentIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map(item => item.trim())
+    .filter(Boolean);
 }

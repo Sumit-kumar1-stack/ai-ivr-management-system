@@ -4,7 +4,12 @@ import { getPlivoPublicCallbackUrl } from "@/lib/plivo-public-url";
 import { normalizePlivoPstnNumber, normalizePstnNumber } from "@/lib/telephony-number";
 import { createCallLogger, normalizeError } from "@/lib/logger";
 import type { CallResponse, ProviderCallRequest } from "@/services/telephony/types";
+import { Client as PlivoClient } from "plivo";
 import { BaseTelephonyProvider } from "./base.provider";
+import type {
+  OutboundProviderCallRequest,
+  OutboundProviderCallResult,
+} from "./outbound-call.types";
 
 type PlivoCreateCallResponse = { request_uuid?: unknown; message?: unknown };
 
@@ -23,6 +28,58 @@ export class PlivoProvider extends BaseTelephonyProvider {
     supportsBargeIn: true, supportsStatusCallbacks: true, supportsCallControlUpdate: true,
     supportsStreamingTts: true, supportsGeminiLive: true,
   } as const;
+
+  async applyStandardTtsFallback(
+    callId: string,
+    providerCallId: string
+  ): Promise<void> {
+    const config =
+      getPlivoEnvironment();
+    const normalizedProviderCallId =
+      providerCallId.trim();
+
+    if (!normalizedProviderCallId) {
+      throw new Error(
+        "Plivo CallUUID is required"
+      );
+    }
+
+    const fallbackUrl =
+      getPlivoPublicCallbackUrl(
+        "/api/plivo/tts-fallback",
+        { callId }
+      ).toString();
+
+    const response =
+      await fetch(
+        `https://api.plivo.com/v1/Account/${encodeURIComponent(config.authId)}/Call/${encodeURIComponent(normalizedProviderCallId)}/`,
+        {
+          method: "POST",
+          headers: {
+            Authorization:
+              `Basic ${Buffer.from(`${config.authId}:${config.authToken}`).toString("base64")}`,
+            "Content-Type":
+              "application/json",
+            Accept:
+              "application/json",
+          },
+          body:
+            JSON.stringify({
+              legs: "aleg",
+              aleg_url:
+                fallbackUrl,
+              aleg_method:
+                "POST",
+            }),
+        }
+      );
+
+    if (!response.ok) {
+      throw new Error(
+        `Plivo fallback transfer failed with HTTP ${response.status}`
+      );
+    }
+  }
 
   async makeCall(request: ProviderCallRequest): Promise<CallResponse> {
     const config = getPlivoEnvironment();
@@ -54,6 +111,45 @@ export class PlivoProvider extends BaseTelephonyProvider {
     }
   }
 
+  /** CommunicationCampaign E.3 boundary. The installed Plivo SDK returns a
+   * request UUID here; the signed callback supplies the eventual CallUUID. */
+  async executeOutboundCall(
+    request: OutboundProviderCallRequest
+  ): Promise<OutboundProviderCallResult> {
+    const config = getPlivoEnvironment();
+    const caller = normalizePstnNumber(request.from);
+    const destination = normalizePstnNumber(request.to);
+
+    if (!caller || !destination) {
+      throw new Error("Plivo outbound caller and destination must be valid E.164 numbers");
+    }
+
+    const client = new PlivoClient(config.authId, config.authToken);
+    const response = await client.calls.create(
+      normalizePlivoApiNumber(caller),
+      normalizePlivoApiNumber(destination),
+      request.answerUrl,
+      {
+        answerMethod: "POST",
+        hangupUrl: request.statusCallbackUrl,
+        hangupMethod: "POST",
+      }
+    );
+    const requestId = firstString(response.requestUuid);
+
+    if (!requestId) {
+      throw new Error("Plivo response did not include a request UUID");
+    }
+
+    return {
+      accepted: true,
+      provider: "PLIVO",
+      providerRequestId: requestId,
+      providerCallId: null,
+      rawProviderStatus: "queued",
+    };
+  }
+
   async endCall(callId: string): Promise<void> {
     const config = getPlivoEnvironment();
     if (!callId.trim()) throw new Error("Plivo CallUUID is required");
@@ -63,7 +159,7 @@ export class PlivoProvider extends BaseTelephonyProvider {
     if (!response.ok) throw new Error(`Plivo end call request failed with HTTP ${response.status}`);
   }
 
-  async handleWebhook(_body: unknown): Promise<void> {}
+  async handleWebhook(body: unknown): Promise<void> { void body; }
 
   async startBidirectionalStream(callId: string, providerCallId: string): Promise<void> {
     const config = getPlivoEnvironment();
@@ -135,5 +231,10 @@ export function getPlivoBidirectionalStreamUrl(callId: string): URL {
 }
 
 function stringValue(value: unknown): string | null { return typeof value === "string" && value.trim() ? value.trim() : null; }
+function firstString(value: unknown): string | null {
+  if (Array.isArray(value)) return value.map(stringValue).find(Boolean) ?? null;
+  return stringValue(value);
+}
+function normalizePlivoApiNumber(value: string): string { return value.replace(/^\+/, ""); }
 async function parseResponse(response: Response): Promise<PlivoCreateCallResponse> { try { return await response.json() as PlivoCreateCallResponse; } catch { return {}; } }
 function isAllowedPlivoRecordingHost(hostname: string): boolean { const host = hostname.toLowerCase(); return host === "s3.amazonaws.com" || host.endsWith(".amazonaws.com") || host.endsWith(".plivo.com"); }

@@ -86,7 +86,7 @@ interface RecipientCallRecord {
     string;
 
   campaignId:
-    string;
+    string | null;
 
   status:
     CallStatus;
@@ -124,7 +124,7 @@ interface RecipientCallRecord {
   contact: {
     phone:
       string;
-  };
+  } | null;
 }
 
 //--------------------------------------------------
@@ -789,6 +789,9 @@ export async function getCommunicationCampaignInsights(
     const call
     of pageCalls
   ) {
+    if (!call.campaignId || !call.contact) {
+      continue;
+    }
     const key =
       buildCallKey(
         call.campaignId,

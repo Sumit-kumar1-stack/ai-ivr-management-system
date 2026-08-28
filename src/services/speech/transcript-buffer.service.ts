@@ -42,7 +42,13 @@ const MAX_BUFFER_CHARACTER_COUNT =
 
 class TranscriptBufferService {
   private buffers =
-    new Map<string, string>();
+    new Map<
+      string,
+      {
+        committed: string;
+        partial: string;
+      }
+    >();
 
   //----------------------------------
   // Add Partial Transcript
@@ -66,8 +72,10 @@ class TranscriptBufferService {
     const current =
       this.buffers.get(
         callId
-      ) ??
-      "";
+      ) ?? {
+        committed: "",
+        partial: "",
+      };
 
     /*
      * Add a space between fragments. The previous
@@ -76,9 +84,9 @@ class TranscriptBufferService {
      *
      * "helloi needinformation"
      */
-    const updated =
+    const updatedPartial =
       this.combineText(
-        current,
+        current.partial,
         normalizedText
       ).slice(
         0,
@@ -87,8 +95,21 @@ class TranscriptBufferService {
 
     this.buffers.set(
       callId,
-      updated
+      {
+        ...current,
+        partial:
+          updatedPartial,
+      }
     );
+
+    const updated =
+      this.combineText(
+        current.committed,
+        updatedPartial
+      ).slice(
+        0,
+        MAX_BUFFER_CHARACTER_COUNT
+      );
 
     log.debug(
       {
@@ -146,7 +167,15 @@ class TranscriptBufferService {
       return;
     }
 
-    const boundedText =
+    const current =
+      this.buffers.get(
+        callId
+      ) ?? {
+        committed: "",
+        partial: "",
+      };
+
+    const boundedPartial =
       normalizedText.slice(
         0,
         MAX_BUFFER_CHARACTER_COUNT
@@ -154,8 +183,21 @@ class TranscriptBufferService {
 
     this.buffers.set(
       callId,
-      boundedText
+      {
+        ...current,
+        partial:
+          boundedPartial,
+      }
     );
+
+    const boundedText =
+      this.combineText(
+        current.committed,
+        boundedPartial
+      ).slice(
+        0,
+        MAX_BUFFER_CHARACTER_COUNT
+      );
 
     log.debug(
       {
@@ -192,24 +234,87 @@ class TranscriptBufferService {
   }
 
   //----------------------------------
+  // Commit Finalized STT Segment
+  //----------------------------------
+
+  commitFinalSegment(
+    callId: string,
+    text: string
+  ): void {
+    const normalizedText =
+      this.normalizeFragment(
+        text
+      );
+
+    if (
+      !normalizedText
+    ) {
+      return;
+    }
+
+    const current =
+      this.buffers.get(
+        callId
+      ) ?? {
+        committed: "",
+        partial: "",
+      };
+
+    const committed =
+      this.combineText(
+        current.committed,
+        normalizedText
+      ).slice(
+        0,
+        MAX_BUFFER_CHARACTER_COUNT
+      );
+
+    this.buffers.set(
+      callId,
+      {
+        committed,
+        partial: "",
+      }
+    );
+
+    log.debug(
+      {
+        event:
+          "transcript.buffer.final_segment_committed",
+        callId,
+        segmentCharacterCount:
+          normalizedText.length,
+        totalCharacterCount:
+          committed.length,
+      },
+      "Finalized STT segment committed to utterance buffer"
+    );
+  }
+
+  //----------------------------------
   // Flush Final Transcript
   //----------------------------------
 
   flush(
     callId: string
-  ): void {
-    const bufferedText =
+  ): boolean {
+    const buffered =
       this.buffers.get(
         callId
       );
 
     const text =
-      bufferedText
-        ?.replace(
-          /\s+/g,
-          " "
-        )
-        .trim();
+      buffered
+        ? this.combineText(
+            buffered.committed,
+            buffered.partial
+          )
+            .replace(
+              /\s+/g,
+              " "
+            )
+            .trim()
+        : "";
 
     if (
       !text
@@ -227,7 +332,7 @@ class TranscriptBufferService {
         "Transcript buffer flush skipped"
       );
 
-      return;
+      return false;
     }
 
     this.buffers.delete(
@@ -258,6 +363,8 @@ class TranscriptBufferService {
           Date.now(),
       }
     );
+
+    return true;
   }
 
   //----------------------------------
@@ -292,12 +399,17 @@ class TranscriptBufferService {
   get(
     callId: string
   ): string {
-    return (
+    const buffered =
       this.buffers.get(
         callId
-      ) ??
-      ""
-    );
+      );
+
+    return buffered
+      ? this.combineText(
+          buffered.committed,
+          buffered.partial
+        )
+      : "";
   }
 
   //----------------------------------

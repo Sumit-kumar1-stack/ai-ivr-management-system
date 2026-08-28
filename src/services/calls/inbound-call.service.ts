@@ -237,6 +237,9 @@ export async function createOrGetInboundCall(
      * Twilio may retry the webhook.
      * The existing call remains authoritative.
      */
+    if (!existingCall.contactId || !existingCall.campaignId) {
+      throw new Error("Inbound call is missing its legacy routing context");
+    }
     return {
       callId:
         existingCall.id,
@@ -502,6 +505,9 @@ export async function createOrGetInboundCall(
       "Inbound call record created"
     );
 
+    if (!result.contactId || !result.campaignId) {
+      throw new Error("Inbound call creation did not persist routing context");
+    }
     return {
       callId:
         result.id,
@@ -574,6 +580,9 @@ export async function createOrGetInboundCall(
           );
         }
 
+        if (!duplicateCall.contactId || !duplicateCall.campaignId) {
+          throw new Error("Inbound duplicate call is missing routing context");
+        }
         return {
           callId:
             duplicateCall.id,

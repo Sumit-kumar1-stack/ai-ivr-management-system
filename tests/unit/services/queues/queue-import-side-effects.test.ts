@@ -22,6 +22,9 @@ const mocks =
       getJob:
         vi.fn(),
 
+      getJobs:
+        vi.fn(),
+
       close:
         vi.fn(),
 
@@ -65,6 +68,9 @@ vi.mock(
 
         getJob =
           mocks.getJob;
+
+        getJobs =
+          mocks.getJobs;
 
         close =
           mocks.close;
@@ -138,6 +144,10 @@ beforeEach(
       .mockReset();
 
     mocks
+      .getJobs
+      .mockReset();
+
+    mocks
       .close
       .mockReset();
 
@@ -150,6 +160,12 @@ beforeEach(
       .getJob
       .mockResolvedValue(
         undefined
+      );
+
+    mocks
+      .getJobs
+      .mockResolvedValue(
+        []
       );
 
     mocks
@@ -292,6 +308,187 @@ describe(
         ).toHaveBeenCalledTimes(
           2
         );
+      }
+    );
+
+    it(
+      "deduplicates repeated launch and scheduler ticks by campaign job id",
+      async () => {
+        const existing = {
+          getState: vi.fn().mockResolvedValue("delayed"),
+          remove: vi.fn(),
+        };
+        mocks.getJob
+          .mockResolvedValueOnce(undefined)
+          .mockResolvedValueOnce(existing);
+
+        const {
+          CommunicationCampaignQueueService,
+        } = await import(
+          "@/services/communication/communication-campaign-queue.service"
+        );
+
+        await CommunicationCampaignQueueService.enqueue(
+          { communicationCampaignId: "campaign-1" },
+          60_000
+        );
+        await CommunicationCampaignQueueService.enqueue(
+          { communicationCampaignId: "campaign-1" },
+          60_000
+        );
+
+        expect(mocks.getJob).toHaveBeenNthCalledWith(1, "communication-campaign-1");
+        expect(mocks.getJob).toHaveBeenNthCalledWith(2, "communication-campaign-1");
+        expect(mocks.add).toHaveBeenCalledTimes(1);
+        expect(mocks.add).toHaveBeenCalledWith(
+          "run-communication-campaign",
+          { communicationCampaignId: "campaign-1" },
+          expect.objectContaining({ jobId: "communication-campaign-1" })
+        );
+      }
+    );
+
+    it(
+      "enqueues recipient attempts with deterministic job ids",
+      async () => {
+        const {
+          CommunicationCampaignQueueService,
+        } =
+          await import(
+            "@/services/communication/communication-campaign-queue.service"
+          );
+
+        await CommunicationCampaignQueueService
+          .enqueueRecipientAttempt(
+            {
+              jobVersion:
+                1,
+
+              tenantId:
+                "tenant-1",
+
+              campaignId:
+                "campaign-1",
+
+              campaignRecipientId:
+                "recipient-1",
+
+              contactId:
+                "contact-1",
+
+              attemptNumber:
+                1,
+
+              scheduledFor:
+                "2026-08-29T10:00:00.000Z",
+            }
+          );
+
+        expect(
+          mocks.queueConstructor
+        ).toHaveBeenCalledTimes(
+          1
+        );
+
+        expect(
+          mocks.add
+        ).toHaveBeenCalledWith(
+          "run-communication-campaign-recipient",
+          expect.objectContaining({
+            campaignId:
+              "campaign-1",
+          }),
+          expect.objectContaining({
+            jobId:
+              "outbound-call:campaign-1:recipient-1:1",
+          })
+        );
+      }
+    );
+
+    it(
+      "uses the minimal secret-safe recipient payload",
+      async () => {
+        const {
+          CommunicationCampaignQueueService,
+        } = await import(
+          "@/services/communication/communication-campaign-queue.service"
+        );
+
+        await CommunicationCampaignQueueService.enqueueRecipientAttempt({
+          jobVersion: 1,
+          tenantId: "tenant-1",
+          campaignId: "campaign-1",
+          campaignRecipientId: "recipient-1",
+          contactId: "contact-1",
+          attemptNumber: 2,
+          scheduledFor: "2026-08-29T10:05:00.000Z",
+        });
+
+        const payload = mocks.add.mock.calls[0][1];
+        expect(Object.keys(payload).sort()).toEqual([
+          "attemptNumber",
+          "campaignId",
+          "campaignRecipientId",
+          "contactId",
+          "jobVersion",
+          "scheduledFor",
+          "tenantId",
+        ]);
+
+        const serialized = JSON.stringify(payload);
+        for (const forbidden of [
+          "PLIVO_AUTH_TOKEN",
+          "PLIVO_AUTH_ID",
+          "TWILIO_AUTH_TOKEN",
+          "EXOTEL_API_TOKEN",
+          "TELNYX_API_KEY",
+          "DATABASE_URL",
+          "REDIS_URL",
+          "knowledgeDocumentIds",
+          "nodes",
+          "edges",
+          "phone",
+          "email",
+          "address",
+        ]) {
+          expect(serialized).not.toContain(forbidden);
+        }
+      }
+    );
+
+    it(
+      "returns an existing active attempt job instead of adding a duplicate",
+      async () => {
+        const existing = {
+          getState: vi.fn().mockResolvedValue("waiting"),
+          remove: vi.fn(),
+        };
+        mocks.getJob
+          .mockResolvedValueOnce(undefined)
+          .mockResolvedValueOnce(existing);
+
+        const {
+          CommunicationCampaignQueueService,
+        } = await import(
+          "@/services/communication/communication-campaign-queue.service"
+        );
+
+        const data = {
+          jobVersion: 1 as const,
+          tenantId: "tenant-1",
+          campaignId: "campaign-1",
+          campaignRecipientId: "recipient-1",
+          contactId: "contact-1",
+          attemptNumber: 1,
+          scheduledFor: "2026-08-29T10:00:00.000Z",
+        };
+
+        await CommunicationCampaignQueueService.enqueueRecipientAttempt(data);
+        await CommunicationCampaignQueueService.enqueueRecipientAttempt(data);
+        expect(mocks.getJob).toHaveBeenNthCalledWith(1, "outbound-call:campaign-1:recipient-1:1");
+        expect(mocks.getJob).toHaveBeenNthCalledWith(2, "outbound-call:campaign-1:recipient-1:1");
+        expect(mocks.add).toHaveBeenCalledTimes(1);
       }
     );
 

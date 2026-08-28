@@ -134,12 +134,10 @@ export class DashboardService {
             event.call.status,
 
           customerName:
-            event.call.contact
-              .fullName,
+            event.call.contact?.fullName ?? "Unknown caller",
 
           phone:
-            event.call.contact
-              .phone,
+            event.call.contact?.phone ?? "",
         },
       })
     );
@@ -163,7 +161,7 @@ export class DashboardService {
           phone:
             call.providerDestination ??
             call.contactPhoneSnapshot ??
-            call.contact.phone,
+            call.contact?.phone ?? call.calledNumber ?? "",
 
           status:
             getLiveStatus(
@@ -189,10 +187,10 @@ export class DashboardService {
             undefined,
 
           customerName:
-            call.contact.fullName,
+            call.contact?.fullName ?? "Unknown caller",
 
           campaignName:
-            call.campaign.name,
+            call.campaign?.name ?? "Communication campaign",
 
           providerCallId:
             call.providerCallId,

@@ -299,10 +299,13 @@ export class VoiceWorker {
     ) {
       log.error(
         {
-          error,
           callId,
           textLength:
             normalizedText.length,
+          errorType:
+            error instanceof Error
+              ? error.name
+              : "UnknownError",
         },
         "Failed to synthesize speech"
       );

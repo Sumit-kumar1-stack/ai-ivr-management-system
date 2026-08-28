@@ -20,14 +20,20 @@ import {
   COMMUNICATION_FALLBACK_JOB_NAME,
   COMMUNICATION_JOB_NAME,
   COMMUNICATION_QUEUE_NAME,
+  COMMUNICATION_RECIPIENT_JOB_NAME,
   type CommunicationCampaignJobData,
   type CommunicationFallbackJobData,
   type CommunicationJobData,
+  type CommunicationRecipientAttemptJobData,
 } from "@/services/communication/communication-campaign-queue.service";
 
 import {
   runCommunicationCampaign,
 } from "@/services/communication/communication-campaign-runner.service";
+
+import {
+  executeOutboundCampaignAttempt,
+} from "@/services/communication/communication-outbound-orchestrator.service";
 
 import {
   handleWhatsAppFailureFallback,
@@ -189,12 +195,114 @@ export function initializeCommunicationCampaignWorker():
         }
 
         //------------------------------------------------
+        // Outbound Recipient Attempt
+        //------------------------------------------------
+
+        if (
+          job.name ===
+          COMMUNICATION_RECIPIENT_JOB_NAME
+        ) {
+          const data =
+            job.data as
+              CommunicationRecipientAttemptJobData;
+
+          const tenantId =
+            data
+              .tenantId
+              ?.trim();
+
+          const campaignId =
+            data
+              .campaignId
+              ?.trim();
+
+          const campaignRecipientId =
+            data
+              .campaignRecipientId
+              ?.trim();
+
+          if (
+            !tenantId ||
+            !campaignId ||
+            !campaignRecipientId
+          ) {
+            return {
+              communicationCampaignId:
+                campaignId ||
+                "unknown",
+
+              audienceCount:
+                0,
+
+              eligibleCount:
+                0,
+
+              excludedCount:
+                0,
+
+              deferredCount:
+                0,
+
+              queuedCount:
+                0,
+
+              skippedCount:
+                1,
+
+              dryRun:
+                true,
+            };
+          }
+
+          const result =
+            await executeOutboundCampaignAttempt(
+              {
+                ...data,
+
+                tenantId,
+
+                campaignId,
+
+                campaignRecipientId,
+              }
+            );
+
+          await job.updateProgress(
+            100
+          );
+
+          return result;
+        }
+
+        //------------------------------------------------
         // Unsupported
         //------------------------------------------------
 
-        throw new Error(
-          `Unsupported communication job: ${job.name}`
-        );
+        return {
+          communicationCampaignId:
+            "unsupported",
+
+          audienceCount:
+            0,
+
+          eligibleCount:
+            0,
+
+          excludedCount:
+            0,
+
+          deferredCount:
+            0,
+
+          queuedCount:
+            0,
+
+          skippedCount:
+            1,
+
+          dryRun:
+            true,
+        };
       },
 
       {

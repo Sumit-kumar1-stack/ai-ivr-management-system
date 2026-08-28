@@ -385,6 +385,9 @@ export async function finalizeCampaignRunIfReady(
       const call of
       calls
     ) {
+      if (!call.contactId) {
+        continue;
+      }
       const existing =
         latestCallByContact.get(
           call.contactId

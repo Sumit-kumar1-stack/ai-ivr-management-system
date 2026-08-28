@@ -598,7 +598,10 @@ export async function triggerCampaignActionForVoiceOutcome(
 
   if (
     !call ||
-    !call.campaignId
+    !call.campaignId ||
+    !call.contactId ||
+    !call.campaign ||
+    !call.contact
   ) {
     return {
       matched:

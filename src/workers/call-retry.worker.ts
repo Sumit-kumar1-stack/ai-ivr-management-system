@@ -623,6 +623,10 @@ async function processCallRetry(
     );
   }
 
+  if (!originalCall.campaign || !originalCall.contact) {
+    return completeSkippedRetry(job.data, "Original call is not part of the legacy retry stack");
+  }
+
   //------------------------------------------------
   // Verify Job Ownership
   //------------------------------------------------

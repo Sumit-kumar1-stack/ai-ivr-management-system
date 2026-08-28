@@ -822,6 +822,9 @@ async function buildRecipientInsights(
     const call
     of calls
   ) {
+    if (!call.contactId || !call.campaignId) {
+      continue;
+    }
     const phone =
       phoneByContactId
         .get(
@@ -1576,7 +1579,7 @@ function buildVoiceMetrics(
   groups:
     Array<{
       campaignId:
-        string;
+        string | null;
 
       status:
         CallStatus;

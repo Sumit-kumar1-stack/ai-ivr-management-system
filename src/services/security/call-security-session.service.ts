@@ -89,6 +89,7 @@ export async function getCallSecuritySession(
       select: {
         id: true,
         campaignId: true,
+        communicationCampaignId: true,
         contactId: true,
         direction: true,
         authenticationLevel: true,
@@ -286,6 +287,7 @@ export async function updateCallSecuritySession(
       select: {
         id: true,
         campaignId: true,
+        communicationCampaignId: true,
         contactId: true,
         direction: true,
         authenticationLevel: true,
@@ -390,8 +392,9 @@ function normalizeSecurityFlags(
 async function buildSessionSnapshot(
   call: {
     id: string;
-    campaignId: string;
-    contactId: string;
+    campaignId: string | null;
+    communicationCampaignId: string | null;
+    contactId: string | null;
     direction: CallDirection;
     authenticationLevel:
       CallAuthenticationLevel;
@@ -402,17 +405,17 @@ async function buildSessionSnapshot(
     updatedAt: Date;
   }
 ): Promise<CallSecuritySession> {
-  const communicationCampaign =
-    await prisma.communicationCampaign.findUnique({
-      where: {
-        voiceCampaignId:
-          call.campaignId,
-      },
-
-      select: {
-        id: true,
-      },
-    });
+  const communicationCampaign = call.communicationCampaignId
+    ? await prisma.communicationCampaign.findUnique({
+        where: { id: call.communicationCampaignId },
+        select: { id: true },
+      })
+    : call.campaignId
+      ? await prisma.communicationCampaign.findUnique({
+          where: { voiceCampaignId: call.campaignId },
+          select: { id: true },
+        })
+      : null;
 
   const allowedActions =
     communicationCampaign
@@ -443,8 +446,8 @@ async function buildSessionSnapshot(
 
   return {
     callId: call.id,
-    campaignId: call.campaignId,
-    contactId: call.contactId,
+    campaignId: call.communicationCampaignId ?? call.campaignId ?? "",
+    contactId: call.contactId ?? "",
     direction: call.direction,
     authenticationLevel:
       call.authenticationLevel,

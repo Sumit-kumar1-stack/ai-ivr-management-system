@@ -5,6 +5,7 @@ import {
   CommunicationCampaignStatus,
   CommunicationChannel,
   CommunicationFallbackPolicy,
+  CommunicationOutboundAttemptStatus,
   CommunicationRecipientStatus,
   MessagingChannel,
   OutboundMessageStatus,
@@ -197,6 +198,13 @@ export async function finalizeCommunicationCampaignIfReady(
             },
           },
 
+          outboundAttempts: {
+            select: {
+              status:
+                true,
+            },
+          },
+
           ownerUser: {
             select: {
               tenantId:
@@ -279,6 +287,185 @@ export async function finalizeCommunicationCampaignIfReady(
               CommunicationRecipientStatus.FAILED
         ).length,
 
+      unresolvedRecipients:
+        0,
+    });
+  }
+
+  //------------------------------------------------
+  // E.2 Provider-Neutral Attempt Settlement
+  //
+  // Queue emptiness is deliberately irrelevant. Durable queued/claimed
+  // attempts, actionable recipients, future retry dates, and remaining retry
+  // budget all keep the campaign open.
+  //------------------------------------------------
+
+  if (
+    campaign.outboundAttempts.length > 0
+  ) {
+    const activeAttempts =
+      campaign.outboundAttempts.filter(
+        attempt =>
+          attempt.status ===
+            CommunicationOutboundAttemptStatus.QUEUED ||
+          attempt.status ===
+            CommunicationOutboundAttemptStatus.CLAIMED ||
+          attempt.status ===
+            CommunicationOutboundAttemptStatus.PROVIDER_REQUESTING ||
+          attempt.status ===
+            CommunicationOutboundAttemptStatus.PROVIDER_ACCEPTED ||
+          attempt.status ===
+            CommunicationOutboundAttemptStatus.RINGING ||
+          attempt.status ===
+            CommunicationOutboundAttemptStatus.ANSWERED
+      ).length;
+
+    const actionableRecipients =
+      campaign.recipients.filter(
+        recipient =>
+          recipient.status ===
+            CommunicationRecipientStatus.PROCESSING ||
+          (
+            recipient.status ===
+              CommunicationRecipientStatus.PENDING &&
+            (
+              recipient.nextAttemptAt !== null ||
+              recipient.attemptCount <
+                campaign.maxAttempts
+            )
+          )
+      ).length;
+
+    const unresolvedRecipients =
+      Math.max(
+        activeAttempts,
+        actionableRecipients
+      );
+
+    if (
+      unresolvedRecipients > 0 ||
+      campaign.status ===
+        CommunicationCampaignStatus.PAUSED ||
+      campaign.status ===
+        CommunicationCampaignStatus.SCHEDULED ||
+      campaign.status ===
+        CommunicationCampaignStatus.QUEUED
+    ) {
+      return result({
+        campaignId:
+          campaign.id,
+        finalized:
+          false,
+        skipped:
+          true,
+        reason:
+          "Outbound attempts, actionable recipients, deferred work, or retries remain",
+        status:
+          campaign.status,
+        totalRecipients:
+          campaign.recipients.length,
+        completedRecipients:
+          campaign.recipients.filter(
+            recipient =>
+              recipient.status ===
+                CommunicationRecipientStatus.COMPLETED
+          ).length,
+        failedRecipients:
+          campaign.recipients.filter(
+            recipient =>
+              recipient.status ===
+                CommunicationRecipientStatus.FAILED
+          ).length,
+        unresolvedRecipients,
+      });
+    }
+
+    const completedRecipients =
+      campaign.recipients.filter(
+        recipient =>
+          recipient.status ===
+            CommunicationRecipientStatus.COMPLETED
+      ).length;
+
+    const failedRecipients =
+      campaign.recipients.length -
+      completedRecipients;
+
+    const finalStatus =
+      completedRecipients > 0
+        ? CommunicationCampaignStatus.COMPLETED
+        : CommunicationCampaignStatus.FAILED;
+
+    const finalized =
+      await prisma.communicationCampaign.updateMany({
+        where: {
+          id:
+            campaign.id,
+          status: {
+            in: [
+              CommunicationCampaignStatus.RUNNING,
+              CommunicationCampaignStatus.DISPATCHED,
+            ],
+          },
+        },
+        data: {
+          status:
+            finalStatus,
+        },
+      });
+
+    if (
+      finalized.count === 1 &&
+      campaign.ownerUser?.tenantId
+    ) {
+      try {
+        await recordAuditEvent({
+          tenantId:
+            campaign.ownerUser.tenantId,
+          actor:
+            null,
+          entityType:
+            "CommunicationCampaign",
+          entityId:
+            campaign.id,
+          action:
+            finalStatus ===
+            CommunicationCampaignStatus.COMPLETED
+              ? "COMPLETED"
+              : "FAILED",
+          outcome:
+            AuditEventOutcome.SUCCEEDED,
+          afterState: {
+            status:
+              finalStatus,
+            completedRecipients,
+            failedRecipients,
+            providerNeutral:
+              true,
+          },
+        });
+      } catch {
+        // Existing campaign audit hooks are best effort.
+      }
+    }
+
+    return result({
+      campaignId:
+        campaign.id,
+      finalized:
+        finalized.count === 1,
+      skipped:
+        finalized.count !== 1,
+      reason:
+        finalized.count === 1
+          ? "Every provider-neutral outbound attempt and retry is settled"
+          : "Communication campaign changed concurrently",
+      status:
+        finalStatus,
+      totalRecipients:
+        campaign.recipients.length,
+      completedRecipients,
+      failedRecipients,
       unresolvedRecipients:
         0,
     });
@@ -989,6 +1176,9 @@ async function loadVoiceOutcomeByPhone(
     const call
     of calls
   ) {
+    if (!call.contact) {
+      continue;
+    }
     const phone =
       call.contact.phone;
 
