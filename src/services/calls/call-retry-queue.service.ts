@@ -7,6 +7,10 @@ import {
   redisConnection,
 } from "@/lib/redis";
 
+import {
+  readQueueDiagnosticCounts,
+} from "@/services/queues/queue-diagnostics.types";
+
 //--------------------------------------------------
 // Queue Constants
 //--------------------------------------------------
@@ -109,6 +113,12 @@ function getCallRetryQueue():
 //--------------------------------------------------
 
 export class CallRetryQueueService {
+  static async getReadOnlyCounts() {
+    return readQueueDiagnosticCounts(
+      getCallRetryQueue()
+    );
+  }
+
   static async enqueue(
     data:
       CallRetryJobData,

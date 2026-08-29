@@ -11,6 +11,10 @@ import {
   redisConnection,
 } from "@/lib/redis";
 
+import {
+  readQueueDiagnosticCounts,
+} from "@/services/queues/queue-diagnostics.types";
+
 //--------------------------------------------------
 // Queue Constants
 //--------------------------------------------------
@@ -180,6 +184,16 @@ function normalizeDelay(
 //--------------------------------------------------
 
 export class CampaignQueueService {
+  //------------------------------------------------
+  // Read-Only Diagnostics
+  //------------------------------------------------
+
+  static async getReadOnlyCounts() {
+    return readQueueDiagnosticCounts(
+      getCampaignQueue()
+    );
+  }
+
   //------------------------------------------------
   // Enqueue
   //------------------------------------------------

@@ -6,6 +6,10 @@ import {
   redisConnection,
 } from "@/lib/redis";
 
+import {
+  readQueueDiagnosticCounts,
+} from "@/services/queues/queue-diagnostics.types";
+
 //--------------------------------------------------
 // Queue
 //--------------------------------------------------
@@ -151,6 +155,16 @@ function getCommunicationCampaignQueue():
 //--------------------------------------------------
 
 export class CommunicationCampaignQueueService {
+  //------------------------------------------------
+  // Read-Only Diagnostics
+  //------------------------------------------------
+
+  static async getReadOnlyCounts() {
+    return readQueueDiagnosticCounts(
+      getCommunicationCampaignQueue()
+    );
+  }
+
   //------------------------------------------------
   // Campaign
   //------------------------------------------------
