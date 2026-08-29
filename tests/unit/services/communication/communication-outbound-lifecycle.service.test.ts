@@ -79,6 +79,7 @@ function attempt(status: Status, providerCallId: string | null = "call-uuid-1") 
     requestedRuntime: "CASCADED",
     effectiveRuntime: "CASCADED",
     providerAcceptedAt: new Date("2026-08-29T10:00:00.000Z"),
+    answeredAt: status === Status.ANSWERED ? new Date("2026-08-29T10:01:00.000Z") : null,
     campaign: {
       id: "campaign-1",
       status: CommunicationCampaignStatus.RUNNING,
@@ -183,10 +184,23 @@ describe("Communication outbound signed-callback lifecycle", () => {
     expect(mocks.recipientUpdate).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: CommunicationRecipientStatus.COMPLETED }),
     }));
+    expect(mocks.attemptUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        id: "attempt-1",
+        tenantId: "tenant-1",
+        campaignId: "campaign-1",
+        usageSettledAt: null,
+      }),
+      data: expect.objectContaining({
+        usageProviderAccepted: true,
+        usageConnected: true,
+      }),
+    }));
   });
 
   it("makes a duplicate terminal callback logically idempotent", async () => {
     mocks.attemptFind.mockResolvedValue(attempt(Status.COMPLETED));
+    mocks.attemptUpdate.mockResolvedValue({ count: 0 });
     const result = await processOutboundPlivoLifecycle({
       attemptId: "attempt-1",
       providerCallId: "call-uuid-1",
@@ -195,6 +209,35 @@ describe("Communication outbound signed-callback lifecycle", () => {
     expect(result.duplicate).toBe(true);
     expect(mocks.release).not.toHaveBeenCalled();
     expect(mocks.finalize).not.toHaveBeenCalled();
+    expect(mocks.outboundEmit).not.toHaveBeenCalled();
+    expect(mocks.attemptUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ usageSettledAt: null }),
+    }));
+    expect(mocks.audit).not.toHaveBeenCalledWith(expect.objectContaining({
+      action: "OUTBOUND_USAGE_SETTLED",
+    }));
+  });
+
+  it("discards a stale transition when another callback wins the atomic update", async () => {
+    mocks.attemptFind
+      .mockResolvedValueOnce(attempt(Status.ANSWERED))
+      .mockResolvedValueOnce({ status: Status.COMPLETED });
+    mocks.attemptUpdate.mockResolvedValueOnce({ count: 0 });
+
+    const result = await processOutboundPlivoLifecycle({
+      attemptId: "attempt-1",
+      providerCallId: "call-uuid-1",
+      rawStatus: "completed",
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ignored: true,
+      duplicate: true,
+      status: Status.COMPLETED,
+      terminal: true,
+    }));
+    expect(mocks.callUpdate).not.toHaveBeenCalled();
+    expect(mocks.release).not.toHaveBeenCalled();
     expect(mocks.outboundEmit).not.toHaveBeenCalled();
   });
 

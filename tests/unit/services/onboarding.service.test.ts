@@ -143,8 +143,8 @@ describe("onboarding service", () => {
       fullName: "Campaign Approver",
       role: UserRole.ADMIN,
       status: "PENDING",
-      invitedAt: new Date("2026-08-22T00:00:00.000Z"),
-      expiresAt: new Date("2026-08-29T00:00:00.000Z"),
+      invitedAt: new Date(Date.now() - 60_000),
+      expiresAt: new Date(Date.now() + 60_000),
       createdByUserId: "user-1",
       tenant: {
         id: "tenant-1",

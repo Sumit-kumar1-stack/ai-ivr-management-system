@@ -700,6 +700,30 @@ export async function executeOutboundCampaignAttempt(
         data: { status: CommunicationRecipientStatus.COMPLETED, lastError: null, nextAttemptAt: null },
       });
     } else {
+      // Subscription state can change after launch. Re-read it at the last
+      // application-controlled point before the paid provider request.
+      const boundaryBilling = await resolveTenantBillingContextForTenant(tenantId);
+      if (
+        !boundaryBilling.launchAllowed ||
+        boundaryBilling.tenantStatus !== TenantStatus.ACTIVE ||
+        boundaryBilling.subscription.status !== SubscriptionStatus.ACTIVE
+      ) {
+        throw new Error("Tenant subscription is not active at the provider boundary");
+      }
+      assertCommunicationCampaignEntitlements({
+        tier: boundaryBilling.effectiveCampaignTier,
+        channels: context.campaign.channels,
+        smartChanneling: context.campaign.smartChanneling,
+        fallbackPolicy: context.campaign.fallbackPolicy,
+        recipientCount: context.campaign.recipientCount,
+      });
+      if (
+        resolveCommunicationVoiceRuntime(context.campaign.tier) === "GEMINI_LIVE" &&
+        !boundaryBilling.premiumVoiceEnabled
+      ) {
+        throw new Error("Premium voice is not entitled at the provider boundary");
+      }
+
       const runtime = resolveCommunicationVoiceRuntime(context.campaign.tier);
       const requesting = await prisma.communicationOutboundAttempt.updateMany({
         where: {
@@ -1030,6 +1054,10 @@ async function loadAttemptContext(input: {
       timezone: true,
       businessHoursPolicy: true,
       maxAttempts: true,
+      channels: true,
+      smartChanneling: true,
+      fallbackPolicy: true,
+      recipientCount: true,
     },
   });
   if (!campaign) return null;

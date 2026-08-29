@@ -1,7 +1,11 @@
 import {
+  CommunicationChannel,
+  CommunicationFallbackPolicy,
   CommunicationCampaignStatus,
   CommunicationOutboundAttemptStatus,
   CommunicationRecipientStatus,
+  SubscriptionStatus,
+  TenantStatus,
 } from "@prisma/client";
 import {
   beforeEach,
@@ -116,6 +120,10 @@ function runnableCampaign(
     maxAttempts: 3,
     timezone: null,
     businessHoursPolicy: null,
+    channels: [CommunicationChannel.AI_VOICE],
+    smartChanneling: false,
+    fallbackPolicy: CommunicationFallbackPolicy.NONE,
+    recipientCount: 1,
   };
 }
 
@@ -171,6 +179,13 @@ describe("outbound attempt safety and idempotency", () => {
       provider: "PLIVO",
       limits: { campaign: null, tenant: 2, provider: null, global: null },
       effectiveLimit: 2,
+    });
+    mocks.billing.mockResolvedValue({
+      tenantStatus: TenantStatus.ACTIVE,
+      subscription: { status: SubscriptionStatus.ACTIVE },
+      effectiveCampaignTier: "STANDARD",
+      premiumVoiceEnabled: false,
+      launchAllowed: true,
     });
     process.env.PLIVO_AUTH_ID = "test-auth-id";
     process.env.PLIVO_AUTH_TOKEN = "test-auth-token";
@@ -294,6 +309,36 @@ describe("outbound attempt safety and idempotency", () => {
     }));
     expect(providerRequest).not.toHaveProperty("campaign");
     expect(providerRequest).not.toHaveProperty("ivrGraph");
+  });
+
+  it("rechecks subscription state immediately before paid execution", async () => {
+    mocks.billing.mockResolvedValue({
+      tenantStatus: TenantStatus.ACTIVE,
+      subscription: { status: SubscriptionStatus.SUSPENDED },
+      effectiveCampaignTier: "STANDARD",
+      premiumVoiceEnabled: false,
+      launchAllowed: false,
+    });
+    const executor = vi.fn();
+
+    await expect(executeOutboundCampaignAttempt(job, { outboundExecutor: executor }))
+      .rejects.toThrow("not active at the provider boundary");
+
+    expect(executor).not.toHaveBeenCalled();
+    expect(mocks.release).toHaveBeenCalledWith("attempt-1");
+  });
+
+  it("rechecks campaign entitlements immediately before paid execution", async () => {
+    mocks.entitlements.mockImplementationOnce(() => {
+      throw new Error("AI Voice is no longer entitled");
+    });
+    const executor = vi.fn();
+
+    await expect(executeOutboundCampaignAttempt(job, { outboundExecutor: executor }))
+      .rejects.toThrow("no longer entitled");
+
+    expect(executor).not.toHaveBeenCalled();
+    expect(mocks.release).toHaveBeenCalledWith("attempt-1");
   });
 
   it("fails closed when acceptance persistence is ambiguous", async () => {

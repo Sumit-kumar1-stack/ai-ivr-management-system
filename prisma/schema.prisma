@@ -920,6 +920,13 @@ model CommunicationOutboundAttempt {
   completedAt DateTime?
   failureReason String?
 
+  // One durable, idempotent settlement snapshot per outbound attempt. The
+  // provider/runtime/campaign/tenant dimensions remain on this same row.
+  usageSettledAt DateTime?
+  usageProviderAccepted Boolean?
+  usageConnected Boolean?
+  usageDurationSeconds Int?
+
   capacityLease CommunicationOutboundCapacityLease?
   call Call? @relation("CommunicationOutboundAttemptCall")
 
@@ -931,6 +938,7 @@ model CommunicationOutboundAttempt {
   @@index([campaignId, status])
   @@index([provider, status])
   @@index([scheduledFor, status])
+  @@index([tenantId, usageSettledAt])
 }
 
 model CommunicationOutboundCapacityLease {

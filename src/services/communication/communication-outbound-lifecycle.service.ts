@@ -61,6 +61,7 @@ interface OutboundAttemptLifecycleContext {
   requestedRuntime: string | null;
   effectiveRuntime: string | null;
   providerAcceptedAt: Date | null;
+  answeredAt: Date | null;
   campaign: {
     id: string;
     status: CommunicationCampaignStatus;
@@ -77,7 +78,7 @@ interface OutboundAttemptLifecycleContext {
     dnc: boolean;
     suppressed: boolean;
   };
-  call: { id: string } | null;
+  call: { id: string; duration: number | null } | null;
 }
 
 export async function processOutboundPlivoLifecycle(
@@ -110,7 +111,7 @@ export async function processOutboundPlivoLifecycle(
           suppressed: true,
         },
       },
-      call: { select: { id: true } },
+      call: { select: { id: true, duration: true } },
     },
   });
 
@@ -159,6 +160,14 @@ export async function processOutboundPlivoLifecycle(
   });
 
   if (!transition.apply) {
+    if (isTerminalOutboundAttemptStatus(attempt.status)) {
+      await settleOutboundAttemptUsage({
+        attempt,
+        status: attempt.status,
+        duration: normalizedDuration(input.duration) ?? attempt.call?.duration ?? null,
+        now,
+      });
+    }
     return {
       matched: true,
       ignored: true,
@@ -171,7 +180,7 @@ export async function processOutboundPlivoLifecycle(
     };
   }
 
-  await prisma.communicationOutboundAttempt.updateMany({
+  const updated = await prisma.communicationOutboundAttempt.updateMany({
     where: { id: attempt.id, status: attempt.status },
     data: {
       status: transition.status,
@@ -184,6 +193,25 @@ export async function processOutboundPlivoLifecycle(
       failureReason: isSuccessful(transition.status) ? null : safeProviderText(input.rawCause),
     },
   });
+
+  // A concurrent callback may have advanced this attempt after our read.
+  // Never publish or settle the stale transition in that case.
+  if (updated.count !== 1) {
+    const current = await prisma.communicationOutboundAttempt.findUnique({
+      where: { id: attempt.id },
+      select: { status: true },
+    });
+    return {
+      matched: true,
+      ignored: true,
+      duplicate: current?.status === transition.status,
+      conflict: false,
+      attemptId: attempt.id,
+      callId: call.id,
+      status: current?.status ?? attempt.status,
+      terminal: current ? isTerminalOutboundAttemptStatus(current.status) : false,
+    };
+  }
 
   await updateCanonicalCall(call.id, transition.status, input.duration, now);
   await publishCallLifecycle(call.id, transition.status, now);
@@ -232,7 +260,12 @@ export async function processOutboundPlivoLifecycle(
   );
 
   if (isTerminalOutboundAttemptStatus(transition.status)) {
-    await settleTerminalAttempt({ attempt, status: transition.status, now });
+    await settleTerminalAttempt({
+      attempt,
+      status: transition.status,
+      duration: normalizedDuration(input.duration),
+      now,
+    });
   }
 
   return {
@@ -360,8 +393,10 @@ async function updateCanonicalCall(
 async function settleTerminalAttempt(input: {
   attempt: OutboundAttemptLifecycleContext;
   status: CommunicationOutboundAttemptStatus;
+  duration: number | null;
   now: Date;
 }): Promise<void> {
+  await settleOutboundAttemptUsage(input);
   await releaseOutboundCapacity(input.attempt.id);
   if (input.status === CommunicationOutboundAttemptStatus.COMPLETED) {
     await prisma.communicationCampaignRecipient.updateMany({
@@ -410,6 +445,55 @@ async function settleTerminalAttempt(input: {
     }
   }
   await tryFinalizeCommunicationCampaign(input.attempt.campaignId);
+}
+
+async function settleOutboundAttemptUsage(input: {
+  attempt: OutboundAttemptLifecycleContext;
+  status: CommunicationOutboundAttemptStatus;
+  duration: number | null;
+  now: Date;
+}): Promise<void> {
+  // This service is reached only after an exact signed callback supplies a
+  // provider CallUUID, including reconciliation of an ambiguous request.
+  const providerAccepted = true;
+  const connected = Boolean(input.attempt.answeredAt) ||
+    input.status === CommunicationOutboundAttemptStatus.COMPLETED;
+  const settled = await prisma.communicationOutboundAttempt.updateMany({
+    where: {
+      id: input.attempt.id,
+      tenantId: input.attempt.tenantId,
+      campaignId: input.attempt.campaignId,
+      usageSettledAt: null,
+    },
+    data: {
+      usageSettledAt: input.now,
+      usageProviderAccepted: providerAccepted,
+      usageConnected: connected,
+      usageDurationSeconds: input.duration,
+    },
+  });
+  if (settled.count !== 1) return;
+  await safeAudit(
+    input.attempt.tenantId,
+    input.attempt.id,
+    "OUTBOUND_USAGE_SETTLED",
+    "SUCCEEDED",
+    {
+      provider: input.attempt.provider,
+      requestedRuntime: input.attempt.requestedRuntime,
+      effectiveRuntime: input.attempt.effectiveRuntime,
+      attemptNumber: input.attempt.attemptNumber,
+      providerAccepted,
+      connected,
+      durationSeconds: input.duration,
+    }
+  );
+}
+
+function normalizedDuration(value: number | undefined): number | null {
+  return Number.isFinite(value) && Number(value) >= 0
+    ? Math.floor(Number(value))
+    : null;
 }
 
 function toCallStatus(status: CommunicationOutboundAttemptStatus): CallStatus {
