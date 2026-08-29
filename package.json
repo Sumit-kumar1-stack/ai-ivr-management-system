@@ -16,6 +16,7 @@
     "start:all": "concurrently -k -n WEB,WORKER,MEDIA \"npm run start:web\" \"npm run start:worker\" \"npm run start:media\"",
     "build": "next build",
     "verify:build": "tsx scripts/verify-build.ts",
+    "ops:retry-communication-job": "tsx scripts/retry-failed-communication-campaign-job.ts",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "seed": "tsx prisma/seed.ts",
