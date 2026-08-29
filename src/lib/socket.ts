@@ -96,30 +96,33 @@ export function getSocket():
     // Connection Error
     //------------------------------------------------
 
-  socketInstance.on(
-    "connect_error",
-    error => {
-      const message =
-        error instanceof Error
-          ? error.message
-          : String(error);
+    const socket =
+      socketInstance;
 
-      if (
-        message === "Authentication required" ||
-        message.includes(
-          "Authentication cookie is missing"
-        )
-      ) {
-        socketInstance.disconnect();
-        return;
+    socket.on(
+      "connect_error",
+      error => {
+        const message =
+          error instanceof Error
+            ? error.message
+            : String(error);
+
+        if (
+          message === "Authentication required" ||
+          message.includes(
+            "Authentication cookie is missing"
+          )
+        ) {
+          socket.disconnect();
+          return;
+        }
+
+        console.error(
+          "[Socket.IO] Connection error:",
+          message
+        );
       }
-
-      console.error(
-        "[Socket.IO] Connection error:",
-        message
-      );
-    }
-  );
+    );
 
     //------------------------------------------------
     // Disconnect

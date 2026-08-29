@@ -32,6 +32,7 @@ export interface CommunicationCampaignPermissions {
   canApprove: boolean;
   canReject: boolean;
   canRequestChanges: boolean;
+  selfApprovalBlocked: boolean;
   canLaunch: boolean;
   canDelete: boolean;
   canArchive: boolean;

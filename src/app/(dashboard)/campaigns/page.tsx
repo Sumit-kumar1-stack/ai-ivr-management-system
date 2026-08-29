@@ -9,6 +9,7 @@ import {
   Layers3,
   RadioTower,
 } from "lucide-react";
+import { toast } from "sonner";
 import { useMemo, useState } from "react";
 
 import {
@@ -21,8 +22,12 @@ import {
 import type { CommunicationCampaignDTO } from "@/types/communication-campaign";
 import { api } from "@/lib/axios";
 import type { CampaignCapability } from "@/services/communication/campaign-capabilities";
+import {
+  deleteCampaignFromUi,
+} from "./campaign-delete-action";
 
 interface AuthMeResponse {
+  role?: string;
   campaignCapabilities?: CampaignCapability[];
 }
 
@@ -291,6 +296,7 @@ export default function CampaignsPage() {
               <BusinessCampaignCard
                 key={campaign.id}
                 campaign={campaign}
+                currentUser={currentUser}
                 onActionComplete={async () => {
                   await queryClient.invalidateQueries({
                     queryKey: ["communication-campaigns"],
@@ -307,11 +313,14 @@ export default function CampaignsPage() {
 
 function BusinessCampaignCard({
   campaign,
+  currentUser,
   onActionComplete,
 }: {
   campaign: CommunicationCampaignDTO;
+  currentUser?: AuthMeResponse;
   onActionComplete: () => Promise<void>;
 }) {
+  const [mutationPending, setMutationPending] = useState(false);
   const lifecycleTab =
     getCampaignLifecycleTab(
       campaign
@@ -323,45 +332,72 @@ function BusinessCampaignCard({
 
   const actions =
     getCampaignBoardActions(
-      campaign
+      campaign,
+      currentUser
     );
+
+  const deleteBlockedReason =
+    actions.find(action => action.kind === "delete")?.blockedReason;
 
   async function runMutationAction(
     action:
       (typeof actions)[number]
   ): Promise<void> {
+    if (action.blockedReason) {
+      toast.error(action.blockedReason);
+      return;
+    }
+
     if (
       !action.apiPath
     ) {
       return;
     }
 
-    const response =
-      await fetch(
-        `/api${action.apiPath}`,
-        {
-          method:
-            action.kind === "delete"
-              ? "DELETE"
-              : "POST",
+    setMutationPending(true);
+
+    try {
+      if (action.kind === "delete") {
+        const result = await deleteCampaignFromUi({
+          campaign,
+          confirmAction: message => window.confirm(message),
+          request: fetch,
+          refresh: onActionComplete,
+        });
+
+        if (result.outcome === "deleted") {
+          toast.success(result.message);
+        } else if (
+          result.outcome === "blocked" ||
+          result.outcome === "error"
+        ) {
+          toast.error(result.message);
         }
-      );
 
-    if (
-      !response.ok
-    ) {
-      const payload =
-        await response
-          .json()
-          .catch(() => ({}));
+        return;
+      }
 
-      throw new Error(
-        payload.message ??
-          "Campaign action failed"
+      const response = await fetch(`/api${action.apiPath}`, {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as {
+          message?: string;
+        };
+
+        throw new Error(payload.message ?? "Campaign action failed");
+      }
+
+      await onActionComplete();
+      toast.success("Campaign action completed.");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Campaign action failed"
       );
+    } finally {
+      setMutationPending(false);
     }
-
-    await onActionComplete();
   }
 
   return (
@@ -451,8 +487,9 @@ function BusinessCampaignCard({
                 key={action.label}
                 type="button"
                 onClick={() => void runMutationAction(action)}
+                disabled={action.disabled || mutationPending}
                 className={[
-                  "rounded-full px-4 py-2 text-sm font-semibold transition",
+                  "rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60",
                   action.tone === "primary"
                     ? "bg-slate-900 text-white hover:bg-slate-800"
                     : action.tone === "secondary"
@@ -466,6 +503,11 @@ function BusinessCampaignCard({
           )}
         </div>
       </div>
+      {deleteBlockedReason && (
+        <p className="mt-3 text-right text-sm font-medium text-amber-700">
+          {deleteBlockedReason}
+        </p>
+      )}
     </div>
   );
 }

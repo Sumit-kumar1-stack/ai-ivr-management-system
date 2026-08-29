@@ -23,6 +23,13 @@ export interface CampaignBoardAction {
   apiPath?: string;
   tone: CampaignBoardActionTone;
   kind: "link" | "delete" | "archive";
+  disabled?: boolean;
+  blockedReason?: string;
+}
+
+export interface CampaignBoardActor {
+  role?: string | null;
+  campaignCapabilities?: readonly string[] | null;
 }
 
 export interface CampaignLifecycleTabOption {
@@ -163,7 +170,8 @@ export function getCampaignDetailsHref(
 }
 
 export function getCampaignBoardActions(
-  campaign: CommunicationCampaignDTO
+  campaign: CommunicationCampaignDTO,
+  actor?: CampaignBoardActor | null
 ): CampaignBoardAction[] {
   const canReview =
     Boolean(
@@ -190,10 +198,8 @@ export function getCampaignBoardActions(
     );
 
   const canDelete =
-    Boolean(
-      campaign.permissions
-        ?.canDelete
-    );
+    hasCampaignDeleteCapability(actor) &&
+    Boolean(campaign.permissions?.canDelete);
 
   const canArchive =
     Boolean(
@@ -369,6 +375,20 @@ export function getCampaignBoardActions(
           });
         }
 
+        if (
+          getCampaignLifecycleTab(campaign) === "RUNNING" &&
+          hasCampaignDeleteCapability(actor)
+        ) {
+          actions.push({
+            label: "Delete",
+            tone: "tertiary",
+            kind: "delete",
+            disabled: true,
+            blockedReason:
+              "Cancel the running campaign before deleting it.",
+          });
+        }
+
         return actions;
       }
 
@@ -386,4 +406,13 @@ export function getCampaignBoardActions(
   }
 
   return [];
+}
+
+export function hasCampaignDeleteCapability(
+  actor?: CampaignBoardActor | null
+): boolean {
+  return (
+    actor?.role === "SUPER_ADMIN" ||
+    actor?.campaignCapabilities?.includes("CAMPAIGN_DELETE") === true
+  );
 }

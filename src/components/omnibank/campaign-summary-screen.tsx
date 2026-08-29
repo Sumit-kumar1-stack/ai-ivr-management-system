@@ -1984,13 +1984,24 @@ export default function CampaignSummaryScreen() {
                 </p>
 
                 {campaign.approvalStatus === "SUBMITTED" &&
+                  campaignPermissions?.selfApprovalBlocked && (
+                    <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">
+                      You cannot approve your own submission. A different eligible approver must make the decision.
+                    </p>
+                  )}
+
+                {campaign.approvalStatus === "SUBMITTED" &&
                   canReviewCampaign && (
                     <div className="mt-4 flex flex-wrap gap-3">
-                      {campaignPermissions?.canApprove && (
+                      {(campaignPermissions?.canApprove ||
+                        campaignPermissions?.selfApprovalBlocked) && (
                         <button
                           type="button"
                           onClick={() => void reviewCampaign("APPROVE")}
-                          disabled={approvalAction !== null}
+                          disabled={
+                            approvalAction !== null ||
+                            campaignPermissions?.selfApprovalBlocked
+                          }
                           className="inline-flex items-center justify-center rounded-full bg-[#0056ad] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#004e9f] disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           {approvalAction === "approve"
@@ -1999,11 +2010,15 @@ export default function CampaignSummaryScreen() {
                         </button>
                       )}
 
-                      {campaignPermissions?.canReject && (
+                      {(campaignPermissions?.canReject ||
+                        campaignPermissions?.selfApprovalBlocked) && (
                         <button
                           type="button"
                           onClick={() => void reviewCampaign("REJECT")}
-                          disabled={approvalAction !== null}
+                          disabled={
+                            approvalAction !== null ||
+                            campaignPermissions?.selfApprovalBlocked
+                          }
                           className="inline-flex items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           {approvalAction === "reject"

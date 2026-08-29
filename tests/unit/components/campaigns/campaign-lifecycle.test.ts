@@ -10,6 +10,7 @@ import {
   getCampaignDraftEditHref,
   getCampaignLifecycleTab,
   getCampaignSummaryHref,
+  hasCampaignDeleteCapability,
 } from "@/components/campaigns/campaign-lifecycle";
 import type {
   CommunicationCampaignDTO,
@@ -241,11 +242,15 @@ describe(
                 canApprove: false,
                 canReject: false,
                 canRequestChanges: false,
+                selfApprovalBlocked: false,
                 canLaunch: false,
                 canDelete: true,
                 canArchive: false,
               },
             },
+            {
+              campaignCapabilities: ["CAMPAIGN_DELETE"],
+            }
           );
 
         expect(
@@ -270,6 +275,90 @@ describe(
         );
       }
     );
+
+    it("recognizes SUPER_ADMIN and configured approver delete capability", () => {
+      expect(
+        hasCampaignDeleteCapability({
+          role: "SUPER_ADMIN",
+          campaignCapabilities: [],
+        })
+      ).toBe(true);
+      expect(
+        hasCampaignDeleteCapability({
+          role: "ADMIN",
+          campaignCapabilities: ["CAMPAIGN_DELETE"],
+        })
+      ).toBe(true);
+      expect(
+        hasCampaignDeleteCapability({
+          role: "ADMIN",
+          campaignCapabilities: ["CAMPAIGN_CREATE", "CAMPAIGN_EDIT"],
+        })
+      ).toBe(false);
+    });
+
+    it("hides delete from a creator without CAMPAIGN_DELETE", () => {
+      const actions = getCampaignBoardActions(
+        {
+          id: "creator-draft",
+          status: "DRAFT",
+          approvalStatus: "DRAFT",
+          permissions: {
+            canEdit: true,
+            canSubmit: true,
+            canReview: false,
+            canApprove: false,
+            canReject: false,
+            canRequestChanges: false,
+            selfApprovalBlocked: false,
+            canLaunch: false,
+            canDelete: true,
+            canArchive: false,
+          },
+        } as CommunicationCampaignDTO,
+        {
+          role: "ADMIN",
+          campaignCapabilities: ["CAMPAIGN_CREATE", "CAMPAIGN_EDIT"],
+        }
+      );
+
+      expect(actions.map(action => action.label)).not.toContain("Delete");
+    });
+
+    it("shows a disabled delete action and guidance for a running campaign", () => {
+      const actions = getCampaignBoardActions(
+        {
+          id: "running-1",
+          status: "RUNNING",
+          approvalStatus: "APPROVED",
+          permissions: {
+            canEdit: false,
+            canSubmit: false,
+            canReview: false,
+            canApprove: false,
+            canReject: false,
+            canRequestChanges: false,
+            selfApprovalBlocked: false,
+            canLaunch: false,
+            canDelete: false,
+            canArchive: false,
+          },
+        } as CommunicationCampaignDTO,
+        {
+          role: "SUPER_ADMIN",
+          campaignCapabilities: [],
+        }
+      );
+
+      expect(actions).toContainEqual(
+        expect.objectContaining({
+          label: "Delete",
+          kind: "delete",
+          disabled: true,
+          blockedReason: "Cancel the running campaign before deleting it.",
+        })
+      );
+    });
 
     it(
       "maps submitted campaigns to reviewer actions",
@@ -317,6 +406,7 @@ describe(
                 canApprove: true,
                 canReject: true,
                 canRequestChanges: true,
+                selfApprovalBlocked: false,
                 canLaunch: false,
                 canDelete: false,
                 canArchive: false,
@@ -385,6 +475,7 @@ describe(
                 canApprove: false,
                 canReject: false,
                 canRequestChanges: false,
+                selfApprovalBlocked: false,
                 canLaunch: true,
                 canDelete: false,
                 canArchive: false,
@@ -453,6 +544,7 @@ describe(
                 canApprove: false,
                 canReject: false,
                 canRequestChanges: false,
+                selfApprovalBlocked: false,
                 canLaunch: false,
                 canDelete: false,
                 canArchive: false,
@@ -514,6 +606,7 @@ describe(
                 canApprove: false,
                 canReject: false,
                 canRequestChanges: false,
+                selfApprovalBlocked: false,
                 canLaunch: false,
                 canDelete: false,
                 canArchive: false,
@@ -575,6 +668,7 @@ describe(
                 canApprove: false,
                 canReject: false,
                 canRequestChanges: false,
+                selfApprovalBlocked: false,
                 canLaunch: false,
                 canDelete: false,
                 canArchive: false,
@@ -636,6 +730,7 @@ describe(
                 canApprove: false,
                 canReject: false,
                 canRequestChanges: false,
+                selfApprovalBlocked: false,
                 canLaunch: false,
                 canDelete: false,
                 canArchive: true,

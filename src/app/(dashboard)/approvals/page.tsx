@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { api } from "@/lib/axios";
 import type { CommunicationCampaignDTO } from "@/types/communication-campaign";
+import { getPendingCampaignApprovals } from "./approval-queue";
 
 type PendingIvrFlow = {
   id: string;
@@ -32,7 +33,7 @@ export default function ApprovalsPage() {
     queryFn: async () => (await api.get("/ivr-flows")).data.data as PendingIvrFlow[],
   });
 
-  const pendingCampaigns = (campaigns ?? []).filter(campaign => campaign.approvalStatus === "SUBMITTED" && (campaign.permissions?.canApprove || campaign.permissions?.canReject));
+  const pendingCampaigns = getPendingCampaignApprovals(campaigns ?? []);
   const pendingIvrFlows = ivrFlows.filter(flow => flow.lifecycle === "PENDING_APPROVAL" && (flow.permissions?.canApprove || flow.permissions?.canReject));
 
   async function decideIvrFlow(flowId: string, action: "approve" | "reject") {
@@ -103,6 +104,11 @@ export default function ApprovalsPage() {
                     View
                   </Link>
                 </div>
+                {campaign.permissions?.selfApprovalBlocked && (
+                  <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">
+                    You cannot approve your own submission. A different eligible approver must make the decision.
+                  </p>
+                )}
               </article>
             ))}
           </div>

@@ -1200,6 +1200,7 @@ describe(
               canApprove: false,
               canReject: false,
               canRequestChanges: false,
+              selfApprovalBlocked: false,
               canLaunch: false,
               canDelete: false,
               canArchive: false,
@@ -1249,7 +1250,7 @@ describe(
     );
 
     it(
-      "keeps super admins scoped to their tenant",
+      "gives super admins platform-wide campaign visibility",
       async () => {
         await getCommunicationCampaigns(
           superAdminUser
@@ -1259,12 +1260,7 @@ describe(
           mocks.findMany
         ).toHaveBeenCalledWith(
           expect.objectContaining({
-            where: {
-              ownerUser: {
-                tenantId:
-                  "tenant-1",
-              },
-            },
+            where: {},
           })
         );
       }

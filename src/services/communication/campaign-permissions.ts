@@ -74,6 +74,12 @@ export function buildCampaignPermissions(
         campaign
       ),
 
+    selfApprovalBlocked:
+      isCampaignSelfApproval(
+        user,
+        campaign
+      ),
+
     canLaunch:
       canLaunchCampaign(
         user,
@@ -235,10 +241,25 @@ export function canReviewCampaign(
       user,
       "CAMPAIGN_REVIEW"
     ) &&
-    isSameTenant(
-      user,
-      campaignTenantId ?? null
-    )
+    (user.role === UserRole.SUPER_ADMIN ||
+      isSameTenant(
+        user,
+        campaignTenantId ?? null
+      ))
+  );
+}
+
+export function isCampaignSelfApproval(
+  user: CampaignPermissionUser,
+  campaign: Pick<
+    CampaignLifecycleSnapshot,
+    "approvalStatus" | "ownerUserId" | "submittedByUserId"
+  >
+): boolean {
+  return (
+    campaign.approvalStatus === CommunicationCampaignApprovalStatus.SUBMITTED &&
+    (campaign.ownerUserId === user.id ||
+      campaign.submittedByUserId === user.id)
   );
 }
 
@@ -262,8 +283,7 @@ export function canApproveCampaign(
       "CAMPAIGN_APPROVE"
     ) &&
     campaign.approvalStatus === CommunicationCampaignApprovalStatus.SUBMITTED &&
-    campaign.ownerUserId !== user.id &&
-    campaign.submittedByUserId !== user.id
+    !isCampaignSelfApproval(user, campaign)
   );
 }
 
@@ -287,8 +307,7 @@ export function canRejectCampaign(
       "CAMPAIGN_REJECT"
     ) &&
     campaign.approvalStatus === CommunicationCampaignApprovalStatus.SUBMITTED &&
-    campaign.ownerUserId !== user.id &&
-    campaign.submittedByUserId !== user.id
+    !isCampaignSelfApproval(user, campaign)
   );
 }
 
@@ -305,8 +324,7 @@ export function canRequestChangesCampaign(
       campaign.tenantId
     ) &&
     campaign.approvalStatus === CommunicationCampaignApprovalStatus.SUBMITTED &&
-    campaign.ownerUserId !== user.id &&
-    campaign.submittedByUserId !== user.id
+    !isCampaignSelfApproval(user, campaign)
   );
 }
 

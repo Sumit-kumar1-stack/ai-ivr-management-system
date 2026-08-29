@@ -12,6 +12,9 @@ import {
   buildCampaignPermissions,
   canCreateCampaign,
 } from "@/services/communication/campaign-permissions";
+import {
+  getDefaultCampaignCapabilitiesForRole,
+} from "@/features/users/user-campaign-capabilities";
 
 describe(
   "campaign permissions",
@@ -48,6 +51,7 @@ describe(
         canSubmit: true,
         canApprove: false,
         canReject: false,
+        selfApprovalBlocked: false,
         canLaunch: false,
         canDelete: true,
       });
@@ -146,6 +150,112 @@ describe(
       expect(buildCampaignPermissions(platform, { ...approved, status: "DRAFT", approvalStatus: "DRAFT", approvedRevision: null, attemptedContactCount: 1 }).canDelete).toBe(false);
     });
 
+    it("allows SUPER_ADMIN to review another tenant submission but blocks its own submission", () => {
+      const platform = {
+        id: "platform",
+        role: UserRole.SUPER_ADMIN,
+        tenantId: "tenant-a",
+        campaignCapabilities: [],
+      } as const;
+
+      const otherSubmission = buildCampaignPermissions(platform, {
+        status: "DRAFT",
+        approvalStatus: "SUBMITTED",
+        approvalRequired: true,
+        tenantId: "tenant-b",
+        ownerUserId: "creator-b",
+        submittedByUserId: "creator-b",
+        approvedByUserId: null,
+        currentRevision: 1,
+        approvedRevision: null,
+        attemptedContactCount: 0,
+      });
+
+      expect(otherSubmission).toMatchObject({
+        canReview: true,
+        canApprove: true,
+        canReject: true,
+        selfApprovalBlocked: false,
+      });
+
+      const ownSubmission = buildCampaignPermissions(platform, {
+        status: "DRAFT",
+        approvalStatus: "SUBMITTED",
+        approvalRequired: true,
+        tenantId: "tenant-a",
+        ownerUserId: "platform",
+        submittedByUserId: "platform",
+        approvedByUserId: null,
+        currentRevision: 1,
+        approvedRevision: null,
+        attemptedContactCount: 0,
+      });
+
+      expect(ownSubmission).toMatchObject({
+        canReview: true,
+        canApprove: false,
+        canReject: false,
+        selfApprovalBlocked: true,
+      });
+    });
+
+    it("keeps an approver tenant-scoped", () => {
+      const approver = {
+        id: "approver-a",
+        role: UserRole.ADMIN,
+        tenantId: "tenant-a",
+        campaignCapabilities: [
+          "CAMPAIGN_REVIEW",
+          "CAMPAIGN_APPROVE",
+          "CAMPAIGN_REJECT",
+        ],
+      } as const;
+
+      const permissions = buildCampaignPermissions(approver, {
+        status: "DRAFT",
+        approvalStatus: "SUBMITTED",
+        approvalRequired: true,
+        tenantId: "tenant-b",
+        ownerUserId: "creator-b",
+        submittedByUserId: "creator-b",
+        approvedByUserId: null,
+        currentRevision: 1,
+        approvedRevision: null,
+        attemptedContactCount: 0,
+      });
+
+      expect(permissions).toMatchObject({
+        canReview: false,
+        canApprove: false,
+        canReject: false,
+      });
+    });
+
+    it("keeps the default maker, checker, and SUPER_ADMIN capability sets separated", () => {
+      expect(getDefaultCampaignCapabilitiesForRole(UserRole.ADMIN)).toEqual([
+        "CAMPAIGN_CREATE",
+        "CAMPAIGN_EDIT",
+        "CAMPAIGN_SUBMIT",
+        "CAMPAIGN_LAUNCH",
+      ]);
+      expect(getDefaultCampaignCapabilitiesForRole(UserRole.AGENT)).toEqual([
+        "CAMPAIGN_REVIEW",
+        "CAMPAIGN_APPROVE",
+        "CAMPAIGN_REJECT",
+      ]);
+      expect(getDefaultCampaignCapabilitiesForRole(UserRole.SUPER_ADMIN)).toEqual(
+        expect.arrayContaining([
+          "CAMPAIGN_CREATE",
+          "CAMPAIGN_EDIT",
+          "CAMPAIGN_SUBMIT",
+          "CAMPAIGN_REVIEW",
+          "CAMPAIGN_APPROVE",
+          "CAMPAIGN_REJECT",
+          "CAMPAIGN_LAUNCH",
+        ])
+      );
+    });
+
     it(
       "returns no mutation permissions for a cross-tenant campaign snapshot",
       () => {
@@ -208,6 +318,7 @@ describe(
           canApprove: false,
           canReject: false,
           canRequestChanges: false,
+          selfApprovalBlocked: false,
           canLaunch: false,
           canDelete: false,
           canArchive: false,

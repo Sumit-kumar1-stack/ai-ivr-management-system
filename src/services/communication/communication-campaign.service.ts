@@ -5,6 +5,7 @@ import {
   CommunicationFallbackPolicy,
   CommunicationTier,
   CommunicationCampaignApprovalStatus,
+  UserRole,
 } from "@prisma/client";
 
 import type {
@@ -175,6 +176,10 @@ function buildCommunicationCampaignScope(
   user:
     CommunicationCampaignAccessUser
 ): Prisma.CommunicationCampaignWhereInput {
+  if (user.role === UserRole.SUPER_ADMIN) {
+    return {};
+  }
+
   const tenantId =
     user.tenantId?.trim() ?? "";
 

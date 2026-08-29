@@ -19,6 +19,7 @@ import {
   canRejectCampaign,
   canRequestChangesCampaign,
   canSubmitCampaign,
+  isCampaignSelfApproval,
 } from "@/services/communication/campaign-permissions";
 
 import type {
@@ -213,10 +214,13 @@ async function loadCampaign(
     },
   } as const;
 
+  const platformScoped =
+    actor.role === UserRole.SUPER_ADMIN;
+
   const tenantId =
     actor.tenantId?.trim() ?? "";
 
-  if (!tenantId) {
+  if (!platformScoped && !tenantId) {
     throw new Error(
       "Tenant ID is required for communication campaign transitions"
     );
@@ -226,9 +230,13 @@ async function loadCampaign(
     await prisma.communicationCampaign.findFirst({
     where: {
       id: campaignId,
-      ownerUser: {
-        tenantId,
-      },
+      ...(platformScoped
+        ? {}
+        : {
+            ownerUser: {
+              tenantId,
+            },
+          }),
     },
 
     select,
@@ -308,9 +316,15 @@ async function approveCampaign(
   campaign: CampaignSnapshot,
   actor: CampaignTransitionActor
 ): Promise<void> {
-  if (!canApproveCampaign(actor, campaign)) {
+  if (isCampaignSelfApproval(actor, campaign)) {
     throw new Error(
       "The same user cannot approve their own communication campaign"
+    );
+  }
+
+  if (!canApproveCampaign(actor, campaign)) {
+    throw new Error(
+      "User is not authorized to approve this communication campaign"
     );
   }
 
@@ -378,6 +392,14 @@ async function rejectCampaign(
     | "REQUEST_CHANGES" =
     "REJECT"
 ): Promise<void> {
+  if (isCampaignSelfApproval(actor, campaign)) {
+    throw new Error(
+      requestedTransition === "REQUEST_CHANGES"
+        ? "The same user cannot request changes on their own communication campaign"
+        : "The same user cannot reject their own communication campaign"
+    );
+  }
+
   const canProceed =
     requestedTransition ===
       "REQUEST_CHANGES"

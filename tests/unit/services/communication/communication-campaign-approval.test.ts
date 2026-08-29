@@ -154,6 +154,40 @@ describe("communication campaign approval", () => {
     );
   });
 
+  it("rejects self-rejection by SUPER_ADMIN", async () => {
+    const superAdmin = {
+      id: "platform-1",
+      role: UserRole.SUPER_ADMIN,
+      campaignCapabilities: [],
+      tenantId: "tenant-1",
+    } as const;
+
+    mocks.findFirst.mockResolvedValue({
+      id: "campaign-1",
+      ownerUserId: "platform-1",
+      submittedByUserId: "platform-1",
+      approvalRequired: true,
+      approvalStatus: "SUBMITTED",
+      currentRevision: 2,
+      approvedRevision: null,
+      ownerUser: {
+        tenantId: "tenant-1",
+      },
+    });
+
+    await expect(
+      rejectCommunicationCampaign(
+        "campaign-1",
+        superAdmin,
+        { reason: "Not ready" }
+      )
+    ).rejects.toThrow(
+      "The same user cannot reject their own communication campaign"
+    );
+
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+  });
+
   it("allows a different reviewer to approve", async () => {
     mocks.findFirst.mockResolvedValue({
       id: "campaign-1",
