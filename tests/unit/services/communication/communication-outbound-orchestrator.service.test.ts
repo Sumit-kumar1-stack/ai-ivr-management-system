@@ -477,7 +477,7 @@ describe("outbound launch fan-out recovery", () => {
     mocks.campaignFindUniqueOrThrow.mockResolvedValue(fanoutCampaign);
     mocks.recipientFindMany.mockResolvedValue([snapshotRecipient]);
     mocks.attemptUpsert.mockResolvedValue(queuedAttempt());
-    mocks.enqueueRecipient.mockResolvedValue({ id: "outbound-call:campaign-1:recipient-1:1" });
+    mocks.enqueueRecipient.mockResolvedValue({ id: "outbound-call-campaign-1-recipient-1-1" });
     mocks.billing.mockResolvedValue({
       tenantId: "tenant-1",
       tenantStatus: "ACTIVE",

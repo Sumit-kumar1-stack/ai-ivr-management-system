@@ -83,6 +83,20 @@ export type CommunicationJobData =
   | CommunicationRecipientAttemptJobData
   | CommunicationFallbackJobData;
 
+export function buildCommunicationRecipientAttemptJobId(
+  data: Pick<
+    CommunicationRecipientAttemptJobData,
+    "campaignId" | "campaignRecipientId" | "attemptNumber"
+  >
+): string {
+  return [
+    "outbound-call",
+    data.campaignId.trim(),
+    data.campaignRecipientId.trim(),
+    data.attemptNumber,
+  ].join("-");
+}
+
 //--------------------------------------------------
 // Queue State
 //
@@ -320,14 +334,11 @@ export class CommunicationCampaignQueueService {
       getCommunicationCampaignQueue();
 
     const jobId =
-      [
-        "outbound-call",
+      buildCommunicationRecipientAttemptJobId({
         campaignId,
         campaignRecipientId,
         attemptNumber,
-      ].join(
-        ":"
-      );
+      });
 
     const existing =
       await queue.getJob(
