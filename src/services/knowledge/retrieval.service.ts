@@ -231,10 +231,14 @@ export async function rerankWithTimeoutForTesting(
   candidates: ScoredKnowledgeChunk[],
   signal?: AbortSignal
 ): Promise<ScoredKnowledgeChunk[]> {
+  if (signal?.aborted) {
+    throw new DOMException("Knowledge reranking aborted", "AbortError");
+  }
+
   const controller = new AbortController();
   const abort = (): void => controller.abort();
-  if (signal?.aborted) controller.abort();
   signal?.addEventListener("abort", abort, { once: true });
+  let rejectOnAbort: (() => void) | undefined;
   let timer:
     ReturnType<
       typeof setTimeout
@@ -244,6 +248,30 @@ export async function rerankWithTimeoutForTesting(
   try {
     return await Promise.race([
       rerankKnowledge(question, candidates, controller.signal),
+
+      new Promise<
+        never
+      >(
+        (
+          _resolve,
+          reject
+        ) => {
+          rejectOnAbort = (): void => {
+            reject(
+              new DOMException(
+                "Knowledge reranking aborted",
+                "AbortError"
+              )
+            );
+          };
+
+          signal?.addEventListener(
+            "abort",
+            rejectOnAbort,
+            { once: true }
+          );
+        }
+      ),
 
       new Promise<
         never
@@ -277,6 +305,9 @@ export async function rerankWithTimeoutForTesting(
     }
     controller.abort();
     signal?.removeEventListener("abort", abort);
+    if (rejectOnAbort) {
+      signal?.removeEventListener("abort", rejectOnAbort);
+    }
   }
 }
 
@@ -346,6 +377,19 @@ export function resolveAllowedKnowledgeClassifications(
         "INTERNAL",
       ];
   }
+}
+
+function isAbortError(
+  error: unknown,
+  signal?: AbortSignal
+): boolean {
+  return (
+    signal?.aborted === true ||
+    (
+      error instanceof Error &&
+      error.name === "AbortError"
+    )
+  );
 }
 
 //--------------------------------------------------
@@ -786,6 +830,8 @@ export async function retrieveKnowledge(
       "BM25 knowledge search completed"
     );
 
+    throwIfAborted();
+
     //------------------------------------------------
     // No Candidate
     //------------------------------------------------
@@ -925,6 +971,10 @@ export async function retrieveKnowledge(
     } catch (
       error
     ) {
+      if (isAbortError(error, options.signal)) {
+        throw error;
+      }
+
       rerankFallbackUsed =
         true;
 
@@ -1076,6 +1126,26 @@ export async function retrieveKnowledge(
   } catch (
     error
   ) {
+    if (isAbortError(error, options.signal)) {
+      log.info(
+        {
+          event:
+            "knowledge.retrieval.cancelled",
+
+          queryCharacterCount:
+            normalizedQuestion.length,
+
+          durationMs:
+            getDurationMs(
+              startedAt
+            ),
+        },
+        "Knowledge retrieval cancelled"
+      );
+
+      throw error;
+    }
+
     log.error(
       {
         event:

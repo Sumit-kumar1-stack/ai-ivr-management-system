@@ -118,7 +118,8 @@ function logGeminiError(
 //--------------------------------------------------
 
 export async function askGemini(
-  prompt: string
+  prompt: string,
+  signal?: AbortSignal
 ): Promise<string> {
   const normalizedPrompt =
     prompt.trim();
@@ -131,6 +132,15 @@ export async function askGemini(
     );
   }
 
+  if (
+    signal?.aborted
+  ) {
+    throw new DOMException(
+      "Gemini request aborted",
+      "AbortError"
+    );
+  }
+
   try {
     const response =
       await ai.models
@@ -140,7 +150,20 @@ export async function askGemini(
 
           contents:
             normalizedPrompt,
+
+          config: {
+            abortSignal: signal,
+          },
         });
+
+    if (
+      signal?.aborted
+    ) {
+      throw new DOMException(
+        "Gemini request aborted",
+        "AbortError"
+      );
+    }
 
     return (
       response.text
@@ -150,6 +173,27 @@ export async function askGemini(
   } catch (
     error
   ) {
+    if (
+      signal?.aborted ||
+      (
+        error instanceof Error &&
+        error.name === "AbortError"
+      )
+    ) {
+      log.debug(
+        {
+          event:
+            "gemini.request.aborted",
+
+          modelName:
+            GEMINI_TEXT_MODEL,
+        },
+        "Gemini request aborted"
+      );
+
+      throw error;
+    }
+
     logGeminiError(
       error,
       GEMINI_TEXT_MODEL,
@@ -195,6 +239,10 @@ export async function* askGeminiStream(
 
           contents:
             normalizedPrompt,
+
+          config: {
+            abortSignal: signal,
+          },
         });
 
     for await (
@@ -242,6 +290,27 @@ export async function* askGeminiStream(
   } catch (
     error
   ) {
+    if (
+      signal?.aborted ||
+      (
+        error instanceof Error &&
+        error.name === "AbortError"
+      )
+    ) {
+      log.debug(
+        {
+          event:
+            "gemini.stream.aborted",
+
+          modelName:
+            GEMINI_TEXT_MODEL,
+        },
+        "Gemini stream aborted"
+      );
+
+      throw error;
+    }
+
     logGeminiError(
       error,
       GEMINI_TEXT_MODEL,

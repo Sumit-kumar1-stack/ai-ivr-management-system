@@ -94,6 +94,20 @@ export async function resolveStandardKnowledgeScope(
   };
 }
 
+export function buildStandardKnowledgeScopeFingerprint(
+  scope: StandardKnowledgeScope
+): string {
+  return JSON.stringify({
+    tenantId: normalizeScopeValue(scope.tenantId),
+    knowledgeDocumentIds: normalizeKnowledgeDocumentIds(
+      scope.knowledgeDocumentIds
+    ),
+    ownerUserId: normalizeScopeValue(scope.ownerUserId),
+    callAuthenticationLevel:
+      scope.callAuthenticationLevel ?? null,
+  });
+}
+
 const SYSTEM_SECURITY_POLICY =
   `
 SYSTEM SECURITY POLICY
@@ -112,8 +126,17 @@ SYSTEM SECURITY POLICY
 export async function buildPrompt(
   callId: string,
   latestMessage: string,
-  generationId?: string
+  generationId?: string,
+  signal?: AbortSignal
 ): Promise<string> {
+  const throwIfAborted = (): void => {
+    if (signal?.aborted) {
+      throw new DOMException("Conversation prompt build aborted", "AbortError");
+    }
+  };
+
+  throwIfAborted();
+
   const startedAt =
     process.hrtime.bigint();
 
@@ -391,11 +414,16 @@ Assistant
     );
 
     try {
+      throwIfAborted();
+
       retrievalQuery =
         await rewriteQuery(
           transcript,
-          normalizedMessage
+          normalizedMessage,
+          signal
         );
+
+      throwIfAborted();
     } catch (error) {
       CascadedTurnLatency.fail(
         callId,
@@ -477,16 +505,29 @@ Assistant
     callId
   );
 
+  throwIfAborted();
+
   const knowledgeScope = await resolveStandardKnowledgeScope(callId, { call, outboundContext });
-  const { knowledgeDocumentIds, tenantId } = knowledgeScope;
+  const {
+    knowledgeDocumentIds,
+    tenantId,
+  } = knowledgeScope;
+
+  const knowledgeScopeFingerprint =
+    buildStandardKnowledgeScopeFingerprint(
+      knowledgeScope
+    );
 
   let knowledge = generationId
     ? await StandardPartialPrefetch.takeReusableKnowledge(
         callId,
         retrievalQuery,
-        generationId
+        generationId,
+        knowledgeScopeFingerprint
       )
     : null;
+
+  throwIfAborted();
 
   if (!knowledge) {
     try {
@@ -504,6 +545,8 @@ Assistant
           callAuthenticationLevel: knowledgeScope.callAuthenticationLevel,
 
           callId,
+
+          signal,
         }
         );
     } catch (error) {
@@ -724,6 +767,27 @@ Assistant
   );
 
   return prompt;
+}
+
+function normalizeScopeValue(
+  value: string | null | undefined
+): string | null {
+  const normalized =
+    value?.trim();
+
+  return normalized
+    ? normalized
+    : null;
+}
+
+function normalizeKnowledgeDocumentIds(
+  knowledgeDocumentIds: string[]
+): string[] {
+  return [...new Set(
+    knowledgeDocumentIds
+      .map(id => id.trim())
+      .filter(Boolean)
+  )].sort();
 }
 
 function toInboundKnowledgeDocumentIds(

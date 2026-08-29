@@ -1,8 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StandardPartialPrefetch } from "@/services/voice-runtime/standard-partial-prefetch.service";
 
 describe("StandardPartialPrefetch", () => {
   const callId = "standard-prefetch-call";
+
+  beforeEach(() => {
+    StandardPartialPrefetch.debounceDelayMs = 0;
+  });
 
   afterEach(() => StandardPartialPrefetch.clear(callId));
 

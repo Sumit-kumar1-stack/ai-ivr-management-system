@@ -767,7 +767,8 @@ export async function processUserMessage(
       await buildPrompt(
         callId,
         normalizedMessage,
-        generationId
+        generationId,
+        signal
       );
 
     throwIfTurnAborted(

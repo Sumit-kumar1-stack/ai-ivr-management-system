@@ -4,10 +4,11 @@ import {
 } from "./gemini.service";
 
 export async function askAI(
-  prompt: string
+  prompt: string,
+  signal?: AbortSignal
 ): Promise<string> {
 
-  return askGemini(prompt);
+  return askGemini(prompt, signal);
 
 }
 

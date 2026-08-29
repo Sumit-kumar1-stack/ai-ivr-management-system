@@ -42,6 +42,15 @@ export async function rerankKnowledge(
   RerankableKnowledgeChunk[]
 > {
   if (
+    signal?.aborted
+  ) {
+    throw new DOMException(
+      "Knowledge reranking aborted",
+      "AbortError"
+    );
+  }
+
+  if (
     chunks.length ===
     0
   ) {
