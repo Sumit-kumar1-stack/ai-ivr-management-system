@@ -4,6 +4,10 @@ import type {
   CommunicationFallbackPolicy,
   CommunicationTier,
 } from "@/types/communication-campaign";
+import type {
+  CommunicationOutboundAttemptSummaryDTO,
+  CommunicationOutboundProgressDTO,
+} from "@/types/communication-outbound-operations";
 
 //--------------------------------------------------
 // Unified Recipient Status
@@ -71,7 +75,7 @@ export interface CommunicationRecipientInsightDTO {
   fullName:
     string | null;
 
-  phone:
+  phoneMasked:
     string;
 
   language:
@@ -191,6 +195,12 @@ export interface CommunicationCampaignDetailsDTO {
     ivrCampaignId:
       string | null;
 
+    runtime:
+      string | null;
+
+    scheduledAt:
+      string | null;
+
     createdAt:
       string;
 
@@ -238,6 +248,19 @@ export interface CommunicationCampaignDetailsDTO {
 
     IVR:
       CommunicationVoiceChannelMetrics;
+  };
+
+  progress:
+    CommunicationOutboundProgressDTO;
+
+  attempts:
+    CommunicationOutboundAttemptSummaryDTO[];
+
+  attemptPagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
   };
 
   recipients:

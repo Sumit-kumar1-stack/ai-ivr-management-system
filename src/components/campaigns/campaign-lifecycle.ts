@@ -91,6 +91,7 @@ export function getCampaignLifecycleTab(
   if (
     campaign.status === "QUEUED" ||
     campaign.status === "RUNNING" ||
+    campaign.status === "PAUSED" ||
     campaign.status === "DISPATCHED"
   ) {
     return "RUNNING";

@@ -37,6 +37,10 @@ import {
 } from "./communication-outbound-call-executor.service";
 import { resolveCommunicationVoiceRuntime } from "./communication-entitlement.service";
 import { decideOutboundRetry } from "./communication-outbound-retry-policy.service";
+import {
+  OUTBOUND_REALTIME_EVENTS,
+  publishOutboundEvent,
+} from "./communication-outbound-events.service";
 
 export const SKIPPED_CAMPAIGN_NOT_RUNNABLE =
   "SKIPPED_CAMPAIGN_NOT_RUNNABLE" as const;
@@ -903,6 +907,26 @@ export async function scheduleOutboundRetry(input: ScheduleOutboundRetryInput): 
   await CommunicationCampaignQueueService.enqueueRecipientAttempt(
     buildAttemptJob({ tenantId, campaignId, campaignRecipientId, contactId, attemptNumber, scheduledFor: input.scheduledFor }),
     Math.max(0, input.scheduledFor.getTime() - now.getTime())
+  );
+  publishOutboundEvent(
+    OUTBOUND_REALTIME_EVENTS.RETRY_SCHEDULED,
+    {
+      tenantId,
+      campaignId,
+      attemptId: attempt.id,
+    },
+    {
+      attemptNumber,
+      scheduledFor: input.scheduledFor.toISOString(),
+    }
+  );
+  publishOutboundEvent(
+    OUTBOUND_REALTIME_EVENTS.PROGRESS_UPDATED,
+    {
+      tenantId,
+      campaignId,
+      attemptId: attempt.id,
+    }
   );
   return { scheduled: true, attemptNumber, reasonCode: "RETRY_SCHEDULED" };
 }

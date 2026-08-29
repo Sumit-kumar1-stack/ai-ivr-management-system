@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   finalize: vi.fn(),
   audit: vi.fn(),
   publish: vi.fn(),
+  outboundEmit: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -50,8 +51,19 @@ vi.mock("@/core/events", () => ({
   },
   EventPublisher: { publish: mocks.publish },
 }));
+vi.mock("@/services/communication/communication-outbound-events.service", () => ({
+  OUTBOUND_REALTIME_EVENTS: {
+    ATTEMPT_UPDATED: "outbound.attempt.updated",
+    DISPOSITION_UPDATED: "outbound.disposition.updated",
+    PROGRESS_UPDATED: "campaign.progress.updated",
+  },
+  publishOutboundEvent: mocks.outboundEmit,
+}));
 
-import { processOutboundPlivoLifecycle } from "@/services/communication/communication-outbound-lifecycle.service";
+import {
+  normalizePlivoOutboundStatus,
+  processOutboundPlivoLifecycle,
+} from "@/services/communication/communication-outbound-lifecycle.service";
 
 function attempt(status: Status, providerCallId: string | null = "call-uuid-1") {
   return {
@@ -102,6 +114,18 @@ describe("Communication outbound signed-callback lifecycle", () => {
     mocks.release.mockResolvedValue(undefined);
     mocks.publish.mockResolvedValue(true);
     mocks.scheduleRetry.mockResolvedValue({ scheduled: true, attemptNumber: 2, reasonCode: "RETRY_SCHEDULED" });
+  });
+
+  it.each([
+    ["completed", null, Status.COMPLETED],
+    ["busy", null, Status.BUSY],
+    ["no-answer", null, Status.NO_ANSWER],
+    ["rejected", null, Status.REJECTED],
+    ["failed", "invalid number", Status.INVALID_NUMBER],
+    ["provider-error", null, Status.PROVIDER_ERROR],
+    ["provider-mystery", null, Status.FAILED],
+  ])("maps provider status %s to canonical %s", (rawStatus, cause, expected) => {
+    expect(normalizePlivoOutboundStatus(rawStatus, cause)).toBe(expected);
   });
 
   it("reconciles an ambiguous provider request through the exact attempt", async () => {
@@ -171,6 +195,7 @@ describe("Communication outbound signed-callback lifecycle", () => {
     expect(result.duplicate).toBe(true);
     expect(mocks.release).not.toHaveBeenCalled();
     expect(mocks.finalize).not.toHaveBeenCalled();
+    expect(mocks.outboundEmit).not.toHaveBeenCalled();
   });
 
   it("ignores an out-of-order regression", async () => {

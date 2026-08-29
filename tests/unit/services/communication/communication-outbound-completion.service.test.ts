@@ -14,6 +14,8 @@ import {
 const mocks = vi.hoisted(() => ({
   findUnique: vi.fn(),
   updateMany: vi.fn(),
+  callbackCount: vi.fn(),
+  outboundEmit: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -21,6 +23,9 @@ vi.mock("@/lib/prisma", () => ({
     communicationCampaign: {
       findUnique: mocks.findUnique,
       updateMany: mocks.updateMany,
+    },
+    callbackRequest: {
+      count: mocks.callbackCount,
     },
   },
 }));
@@ -30,6 +35,13 @@ vi.mock("@/lib/logger", () => ({
   normalizeError: vi.fn(),
 }));
 vi.mock("@/services/audit/audit-event.service", () => ({ recordAuditEvent: vi.fn() }));
+vi.mock("@/services/communication/communication-outbound-events.service", () => ({
+  OUTBOUND_REALTIME_EVENTS: {
+    CAMPAIGN_COMPLETED: "campaign.completed",
+    PROGRESS_UPDATED: "campaign.progress.updated",
+  },
+  publishOutboundEvent: mocks.outboundEmit,
+}));
 
 import {
   finalizeCommunicationCampaignIfReady,
@@ -53,6 +65,7 @@ function campaign(input?: {
     ivrCampaignId: null,
     ivrCampaign: null,
     ownerUser: { tenantId: "tenant-1" },
+    calls: [],
     outboundAttempts: [{
       status: input?.attemptStatus ?? CommunicationOutboundAttemptStatus.COMPLETED,
     }],
@@ -72,6 +85,7 @@ describe("provider-neutral campaign completion", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.updateMany.mockResolvedValue({ count: 1 });
+    mocks.callbackCount.mockResolvedValue(0);
   });
 
   it.each([
@@ -107,6 +121,20 @@ describe("provider-neutral campaign completion", () => {
     await expect(finalizeCommunicationCampaignIfReady("campaign-1")).resolves.toMatchObject({ finalized: false });
   });
 
+  it("does not finalize while an outbound callback remains active", async () => {
+    const snapshot = {
+      ...campaign(),
+      calls: [{ id: "call-1" }],
+    };
+    mocks.findUnique.mockResolvedValue(snapshot);
+    mocks.callbackCount.mockResolvedValue(1);
+    await expect(finalizeCommunicationCampaignIfReady("campaign-1")).resolves.toMatchObject({
+      finalized: false,
+      unresolvedRecipients: 1,
+    });
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+  });
+
   it("moves RUNNING to COMPLETED only after every attempt and recipient settles", async () => {
     mocks.findUnique.mockResolvedValue(campaign());
     const result = await finalizeCommunicationCampaignIfReady("campaign-1");
@@ -123,5 +151,18 @@ describe("provider-neutral campaign completion", () => {
       finalized: true,
       status: CommunicationCampaignStatus.FAILED,
     });
+  });
+
+  it.each([
+    CommunicationCampaignStatus.COMPLETED,
+    CommunicationCampaignStatus.CANCELLED,
+  ])("does not revive or re-finalize terminal campaign %s", async status => {
+    mocks.findUnique.mockResolvedValue(campaign({ status }));
+    await expect(finalizeCommunicationCampaignIfReady("campaign-1")).resolves.toMatchObject({
+      finalized: false,
+      skipped: true,
+      status,
+    });
+    expect(mocks.updateMany).not.toHaveBeenCalled();
   });
 });

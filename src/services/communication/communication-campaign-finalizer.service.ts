@@ -1,5 +1,6 @@
 import {
   AuditEventOutcome,
+  CallbackRequestStatus,
   CallStatus,
   CampaignStatus,
   CommunicationCampaignStatus,
@@ -23,6 +24,10 @@ import {
 import {
   recordAuditEvent,
 } from "@/services/audit/audit-event.service";
+import {
+  OUTBOUND_REALTIME_EVENTS,
+  publishOutboundEvent,
+} from "./communication-outbound-events.service";
 
 //--------------------------------------------------
 // Logger
@@ -98,6 +103,15 @@ const TERMINAL_CALL_STATUSES:
     CallStatus.BUSY,
     CallStatus.NO_ANSWER,
     CallStatus.CANCELED,
+  ];
+
+const ACTIVE_CALLBACK_STATUSES:
+  CallbackRequestStatus[] = [
+    CallbackRequestStatus.PENDING,
+    CallbackRequestStatus.CONFIRMED,
+    CallbackRequestStatus.CLAIMED,
+    CallbackRequestStatus.REQUESTED,
+    CallbackRequestStatus.SCHEDULED,
   ];
 
 //--------------------------------------------------
@@ -205,6 +219,13 @@ export async function finalizeCommunicationCampaignIfReady(
             },
           },
 
+          calls: {
+            select: {
+              id:
+                true,
+            },
+          },
+
           ownerUser: {
             select: {
               tenantId:
@@ -303,6 +324,36 @@ export async function finalizeCommunicationCampaignIfReady(
   if (
     campaign.outboundAttempts.length > 0
   ) {
+    const campaignCallIds =
+      campaign.calls.map(
+        call =>
+          call.id
+      );
+    const activeCallbacks =
+      campaignCallIds.length > 0
+        ? await prisma.callbackRequest.count({
+            where: {
+              status: {
+                in:
+                  ACTIVE_CALLBACK_STATUSES,
+              },
+              OR: [
+                {
+                  callId: {
+                    in:
+                      campaignCallIds,
+                  },
+                },
+                {
+                  originalCallId: {
+                    in:
+                      campaignCallIds,
+                  },
+                },
+              ],
+            },
+          })
+        : 0;
     const activeAttempts =
       campaign.outboundAttempts.filter(
         attempt =>
@@ -339,7 +390,8 @@ export async function finalizeCommunicationCampaignIfReady(
     const unresolvedRecipients =
       Math.max(
         activeAttempts,
-        actionableRecipients
+        actionableRecipients,
+        activeCallbacks
       );
 
     if (
@@ -447,6 +499,31 @@ export async function finalizeCommunicationCampaignIfReady(
       } catch {
         // Existing campaign audit hooks are best effort.
       }
+
+      publishOutboundEvent(
+        OUTBOUND_REALTIME_EVENTS.CAMPAIGN_COMPLETED,
+        {
+          tenantId:
+            campaign.ownerUser.tenantId,
+          campaignId:
+            campaign.id,
+        },
+        {
+          status:
+            finalStatus,
+          completedRecipients,
+          failedRecipients,
+        }
+      );
+      publishOutboundEvent(
+        OUTBOUND_REALTIME_EVENTS.PROGRESS_UPDATED,
+        {
+          tenantId:
+            campaign.ownerUser.tenantId,
+          campaignId:
+            campaign.id,
+        }
+      );
     }
 
     return result({

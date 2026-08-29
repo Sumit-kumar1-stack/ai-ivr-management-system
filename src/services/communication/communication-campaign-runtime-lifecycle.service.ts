@@ -29,6 +29,10 @@ import {
   isWithinBusinessHours,
   type BusinessHoursPolicy,
 } from "@/services/telephony/agent-availability.service";
+import {
+  OUTBOUND_REALTIME_EVENTS,
+  publishOutboundEvent,
+} from "./communication-outbound-events.service";
 
 export interface CommunicationCampaignRuntimeActor {
   id: string;
@@ -155,6 +159,11 @@ export async function pauseCommunicationCampaign(
     status: CommunicationCampaignStatus.PAUSED,
   });
 
+  publishRuntimeStatus(
+    campaign,
+    CommunicationCampaignStatus.PAUSED
+  );
+
   return result(
     campaign,
     CommunicationCampaignStatus.PAUSED
@@ -280,6 +289,11 @@ export async function resumeCommunicationCampaign(
     status: targetStatus,
   });
 
+  publishRuntimeStatus(
+    campaign,
+    targetStatus
+  );
+
   return result(
     {
       ...campaign,
@@ -351,6 +365,11 @@ export async function cancelCommunicationCampaign(
       queueCleanupFailed,
     },
   });
+
+  publishRuntimeStatus(
+    campaign,
+    CommunicationCampaignStatus.CANCELLED
+  );
 
   return {
     ...result(
@@ -501,6 +520,27 @@ function result(
     removedPendingJobs: 0,
     queueCleanupFailed: false,
   };
+}
+
+function publishRuntimeStatus(
+  campaign: {
+    id: string;
+    ownerUser: {
+      tenantId: string | null;
+    } | null;
+  },
+  status: CommunicationCampaignStatus
+): void {
+  const tenantId = campaign.ownerUser?.tenantId?.trim() ?? "";
+  if (!tenantId) return;
+  publishOutboundEvent(
+    OUTBOUND_REALTIME_EVENTS.PROGRESS_UPDATED,
+    {
+      tenantId,
+      campaignId: campaign.id,
+    },
+    { status }
+  );
 }
 
 function parseBusinessHoursPolicy(

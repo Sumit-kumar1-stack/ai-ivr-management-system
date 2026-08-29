@@ -45,6 +45,15 @@ describe(
         "approvalStatus" | "status"
       >;
 
+    const pausedCampaign =
+      {
+      approvalStatus: "APPROVED",
+      status: "PAUSED",
+      } satisfies Pick<
+        CommunicationCampaignDTO,
+        "approvalStatus" | "status"
+      >;
+
     const completedCampaign =
       {
       approvalStatus: "APPROVED",
@@ -94,6 +103,14 @@ describe(
         expect(
           getCampaignLifecycleTab(
             runningCampaign as CommunicationCampaignDTO
+          )
+        ).toBe(
+          "RUNNING"
+        );
+
+        expect(
+          getCampaignLifecycleTab(
+            pausedCampaign as CommunicationCampaignDTO
           )
         ).toBe(
           "RUNNING"

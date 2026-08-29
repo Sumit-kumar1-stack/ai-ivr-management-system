@@ -37,6 +37,8 @@ import type {
   CommunicationChannel,
 } from "@/types/communication-campaign";
 
+import CampaignOperationsPanel from "./campaign-operations-panel";
+
 //--------------------------------------------------
 // Props
 //--------------------------------------------------
@@ -640,6 +642,10 @@ export default function CampaignDetailsScreen({
             </button>
           </div>
         </section>
+
+        <CampaignOperationsPanel
+          campaignId={campaignId}
+        />
 
         {/* =======================================
             PRIMARY FUNNEL

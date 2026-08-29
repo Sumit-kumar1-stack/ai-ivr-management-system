@@ -20,6 +20,13 @@ import {
 import {
   decideOutboundRetry,
 } from "./communication-outbound-retry-policy.service";
+import {
+  OUTBOUND_REALTIME_EVENTS,
+  publishOutboundEvent,
+} from "./communication-outbound-events.service";
+import {
+  mapOutboundAttemptDisposition,
+} from "./communication-outbound-progress.service";
 
 export interface OutboundPlivoLifecycleInput {
   attemptId: string;
@@ -188,6 +195,42 @@ export async function processOutboundPlivoLifecycle(
     { provider: "PLIVO", attemptNumber: attempt.attemptNumber, status: transition.status }
   );
 
+  const disposition = mapOutboundAttemptDisposition(transition.status);
+  publishOutboundEvent(
+    OUTBOUND_REALTIME_EVENTS.ATTEMPT_UPDATED,
+    {
+      tenantId: attempt.tenantId,
+      campaignId: attempt.campaignId,
+      attemptId: attempt.id,
+      callId: call.id,
+    },
+    {
+      state: disposition ?? "FAILED",
+      terminal: isTerminalOutboundAttemptStatus(transition.status),
+    }
+  );
+  if (disposition) {
+    publishOutboundEvent(
+      OUTBOUND_REALTIME_EVENTS.DISPOSITION_UPDATED,
+      {
+        tenantId: attempt.tenantId,
+        campaignId: attempt.campaignId,
+        attemptId: attempt.id,
+        callId: call.id,
+      },
+      { disposition }
+    );
+  }
+  publishOutboundEvent(
+    OUTBOUND_REALTIME_EVENTS.PROGRESS_UPDATED,
+    {
+      tenantId: attempt.tenantId,
+      campaignId: attempt.campaignId,
+      attemptId: attempt.id,
+      callId: call.id,
+    }
+  );
+
   if (isTerminalOutboundAttemptStatus(transition.status)) {
     await settleTerminalAttempt({ attempt, status: transition.status, now });
   }
@@ -226,6 +269,9 @@ export function normalizePlivoOutboundStatus(
     case "no-answer":
     case "timeout": return CommunicationOutboundAttemptStatus.NO_ANSWER;
     case "rejected": return CommunicationOutboundAttemptStatus.REJECTED;
+    case "provider-error":
+    case "internal-error":
+    case "error": return CommunicationOutboundAttemptStatus.PROVIDER_ERROR;
     case "cancelled":
     case "canceled": return CommunicationOutboundAttemptStatus.CANCELED;
     default: return CommunicationOutboundAttemptStatus.FAILED;

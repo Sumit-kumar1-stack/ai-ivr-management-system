@@ -21,6 +21,10 @@ import type {
   CommunicationVoiceChannelMetrics,
 } from "@/types/communication-campaign-details";
 
+import {
+  getCommunicationCampaignOutboundOperations,
+} from "./communication-outbound-progress.service";
+
 //--------------------------------------------------
 // Options
 //--------------------------------------------------
@@ -130,6 +134,24 @@ export async function getCommunicationCampaignDetails(
 
           updatedAt:
             true,
+
+          scheduledAt:
+            true,
+
+          outboundAttempts: {
+            orderBy: {
+              updatedAt:
+                "desc",
+            },
+            take:
+              1,
+            select: {
+              effectiveRuntime:
+                true,
+              requestedRuntime:
+                true,
+            },
+          },
 
           _count: {
             select: {
@@ -386,6 +408,16 @@ export async function getCommunicationCampaignDetails(
       ]
     );
 
+  const outboundOperations =
+    await getCommunicationCampaignOutboundOperations(
+      campaign.id,
+      {
+        page:
+          safePage,
+        pageSize,
+      }
+    );
+
   return {
     campaign: {
       id:
@@ -421,6 +453,18 @@ export async function getCommunicationCampaignDetails(
       ivrCampaignId:
         campaign
           .ivrCampaignId,
+
+      runtime:
+        campaign.outboundAttempts[0]
+          ?.effectiveRuntime ??
+        campaign.outboundAttempts[0]
+          ?.requestedRuntime ??
+        null,
+
+      scheduledAt:
+        campaign.scheduledAt
+          ?.toISOString() ??
+        null,
 
       createdAt:
         campaign
@@ -469,6 +513,15 @@ export async function getCommunicationCampaignDetails(
       IVR:
         ivrMetrics,
     },
+
+    progress:
+      outboundOperations.progress,
+
+    attempts:
+      outboundOperations.attempts,
+
+    attemptPagination:
+      outboundOperations.pagination,
 
     recipients:
       recipientInsights,
@@ -997,8 +1050,10 @@ async function buildRecipientInsights(
             recipient
               .fullName,
 
-          phone:
-            recipient.phone,
+          phoneMasked:
+            maskPhone(
+              recipient.phone
+            ),
 
           language:
             recipient.language,
@@ -2073,6 +2128,20 @@ async function getAverageWhatsAppOpenMinutes(
 //--------------------------------------------------
 // General Helpers
 //--------------------------------------------------
+
+function maskPhone(
+  phone: string
+): string {
+  const digits =
+    phone.replace(
+      /\D/g,
+      ""
+    );
+
+  return digits.length <= 4
+    ? "••••"
+    : `••••••${digits.slice(-4)}`;
+}
 
 function normalizePage(
   value:

@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   enqueue: vi.fn(),
   removePending: vi.fn(),
   audit: vi.fn(),
+  outboundEmit: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -40,6 +41,10 @@ vi.mock("@/services/communication/communication-campaign-queue.service", () => (
     enqueue: mocks.enqueue,
     removePendingCampaignJobs: mocks.removePending,
   },
+}));
+vi.mock("@/services/communication/communication-outbound-events.service", () => ({
+  OUTBOUND_REALTIME_EVENTS: { PROGRESS_UPDATED: "campaign.progress.updated" },
+  publishOutboundEvent: mocks.outboundEmit,
 }));
 
 import {
@@ -100,6 +105,11 @@ describe("communication campaign runtime lifecycle", () => {
       data: { status: CommunicationCampaignStatus.PAUSED },
     }));
     expect(mocks.audit).toHaveBeenCalledWith(expect.objectContaining({ action: "campaign.paused" }));
+    expect(mocks.outboundEmit).toHaveBeenCalledWith(
+      "campaign.progress.updated",
+      { tenantId: "tenant-1", campaignId: "campaign-1" },
+      { status: CommunicationCampaignStatus.PAUSED }
+    );
   });
 
   it("pauses SCHEDULED work", async () => {

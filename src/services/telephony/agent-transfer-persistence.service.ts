@@ -1,6 +1,10 @@
 import { CallEventType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { AgentHandoffContext } from "./agent-handoff-context.service";
+import {
+  OUTBOUND_REALTIME_EVENTS,
+  publishOutboundCallLinkedEvent,
+} from "@/services/communication/communication-outbound-events.service";
 
 export type PersistedTransferLifecycle = "REQUESTED" | "POLICY_CHECKED" | "CONTEXT_READY" | "TRANSFER_INITIATED" | "DIALING" | "CONNECTED" | "COMPLETED" | "NO_ANSWER" | "BUSY" | "FAILED" | "UNAVAILABLE";
 
@@ -14,6 +18,18 @@ export async function persistAgentHandoffContext(context: AgentHandoffContext): 
 
 export async function persistTransferLifecycle(callId: string, stage: PersistedTransferLifecycle, metadata: Record<string, unknown> = {}): Promise<void> {
   await prisma.callEvent.create({ data: { callId, type: CallEventType.HUMAN_TRANSFER, message: `Agent transfer ${stage}`, payload: { stage, ...metadata } } });
+  try {
+    await publishOutboundCallLinkedEvent(
+      callId,
+      OUTBOUND_REALTIME_EVENTS.TRANSFER_UPDATED,
+      {
+        transferStatus: stage,
+        transferred: stage === "CONNECTED" || stage === "COMPLETED",
+      }
+    );
+  } catch {
+    // Transfer persistence is canonical; realtime observability is best effort.
+  }
 }
 
 /** A failed Plivo Dial action cannot safely reattach Gemini media to its A-leg.
