@@ -248,8 +248,14 @@ async function executeKnowledgeSearch(
 
         tenantId,
 
+        // CommunicationCampaign knowledge is explicitly scoped by selected
+        // document IDs plus tenant. Do not require the uploader to be the
+        // same user who created the campaign. Legacy Campaign knowledge keeps
+        // the historical owner-level restriction.
         ownerUserId:
-          call.communicationCampaign?.ownerUserId ?? call.campaign?.ownerUserId ?? null,
+          call.communicationCampaign
+            ? null
+            : call.campaign?.ownerUserId ?? null,
 
         callAuthenticationLevel:
           call.authenticationLevel,

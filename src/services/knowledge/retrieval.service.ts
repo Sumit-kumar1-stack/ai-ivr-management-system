@@ -733,7 +733,9 @@ export async function retrieveKnowledge(
           chunks.length,
 
         ownerUserIdPresent:
-          true,
+          Boolean(
+            ownerUserId
+          ),
 
         allowedClassificationCount:
           allowedClassifications.length,

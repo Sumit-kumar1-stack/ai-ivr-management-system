@@ -696,6 +696,45 @@ const result =
   );
 
 //------------------------------------------------
+// Terminal End-Call Completion
+//
+// Ending the provider call can itself close the media
+// socket. Gemini media teardown then aborts the parent
+// signal while the provider operation is finishing. If
+// the provider has authoritatively returned ended=true,
+// preserve that irreversible success. Timeouts are never
+// converted to success.
+//------------------------------------------------
+
+const terminalEndCallCompletedAfterCancellation =
+  definition.name ===
+    "endCall" &&
+  !timeoutTriggered &&
+  Boolean(
+    parentSignal?.aborted
+  ) &&
+  isSuccessfulEndCallResult(
+    result
+  );
+
+if (
+  terminalEndCallCompletedAfterCancellation
+) {
+  log.info(
+    {
+      event:
+        "business_tool.end_call_completed_after_media_close",
+
+      executionId,
+
+      callId,
+    },
+    "End-call provider success was preserved after expected media teardown"
+  );
+}
+
+
+//------------------------------------------------
 // Late Completion Guard
 //
 // A provider/database operation may resolve after
@@ -707,7 +746,8 @@ const result =
 
 if (
   controller.signal
-    .aborted
+    .aborted &&
+  !terminalEndCallCompletedAfterCancellation
 ) {
   const reason =
     controller.signal
@@ -735,7 +775,8 @@ const durationMs =
     //------------------------------------------------
 
     if (
-      controller.signal.aborted
+      controller.signal.aborted &&
+      !terminalEndCallCompletedAfterCancellation
     ) {
       const parentAborted =
         Boolean(
@@ -963,6 +1004,29 @@ const durationMs =
     }
   }
 }
+
+//--------------------------------------------------
+// Successful End-Call Result
+//--------------------------------------------------
+
+function isSuccessfulEndCallResult(
+  result:
+    unknown
+): boolean {
+  if (
+    !result ||
+    typeof result !==
+      "object"
+  ) {
+    return false;
+  }
+
+  return Reflect.get(
+    result,
+    "ended"
+  ) === true;
+}
+
 
 //--------------------------------------------------
 // Resolve Existing Execution

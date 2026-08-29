@@ -836,6 +836,148 @@ describe(
     );
 
     //------------------------------------------------
+    // Terminal End-Call Parent Cancellation
+    //------------------------------------------------
+
+    it(
+      "preserves successful endCall when provider completion races with expected media teardown",
+      async () => {
+        const controller =
+          new AbortController();
+
+        const deferred =
+          createDeferred<{
+            ended: boolean;
+            providerCallId: string;
+          }>();
+
+        mocks
+          .getBusinessTool
+          .mockReturnValue({
+            name:
+              "endCall",
+
+            description:
+              "Test terminal end-call tool",
+
+            risk:
+              "SENSITIVE",
+
+            mutating:
+              true,
+
+            requiresConfirmation:
+              true,
+
+            timeoutMs:
+              1000,
+
+            inputSchema: {
+              safeParse:
+                vi.fn(
+                  (input: unknown) => ({
+                    success: true,
+                    data: input,
+                  })
+                ),
+            },
+
+            handler:
+              mocks.handler,
+          });
+
+        mocks
+          .handler
+          .mockImplementation(
+            async () =>
+              deferred.promise
+          );
+
+        const operation =
+          executeBusinessTool({
+            tool:
+              "endCall",
+
+            callId:
+              CALL_ID,
+
+            input: {
+              reason:
+                "Caller confirmed goodbye",
+            },
+
+            confirmed:
+              true,
+
+            requestedBy:
+              "AI",
+
+            idempotencyKey:
+              "end-call-terminal-race",
+
+            signal:
+              controller.signal,
+          });
+
+        await flushMicrotasks();
+
+        expect(
+          mocks.handler
+        ).toHaveBeenCalledTimes(
+          1
+        );
+
+        controller.abort(
+          new Error(
+            "Gemini Live media session closed"
+          )
+        );
+
+        deferred.resolve({
+          ended:
+            true,
+
+          providerCallId:
+            "plivo-call-1",
+        });
+
+        const result =
+          await operation;
+
+        expect(
+          result.success
+        ).toBe(
+          true
+        );
+
+        expect(
+          mocks.completeAudit
+        ).toHaveBeenCalledWith(
+          expect.objectContaining({
+            executionId:
+              EXECUTION_ID,
+
+            status:
+              "SUCCEEDED",
+          })
+        );
+
+        expect(
+          mocks.completeAudit
+        ).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            status:
+              "ABORTED",
+
+            errorCode:
+              "TOOL_ABORTED",
+          })
+        );
+      }
+    );
+
+
+    //------------------------------------------------
     // Gateway Timeout
     //------------------------------------------------
 
