@@ -894,6 +894,13 @@ export async function scheduleOutboundRetry(input: ScheduleOutboundRetryInput): 
 
   if (!campaign || !recipient) return { scheduled: false, attemptNumber: null, reasonCode: "RECIPIENT_NOT_FOUND" };
   if (
+    campaign.status === CommunicationCampaignStatus.CANCELLED ||
+    campaign.status === CommunicationCampaignStatus.COMPLETED ||
+    campaign.status === CommunicationCampaignStatus.FAILED
+  ) {
+    return { scheduled: false, attemptNumber: null, reasonCode: "CAMPAIGN_NOT_RETRYABLE" };
+  }
+  if (
     recipient.status === CommunicationRecipientStatus.COMPLETED ||
     recipient.status === CommunicationRecipientStatus.SKIPPED ||
     recipient.dnc || recipient.suppressed || recipient.consentStatus !== "OPTED_IN"

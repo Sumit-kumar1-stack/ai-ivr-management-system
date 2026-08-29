@@ -1,4 +1,5 @@
 import {
+  CallStatus,
   CommunicationCampaignStatus,
   CommunicationOutboundAttemptStatus as Status,
   CommunicationRecipientStatus,
@@ -82,7 +83,7 @@ function attempt(status: Status, providerCallId: string | null = "call-uuid-1") 
     answeredAt: status === Status.ANSWERED ? new Date("2026-08-29T10:01:00.000Z") : null,
     campaign: {
       id: "campaign-1",
-      status: CommunicationCampaignStatus.RUNNING,
+      status: CommunicationCampaignStatus.RUNNING as CommunicationCampaignStatus,
       maxAttempts: 3,
       businessHoursPolicy: null,
       ivrFlowVersionId: "version-1",
@@ -250,6 +251,45 @@ describe("Communication outbound signed-callback lifecycle", () => {
     });
     expect(result).toEqual(expect.objectContaining({ ignored: true, duplicate: false, status: Status.ANSWERED }));
     expect(mocks.release).not.toHaveBeenCalled();
+  });
+
+
+  it("creates a non-terminal canonical Call baseline before a first terminal callback", async () => {
+    const snapshot = attempt(Status.PROVIDER_ACCEPTED);
+    snapshot.campaign.status = CommunicationCampaignStatus.CANCELLED;
+    mocks.attemptFind.mockResolvedValue(snapshot);
+    const now = new Date("2026-08-29T16:18:29.000Z");
+
+    const result = await processOutboundPlivoLifecycle({
+      attemptId: "attempt-1",
+      providerCallId: "call-uuid-1",
+      rawStatus: "failed",
+      rawCause: "Error Reaching Answer URL",
+      duration: 1,
+      now,
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      matched: true,
+      status: Status.FAILED,
+      terminal: true,
+    }));
+    expect(mocks.callUpsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({
+        status: CallStatus.FAILED,
+        duration: 1,
+        failedAt: now,
+        endedAt: now,
+      }),
+    }));
+    expect(mocks.release).toHaveBeenCalledTimes(1);
+    expect(mocks.scheduleRetry).not.toHaveBeenCalled();
+    expect(mocks.recipientUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: CommunicationRecipientStatus.FAILED,
+        nextAttemptAt: null,
+      }),
+    }));
   });
 
   it("schedules one bounded retry for a retryable terminal outcome", async () => {

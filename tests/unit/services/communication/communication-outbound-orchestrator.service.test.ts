@@ -556,6 +556,26 @@ describe("outbound retry hook", () => {
     expect(mocks.enqueueRecipient).toHaveBeenCalledWith(expect.objectContaining({ attemptNumber: 2 }), 300_000);
   });
 
+
+  it.each([
+    CommunicationCampaignStatus.CANCELLED,
+    CommunicationCampaignStatus.COMPLETED,
+    CommunicationCampaignStatus.FAILED,
+  ])("does not schedule a retry for terminal campaign status %s", async status => {
+    mocks.campaignFindFirst.mockResolvedValue({
+      id: "campaign-1",
+      status,
+      maxAttempts: 3,
+    });
+
+    await expect(scheduleOutboundRetry(retry)).resolves.toMatchObject({
+      scheduled: false,
+      reasonCode: "CAMPAIGN_NOT_RETRYABLE",
+    });
+    expect(mocks.attemptUpsert).not.toHaveBeenCalled();
+    expect(mocks.enqueueRecipient).not.toHaveBeenCalled();
+  });
+
   it("does not retry terminal, DNC, opted-out, or exhausted recipients", async () => {
     mocks.recipientFindFirst.mockResolvedValue({ ...pendingRecipient(CommunicationRecipientStatus.COMPLETED) });
     await expect(scheduleOutboundRetry(retry)).resolves.toMatchObject({ scheduled: false, reasonCode: "RECIPIENT_NOT_RETRYABLE" });

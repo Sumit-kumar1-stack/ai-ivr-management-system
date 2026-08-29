@@ -156,6 +156,7 @@ export async function processOutboundPlivoLifecycle(
     attempt,
     providerCallId,
     status: toCallStatus(transition.status),
+    duration: input.duration,
     now,
   });
 
@@ -338,6 +339,7 @@ async function ensureCanonicalOutboundCall(input: {
   attempt: OutboundAttemptLifecycleContext;
   providerCallId: string;
   status: CallStatus;
+  duration?: number;
   now: Date;
 }) {
   const existing = input.attempt.call;
@@ -363,7 +365,17 @@ async function ensureCanonicalOutboundCall(input: {
       providerDestination: input.attempt.campaignRecipient.phone,
       contactPhoneSnapshot: input.attempt.campaignRecipient.phone,
       status: input.status,
+      duration: Number.isFinite(input.duration) && Number(input.duration) >= 0
+        ? Math.floor(Number(input.duration))
+        : undefined,
       queuedAt: input.now,
+      ringingAt: input.status === CallStatus.RINGING ? input.now : undefined,
+      answeredAt: input.status === CallStatus.ANSWERED ? input.now : undefined,
+      completedAt: input.status === CallStatus.COMPLETED ? input.now : undefined,
+      failedAt: terminalCallStatuses().includes(input.status) && input.status !== CallStatus.COMPLETED
+        ? input.now
+        : undefined,
+      endedAt: terminalCallStatuses().includes(input.status) ? input.now : undefined,
     },
     select: { id: true },
   });

@@ -17,6 +17,7 @@
     "build": "next build",
     "verify:build": "tsx scripts/verify-build.ts",
     "ops:retry-communication-job": "tsx scripts/retry-failed-communication-campaign-job.ts",
+    "ops:reconcile-plivo-attempt": "tsx scripts/reconcile-plivo-attempt.ts",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "seed": "tsx prisma/seed.ts",
