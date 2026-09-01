@@ -7,6 +7,12 @@ export interface CommunicationDeploymentCapabilities {
     enabled: boolean;
     reason: string | null;
   };
+  sms?: {
+    enabled: boolean;
+    available: boolean;
+    preferredProvider: string | null;
+    reason: string | null;
+  };
 }
 
 //--------------------------------------------------
@@ -26,6 +32,22 @@ export function isWhatsAppDeploymentEnabled(
 }
 
 //--------------------------------------------------
+// SMS Deployment Flag
+//--------------------------------------------------
+
+export function isSmsDeploymentEnabled(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  return (
+    env
+      .SMS_ENABLED
+      ?.trim()
+      .toLowerCase() !==
+    "false"
+  );
+}
+
+//--------------------------------------------------
 // Public Deployment Snapshot
 //--------------------------------------------------
 
@@ -37,6 +59,18 @@ export function getCommunicationDeploymentCapabilities(
       env
     );
 
+  const smsEnabled =
+    isSmsDeploymentEnabled(
+      env
+    );
+
+  const preferredSms =
+    env
+      .SMS_PROVIDER
+      ?.trim()
+      .toUpperCase() ||
+    "TWILIO";
+
   return {
     whatsapp: {
       enabled:
@@ -46,6 +80,21 @@ export function getCommunicationDeploymentCapabilities(
         whatsappEnabled
           ? null
           : "WhatsApp provider is not configured for this deployment",
+    },
+    sms: {
+      enabled:
+        smsEnabled,
+
+      available:
+        smsEnabled,
+
+      preferredProvider:
+        preferredSms,
+
+      reason:
+        smsEnabled
+          ? null
+          : "SMS provider is not configured for this deployment",
     },
   };
 }
@@ -70,4 +119,18 @@ export function assertCommunicationDeploymentChannelsAvailable(
       "WHATSAPP_PROVIDER_DISABLED: WhatsApp is not enabled for this deployment"
     );
   }
+
+  if (
+    channels.includes(
+      "SMS"
+    ) &&
+    !isSmsDeploymentEnabled(
+      env
+    )
+  ) {
+    throw new Error(
+      "SMS_PROVIDER_DISABLED: SMS is not enabled for this deployment"
+    );
+  }
 }
+

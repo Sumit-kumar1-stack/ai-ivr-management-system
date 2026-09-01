@@ -334,7 +334,10 @@ export default function ChannelSelectionScreen({
       channelId
     ) {
       case "sms":
-        return plan.features.sms;
+        return (
+          plan.features.sms &&
+          (deploymentCapabilities.sms?.enabled !== false)
+        );
 
       case "whatsapp":
         return (
@@ -373,6 +376,19 @@ export default function ChannelSelectionScreen({
           .whatsapp
           .reason ??
         "WhatsApp provider is unavailable for this deployment"
+      );
+    }
+
+    if (
+      channelId ===
+        "sms" &&
+      plan.features.sms &&
+      deploymentCapabilities.sms &&
+      !deploymentCapabilities.sms.enabled
+    ) {
+      return (
+        deploymentCapabilities.sms.reason ??
+        "SMS provider is unavailable for this deployment"
       );
     }
 
@@ -870,6 +886,41 @@ export default function ChannelSelectionScreen({
                       "GEMINI_LIVE"
                         ? "Gemini Live native audio"
                         : "Cascaded STT → AI → TTS"}
+                    </p>
+                  )}
+
+                  {channel.id ===
+                    "sms" &&
+                    available && (
+                    <p
+                      className="
+                        mt-4
+                        text-[11px]
+                        font-semibold
+                        text-[#0066cc]
+                      "
+                    >
+                      Provider: Deployment default —{" "}
+                      {deploymentCapabilities.sms?.preferredProvider === "PLIVO"
+                        ? "Plivo"
+                        : deploymentCapabilities.sms?.preferredProvider === "EXOTEL"
+                        ? "Exotel"
+                        : "Twilio"}
+                    </p>
+                  )}
+
+                  {channel.id ===
+                    "whatsapp" &&
+                    available && (
+                    <p
+                      className="
+                        mt-4
+                        text-[11px]
+                        font-semibold
+                        text-[#0066cc]
+                      "
+                    >
+                      Provider: Deployment default — Meta WhatsApp
                     </p>
                   )}
                 </button>

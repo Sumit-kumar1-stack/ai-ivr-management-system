@@ -1,6 +1,7 @@
 import { UserRole } from "@prisma/client";
 
 import InboundRuntimeSettings from "@/components/settings/inbound-runtime-settings";
+import MessagingProviderSettings from "@/components/settings/messaging-provider-settings";
 import TenantOnboardingForm from "@/components/settings/tenant-onboarding-form";
 
 import { getCurrentUser } from "@/lib/auth";
@@ -10,10 +11,10 @@ import { resolveTenantBillingContextForTenant } from "@/services/billing/tenant-
 export default async function SettingsPage() {
   const user = await getCurrentUser();
   const isSuperAdmin = user?.role === "SUPER_ADMIN";
-  const canManageInboundRuntime =
+  const canManageAdminSettings =
     user?.role === UserRole.SUPER_ADMIN || user?.role === UserRole.ADMIN;
   const tenantId = user?.tenantId?.trim();
-  const [inboundProfiles, billing] = canManageInboundRuntime && tenantId
+  const [inboundProfiles, billing] = canManageAdminSettings && tenantId
     ? await Promise.all([
         prisma.inboundProfile.findMany({
           where: { tenantId },
@@ -39,7 +40,7 @@ export default async function SettingsPage() {
           Settings
         </h1>
         <p className="mt-2 text-slate-600">
-          Manage platform onboarding and administration.
+          Manage platform onboarding, runtime capabilities, and messaging provider administration.
         </p>
       </div>
 
@@ -67,7 +68,11 @@ export default async function SettingsPage() {
         )}
       </section>
 
-      {canManageInboundRuntime && tenantId && (
+      {canManageAdminSettings && (
+        <MessagingProviderSettings />
+      )}
+
+      {canManageAdminSettings && tenantId && (
         <InboundRuntimeSettings
           inboundProfiles={inboundProfiles.map(profile => ({
             ...profile,
@@ -80,3 +85,4 @@ export default async function SettingsPage() {
     </div>
   );
 }
+

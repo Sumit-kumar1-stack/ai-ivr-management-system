@@ -117,5 +117,40 @@ describe(
         ).not.toThrow();
       }
     );
+
+    it(
+      "exposes SMS deployment capabilities with preferred provider",
+      () => {
+        const env: NodeJS.ProcessEnv = {
+          NODE_ENV: "test",
+          SMS_PROVIDER: "exotel",
+        };
+
+        const capabilities = getCommunicationDeploymentCapabilities(env);
+        expect(capabilities.sms).toBeDefined();
+        expect(capabilities.sms?.enabled).toBe(true);
+        expect(capabilities.sms?.preferredProvider).toBe("EXOTEL");
+      }
+    );
+
+    it(
+      "rejects SMS channels when SMS is explicitly disabled",
+      () => {
+        expect(
+          () =>
+            assertCommunicationDeploymentChannelsAvailable(
+              [
+                "SMS",
+              ],
+              {
+                NODE_ENV: "test",
+                SMS_ENABLED: "false",
+              }
+            )
+        ).toThrow(
+          "SMS_PROVIDER_DISABLED"
+        );
+      }
+    );
   }
 );
