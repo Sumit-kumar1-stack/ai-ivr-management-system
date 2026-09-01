@@ -400,7 +400,7 @@ describe(
           }),
           expect.objectContaining({
             jobId:
-              "outbound-call:campaign-1:recipient-1:1",
+              "outbound-call-campaign-1-recipient-1-1",
           })
         );
       }
@@ -486,8 +486,8 @@ describe(
 
         await CommunicationCampaignQueueService.enqueueRecipientAttempt(data);
         await CommunicationCampaignQueueService.enqueueRecipientAttempt(data);
-        expect(mocks.getJob).toHaveBeenNthCalledWith(1, "outbound-call:campaign-1:recipient-1:1");
-        expect(mocks.getJob).toHaveBeenNthCalledWith(2, "outbound-call:campaign-1:recipient-1:1");
+        expect(mocks.getJob).toHaveBeenNthCalledWith(1, "outbound-call-campaign-1-recipient-1-1");
+        expect(mocks.getJob).toHaveBeenNthCalledWith(2, "outbound-call-campaign-1-recipient-1-1");
         expect(mocks.add).toHaveBeenCalledTimes(1);
       }
     );

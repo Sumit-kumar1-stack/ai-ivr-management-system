@@ -1,0 +1,134 @@
+==============================
+AI IVR PROJECT SNAPSHOT
+==============================
+
+DATE:
+30-08-2026 13:27:25.99
+
+===== GIT STATUS =====
+ M scripts/reconcile-plivo-attempt.ts
+ M src/app/(dashboard)/calls/[id]/page.tsx
+ M src/app/(dashboard)/calls/page.tsx
+ M src/app/api/calls/[id]/route.ts
+ M src/app/api/calls/route.ts
+ M src/app/api/plivo/inbound/route.ts
+ M src/app/api/plivo/outbound/answer/route.ts
+ M src/components/layout/navigation.ts
+ M src/components/layout/sidebar.tsx
+ M tests/unit/routes/plivo-outbound-callback.route.test.ts
+ M tests/unit/security/calls-authorization.route.test.ts
+ M tests/unit/services/queues/queue-import-side-effects.test.ts
+?? PROJECT_SNAPSHOT.txt
+?? src/app/(dashboard)/calls/recordings/
+?? src/services/telephony/plivo-recording.service.ts
+?? tests/unit/routes/calls-recording-api.test.ts
+?? tests/unit/services/telephony/plivo-recording.service.test.ts
+
+===== CURRENT BRANCH =====
+feature/final-freeze
+
+===== LAST 10 COMMITS =====
+09e5ffa Fix communication campaign RAG scope and end call teardown
+9ddc26e Harden Plivo outbound reconciliation lifecycle
+427c5d4 Add safe recovery for failed communication campaign jobs
+571b7b2 Fix BullMQ outbound recipient job identifiers
+3e77ec3 Fix campaign approval workflow and delete controls
+1783dbe Harden Phase B staging readiness and queue diagnostics
+5003c27 Complete Phase E outbound platform production hardening
+526a504 Complete Phase E.4 outbound operations dashboard
+e115ff4 Complete bounded speculative RAG hardening
+383a078 Harden cascaded STT streaming TTS and provider fallback
+
+===== NODE VERSION =====
+v22.14.0
+
+===== NPM VERSION =====
+11.1.0
+
+===== PRISMA VALIDATE =====
+◇ injected env (78) from .env.local // tip: ⌘ multiple files { path: ['.env.local', '.env'] }
+◇ injected env (0) from .env // tip: ⌘ suppress logs { quiet: true }
+Loaded Prisma config from prisma.config.ts.
+
+Prisma config detected, skipping environment variable loading.
+Prisma schema loaded from prisma\schema.prisma
+┌─────────────────────────────────────────────────────────┐
+│  Update available 6.19.3 -> 8.0.0-rc.12                 │
+│                                                         │
+│  This is a major update - please follow the guide at    │
+│  https://pris.ly/d/major-version-upgrade                │
+│                                                         │
+│  Run the following to update                            │
+│    npm i --save-dev prisma@latest                       │
+│    npm i @prisma/client@latest                          │
+└─────────────────────────────────────────────────────────┘
+The schema at prisma\schema.prisma is valid 🚀
+
+===== PRISMA MIGRATION STATUS =====
+◇ injected env (78) from .env.local // tip: ◈ encrypted .env [www.dotenvx.com]
+◇ injected env (0) from .env // tip: ◈ encrypted .env [www.dotenvx.com]
+Loaded Prisma config from prisma.config.ts.
+
+Prisma config detected, skipping environment variable loading.
+Prisma schema loaded from prisma\schema.prisma
+Datasource "db": PostgreSQL database "neondb", schema "public" at "ep-weathered-cake-aook362g-pooler.c-2.ap-southeast-1.aws.neon.tech"
+
+53 migrations found in prisma/migrations
+
+Database schema is up to date!
+
+===== AVAILABLE NPM SCRIPTS =====
+Lifecycle scripts included in ai-ivr-management-system@0.1.0:
+  start
+    npm run start:all
+  test
+    vitest run
+available via `npm run-script`:
+  dev
+    npm run dev:all
+  test:inbound-media
+    tsx scripts/test-inbound-media.ts
+  dev:web
+    tsx watch src/server/web-process.ts
+  dev:worker
+    tsx watch src/workers/worker-process.ts
+  dev:media
+    tsx watch src/server/media-process.ts
+  dev:all
+    concurrently -k -n WEB,WORKER,MEDIA "npm run dev:web" "npm run dev:worker" "npm run dev:media"
+  start:web
+    tsx src/server/web-process.ts
+  start:worker
+    tsx src/workers/worker-process.ts
+  start:media
+    tsx src/server/media-process.ts
+  start:all
+    concurrently -k -n WEB,WORKER,MEDIA "npm run start:web" "npm run start:worker" "npm run start:media"
+  build
+    next build
+  verify:build
+    tsx scripts/verify-build.ts
+  ops:retry-communication-job
+    tsx scripts/retry-failed-communication-campaign-job.ts
+  ops:reconcile-plivo-attempt
+    tsx scripts/reconcile-plivo-attempt.ts
+  lint
+    eslint
+  typecheck
+    tsc --noEmit
+  seed
+    tsx prisma/seed.ts
+  migrate:knowledge-storage
+    tsx scripts/migrate-legacy-knowledge-storage.ts
+  migrate:deploy
+    prisma migrate deploy
+  test:watch
+    vitest
+  test:coverage
+    vitest run --coverage
+  benchmark:standard
+    tsx scripts/benchmark-standard-runtime.ts
+  test:unit
+    vitest run tests/unit
+  test:ui
+    vitest --ui

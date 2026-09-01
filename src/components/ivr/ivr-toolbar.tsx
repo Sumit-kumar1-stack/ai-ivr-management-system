@@ -1,12 +1,15 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
+import { Sparkles } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useFlow } from "@/features/ivr/use-flow";
 import SaveFlowButton from "./save-flow-button";
 import { useIVRBuilder } from "./ivr-builder-context";
+import IVRExperiencePresetDialog from "./ivr-experience-preset-dialog";
 
 interface Props {
   onSave: () => void;
@@ -38,6 +41,7 @@ export default function IVRToolbar({
   onShowSimulator,
   onAutoLayout, onUndo, onRedo, canUndo = false, canRedo = false, searchQuery = "", onSearchQueryChange, searchResults = [], onSearchResult, onDuplicate, canDuplicate = false, onDelete, canDelete = false,
 }: Props) {
+  const [presetDialogOpen, setPresetDialogOpen] = useState(false);
   const {
     selectedFlow,
     flowName,
@@ -151,6 +155,16 @@ export default function IVRToolbar({
           <Button type="button" variant="outline" onClick={onShowSimulator}>
             Simulate
           </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setPresetDialogOpen(true)}
+            disabled={!canEdit}
+            className="border-blue-200 bg-blue-50/50 text-blue-700 hover:bg-blue-100 hover:text-blue-900 font-medium gap-1.5"
+          >
+            <Sparkles size={14} />
+            Presets
+          </Button>
         </div>
       </div>
 
@@ -170,6 +184,11 @@ export default function IVRToolbar({
           </Button>
         )}
       </div>
+
+      <IVRExperiencePresetDialog
+        open={presetDialogOpen}
+        onClose={() => setPresetDialogOpen(false)}
+      />
     </div>
   );
 }

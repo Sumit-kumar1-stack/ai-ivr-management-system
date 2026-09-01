@@ -8,6 +8,11 @@ export const CAMPAIGN_CAPABILITIES = [
   "CAMPAIGN_LAUNCH",
   "CAMPAIGN_DELETE",
   "IVR_PUBLISH",
+  "DEVELOPER_PORTAL_ACCESS",
+  "API_KEYS_MANAGE",
+  "WEBHOOKS_MANAGE",
+  "ORG_USERS_MANAGE",
+  "ORG_SETTINGS_MANAGE",
 ] as const;
 
 export type CampaignCapability =

@@ -20,7 +20,17 @@ vi.mock("@/services/communication/communication-outbound-lifecycle.service", () 
   processOutboundPlivoLifecycle: mocks.lifecycle,
 }));
 vi.mock("@/services/ivr/ivr-graph-executor.service", () => ({ startIVRGraphExecution: mocks.graph }));
-vi.mock("@/lib/prisma", () => ({ prisma: { call: { findUnique: mocks.callFind } } }));
+vi.mock("@/services/telephony/plivo-recording.service", () => ({
+  startPlivoRecordingIfNeeded: vi.fn().mockResolvedValue(true),
+}));
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    call: {
+      findUnique: mocks.callFind,
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
+  },
+}));
 vi.mock("@/app/api/plivo/inbound/route", () => ({
   plivoXmlResponse: mocks.xml,
 }));
@@ -83,6 +93,20 @@ describe("signed Plivo outbound callback routes", () => {
       "call-1",
       expect.any(Object),
       "GEMINI_LIVE"
+    );
+  });
+
+  it("propagates CASCADED requestedRuntime to Answer XML for STANDARD campaigns", async () => {
+    mocks.callFind.mockResolvedValueOnce({ requestedRuntime: "CASCADED" });
+    const response = await answer(request("/api/plivo/outbound/answer?attempt=attempt-cascaded"));
+    expect(response.status).toBe(200);
+    expect(mocks.xml).toHaveBeenCalledWith(
+      "Welcome",
+      false,
+      expect.anything(),
+      "call-1",
+      expect.any(Object),
+      "CASCADED"
     );
   });
 

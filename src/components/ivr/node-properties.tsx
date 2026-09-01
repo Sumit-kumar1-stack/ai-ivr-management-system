@@ -9,7 +9,17 @@ import { Textarea } from "@/components/ui/textarea";
 import DTMFMenuPropertiesPanel from "./dtmf-menu-properties-panel";
 import { useIVRBuilder } from "./ivr-builder-context";
 
-import type { IVRNode, IVRNodeData, IVRNodeKind } from "./types";
+import type {
+  IVRAIFailureBehavior,
+  IVRAIPolicyConfig,
+  IVRAIPolicyMode,
+  IVRConversationalEscapeConfig,
+  IVRConversationalEscapeReturnBehavior,
+  IVRNode,
+  IVRNodeData,
+  IVRNodeKind,
+  IVRPostActionMode,
+} from "./types";
 
 interface Props {
   node: IVRNode;
@@ -55,7 +65,7 @@ export function getRelevantNodePropertySections(
     case "CALLBACK":
       return ["BASIC", "BEHAVIOR", "ROUTING", "SAFETY"];
     case "SEND_INFORMATION":
-      return ["BASIC", "BEHAVIOR", "SAFETY"];
+      return ["BASIC", "BEHAVIOR", "ROUTING", "SAFETY"];
     case "BUSINESS_HOURS":
       return ["BASIC", "BEHAVIOR", "ROUTING"];
     case "AUTH_GATE":
@@ -133,8 +143,58 @@ function previewRuntimeSelection(
   };
 }
 
+export function NodeDestinationPicker({
+  nodes,
+  value,
+  onChange,
+  placeholder = "Select a node...",
+  filterKinds,
+  excludeNodeId,
+  className,
+}: {
+  nodes?: IVRNode[];
+  value?: string | null;
+  onChange: (nodeId: string) => void;
+  placeholder?: string;
+  filterKinds?: readonly string[];
+  excludeNodeId?: string;
+  className?: string;
+}) {
+  const list = nodes ?? [];
+  const eligibleNodes = list.filter(n => {
+    if (excludeNodeId && n.id === excludeNodeId) return false;
+    if (filterKinds && filterKinds.length > 0) {
+      const kind = n.data?.nodeKind ?? "START";
+      return filterKinds.includes(kind);
+    }
+    return true;
+  });
+
+  return (
+    <select
+      value={value ?? ""}
+      onChange={e => onChange(e.target.value)}
+      className={
+        className ??
+        "h-11 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+      }
+    >
+      <option value="">{placeholder}</option>
+      {eligibleNodes.map(n => {
+        const label = n.data?.label || n.data?.nodeKind || n.id;
+        const kind = n.data?.nodeKind ?? "NODE";
+        return (
+          <option key={n.id} value={n.id}>
+            {label} ({kind} — {n.id})
+          </option>
+        );
+      })}
+    </select>
+  );
+}
+
 export default function NodePropertiesPanel({ node, onChange }: Props) {
-  const { resourceCatalog, flowName } = useIVRBuilder();
+  const { nodes = [], resourceCatalog, flowName } = useIVRBuilder();
 
   const nodeKind = node.data.nodeKind ?? "START";
   const knowledgeOptions = resourceCatalog?.knowledgeDocuments ?? [];
@@ -156,6 +216,7 @@ export default function NodePropertiesPanel({ node, onChange }: Props) {
           onChange("runtimeMenu", runtimeMenu);
           onChange("options", options);
         }}
+        onNodeDataChange={onChange}
       />
     );
   }
@@ -316,13 +377,35 @@ export default function NodePropertiesPanel({ node, onChange }: Props) {
         )}
 
         {nodeKind === "ACTION" && hasSection("BEHAVIOR") && (
-          <PropertySection title="BEHAVIOR" description="Choose the approved business tool this step may invoke.">
+          <PropertySection title="BEHAVIOR" description="Choose the approved business tool or external integration action this step invokes.">
             <div>
-              <FieldLabel>Business Tool</FieldLabel>
+              <FieldLabel>Business / Integration Action</FieldLabel>
               <select value={node.data.actionCode ?? ""} onChange={event => onChange("actionCode", event.target.value)} className="h-11 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200">
                 <option value="">Select an action</option>
                 {actionOptions.map(action => <option key={action.id} value={action.actionCode}>{action.name} ({action.actionCode})</option>)}
               </select>
+            </div>
+            <div className="mt-3">
+              <FieldLabel>Required Authentication</FieldLabel>
+              <select
+                value={node.data.requiredAuthLevel ?? "AUTH_LEVEL_0"}
+                onChange={event => onChange("requiredAuthLevel", event.target.value)}
+                className="h-11 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+              >
+                <option value="AUTH_LEVEL_0">None (Public)</option>
+                <option value="AUTH_LEVEL_1">AUTH_LEVEL_1 (Standard Customer Verification)</option>
+                <option value="AUTH_LEVEL_2">AUTH_LEVEL_2 (High Security / Step-Up)</option>
+              </select>
+              <p className="mt-1 text-xs text-slate-500">Sensitive operations require an AUTH_GATE before invocation.</p>
+            </div>
+            <div className="mt-3">
+              <FieldLabel>Timeout (ms)</FieldLabel>
+              <Input
+                type="number"
+                value={typeof node.data.timeoutMs === "number" || typeof node.data.timeoutMs === "string" ? node.data.timeoutMs : 5000}
+                onChange={event => onChange("timeoutMs", Number(event.target.value) || 5000)}
+                placeholder="5000"
+              />
             </div>
           </PropertySection>
         )}
@@ -471,16 +554,539 @@ export default function NodePropertiesPanel({ node, onChange }: Props) {
         )}
 
         {nodeKind === "START" && hasSection("ROUTING") && (
-          <PropertySection title="ROUTING" description="Set the flow entry target and, for staged entry, the documented AI fallback.">
+          <PropertySection title="ROUTING" description="Set the flow entry target, fallback, and global adaptive navigation commands.">
             <div>
               <FieldLabel>First Node ID</FieldLabel>
               <Input value={node.data.nextNodeId ?? ""} onChange={event => onChange("nextNodeId", event.target.value)} placeholder="greeting" />
+            </div>
+            <div>
+              <FieldLabel>Main Menu / Root Menu</FieldLabel>
+              <NodeDestinationPicker
+                nodes={nodes}
+                value={
+                  typeof node.data.mainMenuNodeId === "string"
+                    ? node.data.mainMenuNodeId
+                    : typeof node.data.homeNodeId === "string"
+                      ? (node.data.homeNodeId as string)
+                      : typeof node.data.logicalRootMenuNodeId === "string"
+                        ? node.data.logicalRootMenuNodeId
+                        : ""
+                }
+                onChange={value => {
+                  onChange("mainMenuNodeId", value || undefined);
+                  onChange("logicalRootMenuNodeId", value || undefined);
+                }}
+                placeholder="Select root menu..."
+                filterKinds={["HYBRID_MENU", "DTMF_MENU", "START"]}
+              />
+              <p className="mt-1 text-xs text-slate-500">Logical root menu used by HOME commands and navigation fallbacks.</p>
             </div>
             {isStagedHybrid && (
               <div>
                 <FieldLabel>Default AI Node ID</FieldLabel>
                 <Input value={node.data.defaultAiNodeId ?? ""} onChange={event => onChange("defaultAiNodeId", event.target.value)} placeholder="ai-conversation" />
                 <p className="mt-2 text-xs text-slate-500">Used as the documented no-selection context when Plivo falls through to realtime AI.</p>
+              </div>
+            )}
+
+            <div className="mt-4 space-y-3 rounded-lg border border-slate-200 bg-white p-3">
+              <h5 className="text-xs font-semibold uppercase text-slate-700">Adaptive Global Navigation</h5>
+              <p className="text-xs text-slate-500">Configure global semantic shortcuts available across menus. Current-menu options take precedence if digits or phrases conflict.</p>
+
+              {/* HOME */}
+              <div className="space-y-2 border-t pt-2">
+                <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={node.data.navigation?.home?.enabled !== false && Boolean(node.data.navigation?.home)}
+                    onChange={event => {
+                      const nav = node.data.navigation ?? {};
+                      const home = nav.home ?? {};
+                      onChange("navigation", { ...nav, home: { ...home, enabled: event.target.checked } });
+                    }}
+                  />
+                  Enable HOME Command
+                </label>
+                {node.data.navigation?.home?.enabled !== false && Boolean(node.data.navigation?.home) && (
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span className="text-slate-600">Digits (comma separated)</span>
+                      <Input
+                        className="h-8 text-xs"
+                        value={node.data.navigation?.home?.digits?.join(", ") ?? ""}
+                        placeholder="0"
+                        onChange={event => {
+                          const nav = node.data.navigation ?? {};
+                          const home = nav.home ?? {};
+                          const digits = event.target.value.split(",").map(s => s.trim()).filter(Boolean);
+                          onChange("navigation", { ...nav, home: { ...home, digits } });
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <span className="text-slate-600">Speech Phrases</span>
+                      <Input
+                        className="h-8 text-xs"
+                        value={node.data.navigation?.home?.phrases?.join(", ") ?? ""}
+                        placeholder="main menu, start over"
+                        onChange={event => {
+                          const nav = node.data.navigation ?? {};
+                          const home = nav.home ?? {};
+                          const phrases = event.target.value.split(",").map(s => s.trim()).filter(Boolean);
+                          onChange("navigation", { ...nav, home: { ...home, phrases } });
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* BACK */}
+              <div className="space-y-2 border-t pt-2">
+                <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={node.data.navigation?.back?.enabled !== false && Boolean(node.data.navigation?.back)}
+                    onChange={event => {
+                      const nav = node.data.navigation ?? {};
+                      const back = nav.back ?? {};
+                      onChange("navigation", { ...nav, back: { ...back, enabled: event.target.checked } });
+                    }}
+                  />
+                  Enable BACK Command
+                </label>
+                {node.data.navigation?.back?.enabled !== false && Boolean(node.data.navigation?.back) && (
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span className="text-slate-600">Digits (comma separated)</span>
+                      <Input
+                        className="h-8 text-xs"
+                        value={node.data.navigation?.back?.digits?.join(", ") ?? ""}
+                        placeholder="*"
+                        onChange={event => {
+                          const nav = node.data.navigation ?? {};
+                          const back = nav.back ?? {};
+                          const digits = event.target.value.split(",").map(s => s.trim()).filter(Boolean);
+                          onChange("navigation", { ...nav, back: { ...back, digits } });
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <span className="text-slate-600">Speech Phrases</span>
+                      <Input
+                        className="h-8 text-xs"
+                        value={node.data.navigation?.back?.phrases?.join(", ") ?? ""}
+                        placeholder="go back, previous menu"
+                        onChange={event => {
+                          const nav = node.data.navigation ?? {};
+                          const back = nav.back ?? {};
+                          const phrases = event.target.value.split(",").map(s => s.trim()).filter(Boolean);
+                          onChange("navigation", { ...nav, back: { ...back, phrases } });
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* REPEAT */}
+              <div className="space-y-2 border-t pt-2">
+                <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={node.data.navigation?.repeat?.enabled !== false && Boolean(node.data.navigation?.repeat)}
+                    onChange={event => {
+                      const nav = node.data.navigation ?? {};
+                      const repeat = nav.repeat ?? {};
+                      onChange("navigation", { ...nav, repeat: { ...repeat, enabled: event.target.checked } });
+                    }}
+                  />
+                  Enable REPEAT Command
+                </label>
+                {node.data.navigation?.repeat?.enabled !== false && Boolean(node.data.navigation?.repeat) && (
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span className="text-slate-600">Digits (comma separated)</span>
+                      <Input
+                        className="h-8 text-xs"
+                        value={node.data.navigation?.repeat?.digits?.join(", ") ?? ""}
+                        placeholder="8"
+                        onChange={event => {
+                          const nav = node.data.navigation ?? {};
+                          const repeat = nav.repeat ?? {};
+                          const digits = event.target.value.split(",").map(s => s.trim()).filter(Boolean);
+                          onChange("navigation", { ...nav, repeat: { ...repeat, digits } });
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <span className="text-slate-600">Speech Phrases</span>
+                      <Input
+                        className="h-8 text-xs"
+                        value={node.data.navigation?.repeat?.phrases?.join(", ") ?? ""}
+                        placeholder="repeat, say that again"
+                        onChange={event => {
+                          const nav = node.data.navigation ?? {};
+                          const repeat = nav.repeat ?? {};
+                          const phrases = event.target.value.split(",").map(s => s.trim()).filter(Boolean);
+                          onChange("navigation", { ...nav, repeat: { ...repeat, phrases } });
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* END */}
+              <div className="space-y-2 border-t pt-2">
+                <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={node.data.navigation?.end?.enabled !== false && Boolean(node.data.navigation?.end)}
+                    onChange={event => {
+                      const nav = node.data.navigation ?? {};
+                      const end = nav.end ?? {};
+                      onChange("navigation", { ...nav, end: { ...end, enabled: event.target.checked } });
+                    }}
+                  />
+                  Enable END Command
+                </label>
+                {node.data.navigation?.end?.enabled !== false && Boolean(node.data.navigation?.end) && (
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span className="text-slate-600">Digits (comma separated)</span>
+                      <Input
+                        className="h-8 text-xs"
+                        value={node.data.navigation?.end?.digits?.join(", ") ?? ""}
+                        placeholder="9"
+                        onChange={event => {
+                          const nav = node.data.navigation ?? {};
+                          const end = nav.end ?? {};
+                          const digits = event.target.value.split(",").map(s => s.trim()).filter(Boolean);
+                          onChange("navigation", { ...nav, end: { ...end, digits } });
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <span className="text-slate-600">Speech Phrases</span>
+                      <Input
+                        className="h-8 text-xs"
+                        value={node.data.navigation?.end?.phrases?.join(", ") ?? ""}
+                        placeholder="goodbye, end call"
+                        onChange={event => {
+                          const nav = node.data.navigation ?? {};
+                          const end = nav.end ?? {};
+                          const phrases = event.target.value.split(",").map(s => s.trim()).filter(Boolean);
+                          onChange("navigation", { ...nav, end: { ...end, phrases } });
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </PropertySection>
+        )}
+
+        {nodeKind !== "START" &&
+          ["KNOWLEDGE", "ACTION", "SEND_INFORMATION", "GREETING"].includes(nodeKind) &&
+          hasSection("ROUTING") && (
+            <PropertySection
+              title="ROUTING"
+              description="Configure what happens after this node finishes playing or executing."
+            >
+              <div>
+                <FieldLabel>After Completion Policy</FieldLabel>
+                <select
+                  value={node.data.postAction?.mode ?? ""}
+                  onChange={event => {
+                    const mode = event.target.value as IVRPostActionMode;
+                    if (!mode) {
+                      const updatedData = { ...node.data };
+                      delete updatedData.postAction;
+                      onChange("postAction", undefined);
+                    } else {
+                      onChange("postAction", {
+                        ...node.data.postAction,
+                        mode,
+                      });
+                    }
+                  }}
+                  className="h-11 w-full rounded-md border border-slate-200 bg-white px-3 text-sm"
+                >
+                  <option value="">Follow Graph Edges (Default)</option>
+                  <option value="RETURN_HOME">Return to Main Menu</option>
+                  <option value="RETURN_PREVIOUS">Return to Previous</option>
+                  <option value="STAY_CURRENT">Stay Here</option>
+                  <option value="ASK_NEXT_ACTION">Ask What Next</option>
+                  <option value="CONTINUE_TO_NODE">Continue To...</option>
+                  <option value="END_CALL">End Call</option>
+                </select>
+              </div>
+
+              {node.data.postAction?.mode === "CONTINUE_TO_NODE" && (
+                <div className="mt-3">
+                  <FieldLabel>Destination Node</FieldLabel>
+                  <NodeDestinationPicker
+                    nodes={nodes}
+                    value={node.data.postAction?.targetNodeId}
+                    onChange={val =>
+                      onChange("postAction", {
+                        mode: "CONTINUE_TO_NODE",
+                        ...node.data.postAction,
+                        targetNodeId: val,
+                      })
+                    }
+                    placeholder="Select destination node..."
+                    excludeNodeId={node.id}
+                  />
+                  <p className="mt-1 text-xs text-slate-500">Node to automatically navigate to after this action completes.</p>
+                </div>
+              )}
+
+              {node.data.postAction?.mode === "ASK_NEXT_ACTION" && (
+                <div className="mt-3">
+                  <FieldLabel>Next-Action Prompt</FieldLabel>
+                  <Input
+                    value={node.data.postAction?.prompt ?? ""}
+                    onChange={event =>
+                      onChange("postAction", {
+                        mode: "ASK_NEXT_ACTION",
+                        ...node.data.postAction,
+                        prompt: event.target.value,
+                      })
+                    }
+                    placeholder="e.g. Would you like more information, return to main menu, or speak with an agent?"
+                  />
+                  <p className="mt-1 text-xs text-slate-500">Deterministic prompt spoken to ask the caller for their next choice.</p>
+                </div>
+              )}
+            </PropertySection>
+          )}
+
+        {["HYBRID_MENU", "DTMF_MENU"].includes(nodeKind) && hasSection("BEHAVIOR") && (
+          <PropertySection
+            title="BEHAVIOR"
+            description="Allow callers to ask business questions directly from this menu."
+          >
+            <div className="space-y-3">
+              <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={node.data.conversationalEscape?.enabled === true}
+                  onChange={event => {
+                    const enabled = event.target.checked;
+                    if (!enabled) {
+                      const updated = { ...node.data };
+                      delete updated.conversationalEscape;
+                      onChange("conversationalEscape", undefined);
+                    } else {
+                      onChange("conversationalEscape", {
+                        enabled: true,
+                        targetNodeId: node.data.conversationalEscape?.targetNodeId ?? "",
+                        prompt: node.data.conversationalEscape?.prompt ?? null,
+                        returnBehavior: node.data.conversationalEscape?.returnBehavior ?? "RETURN_CONTEXT",
+                      });
+                    }
+                  }}
+                />
+                Enable Conversational Escape
+              </label>
+
+              {node.data.conversationalEscape?.enabled && (
+                <div className="mt-3 space-y-3 border-t pt-3">
+                  <div>
+                    <FieldLabel>Target Assistant / Knowledge Node</FieldLabel>
+                    <NodeDestinationPicker
+                      nodes={nodes}
+                      value={node.data.conversationalEscape.targetNodeId}
+                      onChange={val =>
+                        onChange("conversationalEscape", {
+                          enabled: true,
+                          ...node.data.conversationalEscape,
+                          targetNodeId: val,
+                        })
+                      }
+                      placeholder="Select assistant / knowledge node..."
+                      filterKinds={["KNOWLEDGE", "AI", "AI_CONVERSATION"]}
+                      excludeNodeId={node.id}
+                    />
+                    <p className="mt-1 text-xs text-slate-500">Destination node to handle free-form questions from callers.</p>
+                  </div>
+
+                  <div>
+                    <FieldLabel>After Answering</FieldLabel>
+                    <select
+                      value={node.data.conversationalEscape.returnBehavior ?? "RETURN_CONTEXT"}
+                      onChange={event =>
+                        onChange("conversationalEscape", {
+                          enabled: true,
+                          ...node.data.conversationalEscape,
+                          returnBehavior: event.target.value as IVRConversationalEscapeReturnBehavior,
+                        })
+                      }
+                      className="h-11 w-full rounded-md border border-slate-200 bg-white px-3 text-sm"
+                    >
+                      <option value="RETURN_CONTEXT">Return to this menu (Side-turn)</option>
+                      <option value="STAY_CONVERSATIONAL">Stay in assistant for follow-up questions</option>
+                      <option value="FOLLOW_TARGET_POST_ACTION">Follow assistant's configured next step</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <FieldLabel>Optional Entry Prompt</FieldLabel>
+                    <Input
+                      value={node.data.conversationalEscape.prompt ?? ""}
+                      onChange={event =>
+                        onChange("conversationalEscape", {
+                          enabled: true,
+                          ...node.data.conversationalEscape,
+                          prompt: event.target.value,
+                        })
+                      }
+                      placeholder="e.g. Sure, let me answer that for you."
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          </PropertySection>
+        )}
+
+        {["KNOWLEDGE", "AI", "AI_CONVERSATION"].includes(nodeKind) && hasSection("BEHAVIOR") && (
+          <PropertySection
+            title="BEHAVIOR"
+            description="Control when conversational AI is allowed to activate for this node."
+          >
+            <div>
+              <FieldLabel>AI Mode</FieldLabel>
+              <select
+                value={node.data.aiPolicy?.mode ?? ""}
+                onChange={event => {
+                  const mode = event.target.value as IVRAIPolicyMode;
+                  if (!mode) {
+                    const updated = { ...node.data };
+                    delete updated.aiPolicy;
+                    onChange("aiPolicy", undefined);
+                  } else {
+                    onChange("aiPolicy", {
+                      ...node.data.aiPolicy,
+                      mode,
+                      timeoutMs: node.data.aiPolicy?.timeoutMs ?? 8000,
+                      failureBehavior: node.data.aiPolicy?.failureBehavior ?? "LOCAL_KB",
+                      confidenceThreshold: node.data.aiPolicy?.confidenceThreshold ?? 0.7,
+                      allowRerank: node.data.aiPolicy?.allowRerank !== false,
+                    });
+                  }
+                }}
+                className="h-11 w-full rounded-md border border-slate-200 bg-white px-3 text-sm"
+              >
+                <option value="">Default (Follow system heuristics)</option>
+                <option value="NEVER">Never use AI (Deterministic only)</option>
+                <option value="FREE_FORM_ONLY">Only for caller questions</option>
+                <option value="LOW_CONFIDENCE_ONLY">Use AI when local answer is uncertain</option>
+                <option value="ALWAYS_CONVERSATIONAL">Conversational AI</option>
+              </select>
+            </div>
+
+            {node.data.aiPolicy?.mode && (
+              <div className="mt-3 space-y-3">
+                {node.data.aiPolicy.mode === "LOW_CONFIDENCE_ONLY" && (
+                  <div>
+                    <FieldLabel>Confidence Threshold (0.0 – 1.0)</FieldLabel>
+                    <Input
+                      type="number"
+                      step="0.05"
+                      min="0"
+                      max="1"
+                      value={node.data.aiPolicy.confidenceThreshold ?? 0.7}
+                      onChange={event =>
+                        onChange("aiPolicy", {
+                          mode: node.data.aiPolicy?.mode ?? "LOW_CONFIDENCE_ONLY",
+                          ...node.data.aiPolicy,
+                          confidenceThreshold: parseFloat(event.target.value) || 0.7,
+                        })
+                      }
+                      placeholder="0.7"
+                    />
+                    <p className="mt-1 text-xs text-slate-500">Local answers with normalized relevance ≥ this threshold skip AI generation.</p>
+                  </div>
+                )}
+
+                <div>
+                  <FieldLabel>AI Timeout (ms)</FieldLabel>
+                  <Input
+                    type="number"
+                    step="500"
+                    min="500"
+                    max="30000"
+                    value={node.data.aiPolicy.timeoutMs ?? 8000}
+                    onChange={event =>
+                      onChange("aiPolicy", {
+                        mode: node.data.aiPolicy?.mode ?? "FREE_FORM_ONLY",
+                        ...node.data.aiPolicy,
+                        timeoutMs: parseInt(event.target.value, 10) || 8000,
+                      })
+                    }
+                    placeholder="8000"
+                  />
+                  <p className="mt-1 text-xs text-slate-500">Maximum milliseconds to wait for AI response before triggering failure behavior.</p>
+                </div>
+
+                <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={node.data.aiPolicy.allowRerank !== false}
+                    onChange={event =>
+                      onChange("aiPolicy", {
+                        mode: node.data.aiPolicy?.mode ?? "FREE_FORM_ONLY",
+                        ...node.data.aiPolicy,
+                        allowRerank: event.target.checked,
+                      })
+                    }
+                  />
+                  Allow AI Reranking
+                </label>
+
+                <div>
+                  <FieldLabel>Failure Behavior</FieldLabel>
+                  <select
+                    value={node.data.aiPolicy.failureBehavior ?? "LOCAL_KB"}
+                    onChange={event =>
+                      onChange("aiPolicy", {
+                        mode: node.data.aiPolicy?.mode ?? "FREE_FORM_ONLY",
+                        ...node.data.aiPolicy,
+                        failureBehavior: event.target.value as IVRAIFailureBehavior,
+                      })
+                    }
+                    className="h-11 w-full rounded-md border border-slate-200 bg-white px-3 text-sm"
+                  >
+                    <option value="LOCAL_KB">Use Local Knowledge Base</option>
+                    <option value="RETURN_CONTEXT">Return to Prior Context</option>
+                    <option value="TRANSFER">Transfer to Agent</option>
+                    <option value="CUSTOM_DESTINATION">Route to Custom Node</option>
+                  </select>
+                </div>
+
+                {node.data.aiPolicy.failureBehavior === "CUSTOM_DESTINATION" && (
+                  <div>
+                    <FieldLabel>Failure Target Node</FieldLabel>
+                    <NodeDestinationPicker
+                      nodes={nodes}
+                      value={node.data.aiPolicy.failureTargetNodeId}
+                      onChange={val =>
+                        onChange("aiPolicy", {
+                          mode: node.data.aiPolicy?.mode ?? "FREE_FORM_ONLY",
+                          ...node.data.aiPolicy,
+                          failureTargetNodeId: val,
+                        })
+                      }
+                      placeholder="Select failure fallback node..."
+                      excludeNodeId={node.id}
+                    />
+                    <p className="mt-1 text-xs text-slate-500">Node to navigate to if AI generation times out or fails.</p>
+                  </div>
+                )}
               </div>
             )}
           </PropertySection>

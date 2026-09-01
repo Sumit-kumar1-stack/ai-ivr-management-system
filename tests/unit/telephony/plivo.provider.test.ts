@@ -51,6 +51,24 @@ describe("Plivo provider", () => {
     expect(xml).not.toContain("<Hangup");
   });
 
+  it("builds an XML-owned CASCADED stream for STANDARD voice campaigns", async () => {
+    for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+    const response = plivoXmlResponse("Welcome to standard voice.", false, new URL("http://localhost:3000/api/plivo/outbound/answer"), "internal-call-cascaded", undefined, "CASCADED");
+    const xml = await response.text();
+    expect(xml).toContain("<Speak>Welcome to standard voice.</Speak>");
+    expect(xml).toContain('<Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-mulaw;rate=8000">');
+    expect(xml).toContain("wss://media.test.example/api/plivo/stream?callId=internal-call-cascaded&amp;token=");
+    expect(xml).not.toContain(env.PLIVO_AUTH_TOKEN);
+    expect(xml).not.toContain("<Hangup");
+  });
+
+  it("supports STANDARD alias and produces signed WSS stream URL", async () => {
+    for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+    const response = plivoXmlResponse("Hello.", false, new URL("http://localhost:3000/api/plivo/outbound/answer"), "call-std", undefined, "STANDARD");
+    const xml = await response.text();
+    expect(xml).toContain('<Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-mulaw;rate=8000">wss://media.test.example/api/plivo/stream?callId=call-std&amp;token=');
+  });
+
   it("does not emit the legacy XML DTMF callback while Gemini Live owns the call", async () => {
     for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
     const response = plivoXmlResponse("Choose an option.", false, new URL("http://localhost:3000/api/plivo/inbound"), "internal-call", { status: "AWAITING_INPUT", currentNodeId: "menu", nextNodeId: null, speechText: "Choose an option.", awaitInput: true, endCall: false, transitionReason: "DTMF_MENU" }, "GEMINI_LIVE");
@@ -60,18 +78,40 @@ describe("Plivo provider", () => {
     expect(xml).not.toContain("/api/plivo/input");
     expect(xml).not.toContain("<GetDigits");
     expect(xml).not.toContain("<GetInput");
-    expect(new PlivoProvider().capabilities.supportsRealtimeDtmfDuringMedia).toBe(false);
+    expect(new PlivoProvider().capabilities.supportsRealtimeDtmfDuringMedia).toBe(true);
   });
 
-  it("uses documented XML GetDigits before, not during, a staged Gemini Live session", async () => {
+  it("does not emit the legacy XML DTMF callback while CASCADED owns the call", async () => {
+    for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+    const response = plivoXmlResponse("Choose an option.", false, new URL("http://localhost:3000/api/plivo/inbound"), "internal-call", { status: "AWAITING_INPUT", currentNodeId: "menu", nextNodeId: null, speechText: "Choose an option.", awaitInput: true, endCall: false, transitionReason: "DTMF_MENU" }, "CASCADED");
+    const xml = await response.text();
+
+    expect(xml).toContain("<Stream");
+    expect(xml).not.toContain("/api/plivo/input");
+    expect(xml).not.toContain("<GetDigits");
+    expect(xml).not.toContain("<GetInput");
+  });
+
+  it("uses documented XML GetInput for zero-Gemini DTMF or speech before a staged Gemini Live session", async () => {
     for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
     const response = plivoXmlResponse("Welcome.", false, new URL("http://localhost:3000/api/plivo/inbound"), "internal-call", { status: "AWAITING_INPUT", currentNodeId: "entry-menu", nextNodeId: null, speechText: "Welcome.", awaitInput: true, endCall: false, transitionReason: "DEFAULT", currentNodeKind: "HYBRID_MENU", entryInputStage: true, entryPrompt: "Press 1 for loans.", entryTimeoutPrompt: "Connecting you to our AI assistant.", entryTimeoutSeconds: 12 }, "GEMINI_LIVE");
     const xml = await response.text();
 
-    expect(xml).toContain('<GetDigits action="https://voice.test.example/api/plivo/input?callId=internal-call" method="POST" numDigits="1" timeout="12">');
+    expect(xml).toContain('<GetInput action="https://voice.test.example/api/plivo/input?callId=internal-call" method="POST" inputType="dtmf speech" numDigits="1" executionTimeout="12" startInputTimeout="12" speechModel="command_and_search" retries="1">');
     expect(xml).toContain("Press 1 for loans.");
-    expect(xml).toContain('<Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-mulaw;rate=8000">');
-    expect(xml.indexOf("<GetDigits")).toBeLessThan(xml.indexOf("<Stream"));
+    expect(xml).toContain('<Redirect method="POST">https://voice.test.example/api/plivo/input?callId=internal-call&amp;timeout=1</Redirect>');
+    expect(xml).not.toContain("<Stream");
+  });
+
+  it("uses documented XML GetInput for DTMF or speech before a staged CASCADED session", async () => {
+    for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+    const response = plivoXmlResponse("Welcome.", false, new URL("http://localhost:3000/api/plivo/inbound"), "internal-call", { status: "AWAITING_INPUT", currentNodeId: "entry-menu", nextNodeId: null, speechText: "Welcome.", awaitInput: true, endCall: false, transitionReason: "DEFAULT", currentNodeKind: "HYBRID_MENU", entryInputStage: true, entryPrompt: "Press 1 for loans.", entryTimeoutPrompt: "Connecting you to our AI assistant.", entryTimeoutSeconds: 12 }, "CASCADED");
+    const xml = await response.text();
+
+    expect(xml).toContain('<GetInput action="https://voice.test.example/api/plivo/input?callId=internal-call" method="POST" inputType="dtmf speech" numDigits="1" executionTimeout="12" startInputTimeout="12" speechModel="command_and_search" retries="1">');
+    expect(xml).toContain("Press 1 for loans.");
+    expect(xml).toContain('<Redirect method="POST">https://voice.test.example/api/plivo/input?callId=internal-call&amp;timeout=1</Redirect>');
+    expect(xml).not.toContain("<Stream");
   });
 
   it("starts a mono recording with a signed callback and resolves media only through the authenticated API", async () => {

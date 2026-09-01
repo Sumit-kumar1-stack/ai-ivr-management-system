@@ -169,6 +169,9 @@ export default async function DeveloperDashboardPage() {
         <Link className="rounded-lg border px-4 py-2 text-sm font-medium" href="/developer/webhooks">
           Manage Webhooks
         </Link>
+        <Link className="rounded-lg border px-4 py-2 text-sm font-medium" href="/developer/integrations">
+          External Integrations
+        </Link>
         <Link className="rounded-lg border px-4 py-2 text-sm font-medium" href="/developer/logs">
           View Logs
         </Link>

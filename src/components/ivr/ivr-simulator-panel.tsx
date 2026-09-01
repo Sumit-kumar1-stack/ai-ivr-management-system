@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -114,17 +115,28 @@ interface Props {
   nodes: unknown[];
   edges: unknown[];
   onFocusNode?: (nodeId: string) => void;
+  onClose?: () => void;
 }
 
 const STEP_ID_PREFIX = "step";
 
-export default function IVRSimulatorPanel({ flowId, nodes, edges, onFocusNode }: Props) {
+export default function IVRSimulatorPanel({ flowId, nodes, edges, onFocusNode, onClose }: Props) {
   const [scenarioName, setScenarioName] = useState("Caller journey");
   const [scenarioDescription, setScenarioDescription] = useState("Multi-step caller simulation");
   const [steps, setSteps] = useState<ScenarioStepDraft[]>(() => [createStep(1)]);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<SimulationResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && onClose) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
 
   const validationSummary = useMemo(() => {
     const issues = result?.validation?.issues ?? [];
@@ -214,6 +226,18 @@ export default function IVRSimulatorPanel({ flowId, nodes, edges, onFocusNode }:
             Execute an ordered caller journey without placing real calls, messages, or mutations.
           </p>
         </div>
+        {onClose && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            aria-label="Close simulator panel"
+            className="h-8 w-8 rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        )}
       </div>
 
       <div className="mt-5 space-y-4">
@@ -469,6 +493,19 @@ export default function IVRSimulatorPanel({ flowId, nodes, edges, onFocusNode }:
             </div>
           </div>
         ) : null}
+
+        {onClose && (
+          <div className="pt-2 border-t border-slate-100">
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full text-slate-700"
+              onClick={onClose}
+            >
+              Close
+            </Button>
+          </div>
+        )}
       </div>
     </aside>
   );

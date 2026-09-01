@@ -27,6 +27,22 @@ describe("FlowCopilot action state", () => {
     });
   });
 
+  it("shows Modify Draft for MODIFY command", () => {
+    expect(getCopilotActionState({ command: "MODIFY", hasGeneratedResult: true, phase: "idle" })).toMatchObject({
+      showModifyAction: true,
+      isModifyCommand: true,
+      primaryLabel: "Modify Draft",
+    });
+  });
+
+  it("shows Modifying... when MODIFY is in generating phase", () => {
+    expect(getCopilotActionState({ command: "MODIFY", hasGeneratedResult: true, phase: "generating" })).toMatchObject({
+      showModifyAction: true,
+      isGenerating: true,
+      primaryLabel: "Modifying...",
+    });
+  });
+
   it("does not change the existing control model for non-Generate commands", () => {
     expect(getCopilotActionState({ command: "VALIDATE", hasGeneratedResult: false, phase: "idle" })).toMatchObject({
       showGenericPreview: true,

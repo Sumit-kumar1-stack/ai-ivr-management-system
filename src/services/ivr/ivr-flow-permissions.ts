@@ -3,6 +3,7 @@ import { IVRFlowLifecycle, UserRole } from "@prisma/client";
 import type { AuthenticatedUser } from "@/lib/auth";
 import { ForbiddenError } from "@/lib/app-error";
 import { hasCampaignCapability } from "@/services/communication/campaign-capabilities";
+import { canBypassMakerCheckerForTesting } from "@/services/security/governance-override.service";
 
 type IvrUser = Pick<AuthenticatedUser, "id" | "role" | "tenantId" | "campaignCapabilities">;
 
@@ -33,7 +34,7 @@ export function buildIvrFlowPermissions(user: IvrUser, flow: IvrFlowPermissionSn
   // Editing a published flow creates the next mutable draft revision on the
   // flow record; the published IVRFlowVersion remains immutable.
   const editable = flow.lifecycle === IVRFlowLifecycle.DRAFT || flow.lifecycle === IVRFlowLifecycle.VALIDATED || flow.lifecycle === IVRFlowLifecycle.REJECTED || flow.lifecycle === IVRFlowLifecycle.PUBLISHED;
-  const isCreator = flow.ownerUserId === user.id || flow.submittedByUserId === user.id;
+  const isCreator = (flow.ownerUserId === user.id || flow.submittedByUserId === user.id) && !canBypassMakerCheckerForTesting(user);
   const hasPublishedHistory = Boolean(flow.isPublished) || Boolean(flow.versions?.some(version => version.status === "PUBLISHED"));
   const hasActiveDeployment = Boolean(flow.inboundProfiles?.some(profile => profile.active && profile.ivrFlowVersionId));
 

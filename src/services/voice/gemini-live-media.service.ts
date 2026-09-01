@@ -1,4 +1,4 @@
-import {
+﻿import {
   Buffer,
 } from "buffer";
 
@@ -6,6 +6,10 @@ import {
   AppEvent,
   EventPublisher,
 } from "@/core/events";
+
+import {
+  prisma,
+} from "@/lib/prisma";
 
 import {
   createCallLogger,
@@ -52,6 +56,10 @@ import {
 import {
   GeminiLiveResilienceService,
 } from "./gemini-live-resilience.service";
+
+import {
+  routeRealtimeCallInput,
+} from "@/services/conversations/realtime-input.service";
 
 import {
   GeminiLiveSessionService,
@@ -162,7 +170,13 @@ export function buildIvrEntryContextPrompt(
           "Caller made no keypad selection and is on the configured default AI path.",
           "Do not infer a selected intent, department, or language.",
         ].join("\n")
-      : "";
+      : context.currentNodeId
+        ? [
+            "IVR ENTRY CONTEXT",
+            `Current IVR node: ${context.currentNodeId}`,
+            "Do not ask the caller to repeat this selection. Continue naturally from it.",
+          ].join("\n")
+        : "";
   }
   return [
     "IVR ENTRY CONTEXT",
@@ -485,10 +499,12 @@ class GeminiLiveMediaManager {
 
     if (ivrContext?.inputStage === "ENTRY_IVR" && !ivrContext.selectedDigit && !ivrContext.selectedIntent) {
       log.info({ event: "ivr.entry_input.fallback_to_ai", provider: "PLIVO", reason: "NO_SELECTION", configuredTimeout: ivrContext.collectedFields?.entryTimeoutSeconds ?? null, fallbackNodeId: ivrContext.fallbackNodeId ?? null, runtime: "GEMINI_LIVE" }, "Staged entry fell through to realtime AI without a keypad selection");
-      await IVRFlowSessionService.set(callId, { ...ivrContext, conversationMode: "REALTIME_AI", inputStage: "REALTIME_AI" });
+      ivrContext.conversationMode = "REALTIME_AI";
+      ivrContext.inputStage = "REALTIME_AI";
+      await IVRFlowSessionService.set(callId, { ...ivrContext });
     }
 
-    if (ivrContext?.inputStage === "REALTIME_AI") {
+    if (ivrContext?.inputStage === "REALTIME_AI" || ivrContext?.currentNodeId) {
       log.info({ event: "gemini.live.started_from_ivr_context", currentIvrNodeId: ivrContext.currentNodeId, selectedIntent: ivrContext.selectedIntent ?? null, selectedDepartment: ivrContext.selectedDepartment ?? null, preferredLanguage: ivrContext.preferredLanguage ?? null }, "Gemini Live started with persisted IVR entry context");
     }
 
@@ -3922,6 +3938,36 @@ const live =
         },
         "Caller rejected pending Premium business action"
       );
+    }
+
+    //----------------------------------------------
+    // IVR Menu / Navigation Evaluation
+    //----------------------------------------------
+
+    const ivrSession = await IVRFlowSessionService.get(callId);
+    if (ivrSession?.currentNodeId) {
+      const call = await prisma.call.findUnique({
+        where: { id: callId },
+        select: { provider: true },
+      });
+      const provider = (call?.provider as "TWILIO" | "PLIVO" | "EXOTEL") ?? "PLIVO";
+      const routed = await routeRealtimeCallInput({
+        type: "VOICE",
+        callId,
+        provider,
+        text,
+        isFinal: true,
+        timestamp: Date.now(),
+      });
+      if (routed.handled && routed.graphExecution) {
+        const log = createCallLogger(callId);
+        log.info({
+          event: "gemini.live.ivr_voice_routed",
+          callId,
+          currentNodeId: routed.graphExecution.currentNodeId,
+          transitionReason: routed.graphExecution.transitionReason,
+        }, "Caller voice routed through deterministic IVR executor");
+      }
     }
 
     //----------------------------------------------

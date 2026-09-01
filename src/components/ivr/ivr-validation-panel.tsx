@@ -1,6 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { X } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,13 +29,33 @@ interface ValidationResult {
 
 interface Props {
   flowId?: string;
+  isDirty?: boolean;
   onFocusNode?: (nodeId: string) => void;
+  onClose?: () => void;
+  onSaveAndValidate?: () => Promise<void>;
 }
 
-export default function IVRValidationPanel({ flowId, onFocusNode }: Props) {
+export default function IVRValidationPanel({
+  flowId,
+  isDirty = false,
+  onFocusNode,
+  onClose,
+  onSaveAndValidate,
+}: Props) {
+  const queryClient = useQueryClient();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ValidationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && onClose) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
 
   async function runValidation() {
     if (!flowId || loading) return;
@@ -47,6 +69,10 @@ export default function IVRValidationPanel({ flowId, onFocusNode }: Props) {
         throw new Error(data?.message ?? "IVR flow validation could not be loaded");
       }
       setResult(data.data as ValidationResult);
+
+      // Invalidate the flow query so that the freshly persisted validationStatus/lifecycle updates in UI immediately
+      queryClient.invalidateQueries({ queryKey: ["ivr-flow", flowId] });
+      queryClient.invalidateQueries({ queryKey: ["ivr-flows"] });
     } catch (validationError) {
       setError(validationError instanceof Error ? validationError.message : "IVR flow validation could not be loaded");
     } finally {
@@ -73,20 +99,45 @@ export default function IVRValidationPanel({ flowId, onFocusNode }: Props) {
             Validate the saved IVR flow before publishing it to production runtime.
           </p>
         </div>
+        {onClose && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            aria-label="Close validation panel"
+            className="h-8 w-8 rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        )}
       </div>
 
       <div className="mt-5 space-y-4">
-        {!flowId && (
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            Save the flow before running validation.
+        {(!flowId || isDirty) && (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 space-y-2">
+            <div className="font-semibold">This flow has unsaved changes.</div>
+            <p className="text-xs text-amber-800">Validation runs against the saved flow. Save before validation.</p>
+            {onSaveAndValidate && (
+              <Button
+                type="button"
+                className="w-full mt-2"
+                onClick={() => void onSaveAndValidate()}
+                disabled={loading}
+              >
+                {loading ? "Saving & Validating..." : "Save & Validate"}
+              </Button>
+            )}
           </div>
         )}
 
-        <div className="flex gap-2">
-          <Button type="button" className="flex-1" onClick={() => void runValidation()} disabled={!flowId || loading}>
-            {loading ? "Validating..." : "Run validation"}
-          </Button>
-        </div>
+        {flowId && !isDirty && (
+          <div className="flex gap-2">
+            <Button type="button" className="flex-1" onClick={() => void runValidation()} disabled={loading}>
+              {loading ? "Validating..." : "Run validation"}
+            </Button>
+          </div>
+        )}
 
         {error && (
           <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
@@ -125,6 +176,19 @@ export default function IVRValidationPanel({ flowId, onFocusNode }: Props) {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {onClose && (
+          <div className="pt-2 border-t border-slate-100">
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full text-slate-700"
+              onClick={onClose}
+            >
+              Close
+            </Button>
           </div>
         )}
       </div>

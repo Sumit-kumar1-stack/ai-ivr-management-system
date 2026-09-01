@@ -13,9 +13,10 @@ const PlatformRoleSchema = z.enum([
 
 export const CreateTenantUserSchema = z.object({
   fullName: z.string().min(3),
-  email: z.email(),
+  email: z.string().email(),
   password: z.string().min(8),
   role: TenantRoleSchema.default("ADMIN"),
+  campaignCapabilities: z.array(z.string()).optional(),
   phone: z.string().optional(),
 }).strict();
 
@@ -30,9 +31,10 @@ export type CreateUserInput =
 
 export const PlatformCreateUserSchema = z.object({
   fullName: z.string().min(3),
-  email: z.email(),
+  email: z.string().email(),
   password: z.string().min(8),
   role: PlatformRoleSchema,
+  campaignCapabilities: z.array(z.string()).optional(),
   phone: z.string().optional(),
 }).strict();
 
@@ -45,6 +47,7 @@ export const UpdateTenantUserSchema = z.object({
   avatar: z.string().optional(),
   isActive: z.boolean().optional(),
   role: TenantRoleSchema.optional(),
+  campaignCapabilities: z.array(z.string()).optional(),
 }).strict();
 
 export type UpdateTenantUserInput =
@@ -56,6 +59,7 @@ export const PlatformUpdateUserSchema = z.object({
   avatar: z.string().optional(),
   isActive: z.boolean().optional(),
   role: PlatformRoleSchema.optional(),
+  campaignCapabilities: z.array(z.string()).optional(),
 }).strict();
 
 export type PlatformUpdateUserInput =

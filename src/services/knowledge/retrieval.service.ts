@@ -88,7 +88,14 @@ export interface KnowledgeRetrievalOptions {
 
   /** Cancellation is advisory for database reads and hard for reranker streams. */
   signal?: AbortSignal;
+
+  /** Skip AI reranking and immediately use scoped BM25 results (e.g. for deterministic menu navigation). */
+  skipRerank?: boolean;
 }
+
+//--------------------------------------------------
+// Logger
+//--------------------------------------------------
 
 //--------------------------------------------------
 // Logger
@@ -184,8 +191,8 @@ const RERANK_TIMEOUT_MS =
 
 const ENABLE_CONFIDENCE_SKIP =
   process.env
-    .KNOWLEDGE_CONFIDENCE_SKIP_RERANK ===
-  "true";
+    .KNOWLEDGE_CONFIDENCE_SKIP_RERANK !==
+  "false";
 
 const configuredDominanceRatio =
   Number(
@@ -208,17 +215,10 @@ const BM25_DOMINANCE_RATIO =
 // Timeout Error
 //--------------------------------------------------
 
-class KnowledgeRerankTimeoutError
-  extends Error {
-  constructor(
-    timeoutMs: number
-  ) {
-    super(
-      `Knowledge reranking exceeded ${timeoutMs} ms`
-    );
-
-    this.name =
-      "KnowledgeRerankTimeoutError";
+class KnowledgeRerankTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Knowledge reranking exceeded ${timeoutMs} ms`);
+    this.name = "KnowledgeRerankTimeoutError";
   }
 }
 
@@ -904,10 +904,11 @@ export async function retrieveKnowledge(
       );
 
     //------------------------------------------------
-    // Confidence Fast Path
+    // Confidence Fast Path or Explicit Rerank Skip
     //------------------------------------------------
 
     if (
+      options.skipRerank ||
       canSkipReranking(
         rerankCandidates
       )
@@ -924,7 +925,9 @@ export async function retrieveKnowledge(
             "knowledge.retrieval.rerank_skipped",
 
           reason:
-            "high_bm25_confidence",
+            options.skipRerank
+              ? "skip_rerank_requested"
+              : "high_bm25_confidence",
 
           returnedChunkCount:
             results.length,
@@ -936,15 +939,13 @@ export async function retrieveKnowledge(
               startedAt
             ),
         },
-        "High-confidence BM25 result used"
+        options.skipRerank
+          ? "Fast-path BM25 result used without reranker"
+          : "High-confidence BM25 result used"
       );
 
       return results;
     }
-
-    //------------------------------------------------
-    // AI Reranking With Latency Budget
-    //------------------------------------------------
 
     const rerankStartedAt =
       process.hrtime.bigint();

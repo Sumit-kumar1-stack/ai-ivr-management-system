@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
 
 const mocks = vi.hoisted(() => ({
@@ -29,6 +29,10 @@ vi.mock("@/app/api/plivo/inbound/route", () => ({ plivoXmlResponse: mocks.xmlRes
 import { POST } from "@/app/api/plivo/input/route";
 
 describe("Plivo legacy XML input route", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("rejects a signed callback unless its exact call ID, provider CallUUID, and provider bind an existing call", async () => {
     mocks.validateWebhook.mockResolvedValue({ CallUUID: "other-provider-call", Digits: "1" });
     mocks.findFirst.mockResolvedValue(null);
@@ -54,6 +58,46 @@ describe("Plivo legacy XML input route", () => {
     expect(response.status).toBe(200);
     expect(mocks.routeInput).toHaveBeenCalledWith(
       expect.objectContaining({ type: "DTMF", callId: "internal-call", provider: "PLIVO", digit: "1" }),
+      { deliverOutput: false }
+    );
+  });
+
+  it("routes verified Plivo GetInput speech through deterministic IVR voice routing", async () => {
+    mocks.validateWebhook.mockResolvedValue({
+      CallUUID: "provider-call",
+      InputType: "speech",
+      Speech: "eligibility",
+      SpeechConfidenceScore: "0.94",
+    });
+    mocks.findFirst.mockResolvedValue({ id: "internal-call", tenantId: "tenant-a", requestedRuntime: "GEMINI_LIVE" });
+    mocks.routeInput.mockResolvedValue({ handled: true, speechText: "Eligibility.", endCall: false, graphExecution: null });
+    mocks.xmlResponse.mockReturnValue(new NextResponse("<Response/>", { status: 200 }));
+
+    await POST(new NextRequest("https://voice.test.example/api/plivo/input?callId=internal-call", { method: "POST" }));
+
+    expect(mocks.routeInput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "VOICE",
+        callId: "internal-call",
+        provider: "PLIVO",
+        text: "eligibility",
+        isFinal: true,
+        confidence: 0.94,
+      }),
+      { deliverOutput: false }
+    );
+  });
+
+  it("routes a signed no-input redirect into the graph timeout path", async () => {
+    mocks.validateWebhook.mockResolvedValue({ CallUUID: "provider-call" });
+    mocks.findFirst.mockResolvedValue({ id: "internal-call", tenantId: "tenant-a", requestedRuntime: "GEMINI_LIVE" });
+    mocks.routeInput.mockResolvedValue({ handled: false, speechText: "I did not receive a selection.", endCall: false, graphExecution: { transitionReason: "TIMEOUT" } });
+    mocks.xmlResponse.mockReturnValue(new NextResponse("<Response/>", { status: 200 }));
+
+    await POST(new NextRequest("https://voice.test.example/api/plivo/input?callId=internal-call&timeout=1", { method: "POST" }));
+
+    expect(mocks.routeInput).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "SILENCE", callId: "internal-call", provider: "PLIVO" }),
       { deliverOutput: false }
     );
   });

@@ -11,6 +11,7 @@ import {
   BarChart3,
   BookOpen,
   Contact,
+  Disc,
   Gauge,
   KeyRound,
   Megaphone,
@@ -58,6 +59,7 @@ export function buildDashboardNavigation(
           { label: "Campaigns", href: "/campaigns", icon: Megaphone },
           { label: "Contacts", href: "/contacts", icon: Contact },
           { label: "Calls", href: "/calls", icon: Phone },
+          { label: "Recordings", href: "/calls/recordings", icon: Disc },
         ],
       },
       {
@@ -128,28 +130,79 @@ export function buildDashboardNavigation(
   }
 
   if (role === UserRole.ADMIN) {
+    const caps = campaignCapabilities ?? [];
+
     const hasCampaignCapabilities =
-      campaignCapabilities === undefined ||
-      campaignCapabilities.length > 0;
+      caps.length === 0 ||
+      caps.some(c =>
+        [
+          "CAMPAIGN_CREATE",
+          "CAMPAIGN_EDIT",
+          "CAMPAIGN_SUBMIT",
+          "CAMPAIGN_LAUNCH",
+          "CAMPAIGN_REVIEW",
+          "CAMPAIGN_APPROVE",
+          "CAMPAIGN_REJECT",
+        ].includes(c)
+      );
 
     const canReviewCampaigns =
-      campaignCapabilities === undefined ||
-      campaignCapabilities.some(capability =>
+      caps.length === 0 ||
+      caps.some(c =>
         [
           "CAMPAIGN_REVIEW",
           "CAMPAIGN_APPROVE",
           "CAMPAIGN_REJECT",
-        ].includes(capability)
+        ].includes(c)
       );
 
     const canUseIvr =
-      campaignCapabilities === undefined ||
-      campaignCapabilities.some(capability =>
-        ["CAMPAIGN_CREATE", "CAMPAIGN_EDIT", "CAMPAIGN_SUBMIT", "CAMPAIGN_REVIEW"].includes(capability)
+      caps.length === 0 ||
+      caps.some(c =>
+        [
+          "CAMPAIGN_CREATE",
+          "CAMPAIGN_EDIT",
+          "CAMPAIGN_SUBMIT",
+          "CAMPAIGN_REVIEW",
+          "IVR_PUBLISH",
+        ].includes(c)
       );
-    const canAuthorIvr = campaignCapabilities === undefined || campaignCapabilities.some(capability =>
-      ["CAMPAIGN_CREATE", "CAMPAIGN_EDIT", "CAMPAIGN_SUBMIT"].includes(capability)
-    );
+
+    const canAuthorIvr =
+      caps.length === 0 ||
+      caps.some(c =>
+        [
+          "CAMPAIGN_CREATE",
+          "CAMPAIGN_EDIT",
+          "CAMPAIGN_SUBMIT",
+        ].includes(c)
+      );
+
+    const canAccessDeveloper =
+      caps.length === 0 ||
+      caps.some(c =>
+        [
+          "DEVELOPER_PORTAL_ACCESS",
+          "API_KEYS_MANAGE",
+          "WEBHOOKS_MANAGE",
+        ].includes(c)
+      );
+
+    const canManageOrgUsers =
+      caps.length === 0 ||
+      caps.includes("ORG_USERS_MANAGE");
+
+    const canManageOrgSettings =
+      caps.length === 0 ||
+      caps.includes("ORG_SETTINGS_MANAGE");
+
+    const adminItems: NavigationItem[] = [];
+    if (canManageOrgUsers) {
+      adminItems.push({ label: "Users", href: "/users", icon: Users });
+    }
+    if (canManageOrgSettings) {
+      adminItems.push({ label: "Settings", href: "/settings", icon: Settings });
+    }
 
     return [
       {
@@ -172,6 +225,7 @@ export function buildDashboardNavigation(
             : []),
           { label: "Contacts", href: "/contacts", icon: Contact },
           { label: "Calls", href: "/calls", icon: Phone },
+          { label: "Recordings", href: "/calls/recordings", icon: Disc },
         ],
       },
       {
@@ -211,20 +265,48 @@ export function buildDashboardNavigation(
             ],
           }]
         : []),
-      {
-        title: "Administration",
-        items: [
-          { label: "Users", href: "/users", icon: Users },
-          {
-            label: "Settings",
-            href: "/settings",
-            icon: Settings,
-          },
-        ],
-      },
+      ...(canAccessDeveloper
+        ? [{
+            title: "Developer",
+            items: [
+              {
+                label: "Developer Dashboard",
+                href: "/developer",
+                icon: Webhook,
+              },
+              {
+                label: "API Keys",
+                href: "/developer/api-keys",
+                icon: KeyRound,
+              },
+              {
+                label: "Webhooks",
+                href: "/developer/webhooks",
+                icon: Webhook,
+              },
+              {
+                label: "Usage",
+                href: "/developer/usage",
+                icon: BarChart3,
+              },
+              {
+                label: "Docs",
+                href: "/developer/docs",
+                icon: BookOpen,
+              },
+            ],
+          }]
+        : []),
+      ...(adminItems.length > 0
+        ? [{
+            title: "Administration",
+            items: adminItems,
+          }]
+        : []),
     ];
   }
 
+  // AGENT fallback
   return [
     {
       title: "Campaigns",
@@ -249,6 +331,11 @@ export function buildDashboardNavigation(
           label: "Calls",
           href: "/calls",
           icon: Phone,
+        },
+        {
+          label: "Recordings",
+          href: "/calls/recordings",
+          icon: Disc,
         },
         {
           label: "Analytics",

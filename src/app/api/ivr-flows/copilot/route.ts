@@ -19,17 +19,31 @@ import {
 const ROLES = [UserRole.SUPER_ADMIN, UserRole.ADMIN] as const;
 const log = createLogger({ component: "ivr-flow-copilot-route" });
 
+const NullableOptionalString = z.preprocess(
+  val => (typeof val === "string" && val.trim() === "" ? null : val),
+  z.string().trim().max(500).nullable().optional()
+);
+
 const CopilotRequestSchema = z.object({
   mode: FlowCopilotModeSchema,
-  prompt: z.string().trim().min(1).max(10_000),
-  flowName: z.string().trim().min(1).max(120),
-  campaignId: z.string().trim().min(1).optional().nullable(),
-  inboundProfileId: z.string().trim().min(1).optional().nullable(),
-  returnTo: z.string().trim().optional().nullable(),
+  prompt: z.string().trim().min(1, "Prompt is required").max(10_000),
+  flowName: z.preprocess(
+    val => (typeof val === "string" && val.trim() ? val.trim() : "Untitled Flow"),
+    z.string().trim().max(120).default("Untitled Flow")
+  ),
+  campaignId: NullableOptionalString,
+  inboundProfileId: NullableOptionalString,
+  returnTo: NullableOptionalString,
   currentFlow: z.object({
-    nodes: z.array(z.unknown()),
-    edges: z.array(z.unknown()),
-  }),
+    nodes: z.array(z.unknown()).default([]),
+    edges: z.array(z.unknown()).default([]),
+  }).default({ nodes: [], edges: [] }),
+  validation: z.object({
+    valid: z.boolean().optional(),
+    errors: z.array(z.record(z.string(), z.unknown())).optional(),
+    warnings: z.array(z.record(z.string(), z.unknown())).optional(),
+    issues: z.array(z.record(z.string(), z.unknown())).optional(),
+  }).passthrough().optional().nullable(),
 });
 
 export const POST = asyncHandler(async (request: NextRequest) => {
@@ -57,7 +71,7 @@ export const POST = asyncHandler(async (request: NextRequest) => {
         nodes: body.currentFlow.nodes as never,
         edges: body.currentFlow.edges as never,
       },
-      validation: undefined,
+      validation: body.validation as never,
       supportedNodeKinds: builderContext.catalog.supportedNodeKinds,
       availableActions: builderContext.catalog.actions.map(action => action.actionCode),
       transferDestinations: builderContext.catalog.transferDestinations.map(destination => ({
@@ -113,7 +127,11 @@ export const POST = asyncHandler(async (request: NextRequest) => {
     }
 
     if (error instanceof ZodError) {
-      log.warn({ event: "ivr.copilot.request_invalid", finalHttpStatus: 422 }, "IVR copilot request did not match its contract");
+      log.warn({
+        event: "ivr.copilot.request_invalid",
+        issues: error.issues,
+        finalHttpStatus: 422,
+      }, "IVR copilot request did not match its contract");
       return NextResponse.json(
         {
           success: false,

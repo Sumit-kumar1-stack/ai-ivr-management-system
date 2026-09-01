@@ -78,6 +78,9 @@ const mocks =
         close:
           vi.fn(),
 
+        clearPlayback:
+          vi.fn(),
+
         onClose:
           vi.fn(),
       };

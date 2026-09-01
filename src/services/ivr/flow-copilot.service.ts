@@ -5,6 +5,7 @@ import { AppError } from "@/lib/app-error";
 import { createLogger } from "@/lib/logger";
 import { generateAIResponse } from "@/services/ai/ai-response.service";
 import { applyFlowCopilotPatch } from "@/services/ivr/flow-copilot-patch.service";
+import { applyPresetToFlow } from "@/services/ivr/ivr-experience-presets.service";
 import { normalizeIVRMenuRouting } from "@/services/ivr/ivr-menu-routing.service";
 import { validateIVRFlowDefinition } from "@/services/ivr/ivr-flow-validator.service";
 
@@ -12,6 +13,7 @@ const log = createLogger({ component: "ivr-flow-copilot" });
 
 export const FlowCopilotModeSchema = z.enum([
   "GENERATE",
+  "CREATE",
   "MODIFY",
   "EXPLAIN",
   "VALIDATE",
@@ -120,7 +122,30 @@ export interface FlowCopilotContext {
     nodes: IVRNode[];
     edges: IVREdge[];
   };
-  validation?: ReturnType<typeof validateIVRFlowDefinition>;
+  validation?: {
+    valid: boolean;
+    errors: Array<{
+      code: string;
+      nodeId?: string | null;
+      field?: string | null;
+      message: string;
+      severity?: string;
+    }>;
+    warnings: Array<{
+      code: string;
+      nodeId?: string | null;
+      field?: string | null;
+      message: string;
+      severity?: string;
+    }>;
+    issues?: Array<{
+      code: string;
+      nodeId?: string | null;
+      field?: string | null;
+      message: string;
+      severity?: string;
+    }>;
+  };
   supportedNodeKinds: string[];
   availableActions: string[];
   transferDestinations: Array<{
@@ -208,6 +233,12 @@ function normalizeModelResponseContract(value: unknown): unknown {
   if (!isRecord(value)) return value;
 
   const response = { ...value };
+  // Model-generated validation must NEVER be authoritative and must NEVER prevent
+  // an otherwise structurally valid candidate from being parsed.
+  if ("validation" in response) {
+    delete response.validation;
+  }
+
   if (!stringValue(response.summary)) {
     response.summary = "Generated an IVR candidate for review.";
   }
@@ -251,12 +282,12 @@ function normalizeModelResponseContract(value: unknown): unknown {
   return response;
 }
 
-function toSafeNode(node: IVRNode) {
+function toSafeNode(node: IVRNode): { id: string; type: string; position: { x: number; y: number }; data: Record<string, unknown> } {
   return {
     id: node.id,
-    type: node.type ?? "ivr",
-    position: node.position ?? { x: 0, y: 0 },
-    data: node.data ?? {},
+    type: stringValue(node.type) ?? "ivr",
+    position: node.position ? { x: node.position.x, y: node.position.y } : { x: 0, y: 0 },
+    data: (node.data ?? {}) as Record<string, unknown>,
   };
 }
 
@@ -268,9 +299,9 @@ function buildPersonalLoanMenuSuggestion(context: FlowCopilotContext) {
   const transferId = context.transferDestinations[0]?.id;
   if (!knowledgeId) return null;
 
-  const nodes: IVRNode[] = [
-    toSafeNode(startNode) as IVRNode,
-    { id: "greeting", type: "ivr", position: { x: 340, y: 220 }, data: { nodeKind: "GREETING", label: "Greeting", prompt: "Welcome to DemoBank Personal Loans. How can I help you today?" } } as IVRNode,
+  const nodes = [
+    toSafeNode(startNode),
+    { id: "greeting", type: "ivr", position: { x: 340, y: 220 }, data: { nodeKind: "GREETING", label: "Greeting", prompt: "Welcome to DemoBank Personal Loans. How can I help you today?" } },
     {
       id: "hybrid_menu", type: "ivr", position: { x: 600, y: 220 }, data: {
         nodeKind: "HYBRID_MENU", label: "Main Menu", prompt: "For loan information, press or say 1. For eligibility, 2. For documents, 3. To speak with an agent, 4. To end the call, 9.",
@@ -284,10 +315,10 @@ function buildPersonalLoanMenuSuggestion(context: FlowCopilotContext) {
           { digit: "9", action: "END_CALL", label: "Goodbye", destinationNodeId: "end_call", voicePhrases: ["goodbye", "exit", "end call"] },
         ],
       },
-    } as IVRNode,
-    { id: "knowledge", type: "ivr", position: { x: 900, y: 100 }, data: { nodeKind: "KNOWLEDGE", label: "Personal Loan Knowledge", question: "Answer the caller's personal loan question.", knowledgeDocumentIds: [knowledgeId] } } as IVRNode,
-    ...(transferId ? [{ id: "human_transfer", type: "ivr", position: { x: 900, y: 300 }, data: { nodeKind: "HUMAN_TRANSFER", label: "Human Transfer", transferDestinationId: transferId } } as IVRNode] : []),
-    { id: "end_call", type: "ivr", position: { x: 1200, y: 220 }, data: { nodeKind: "END_CALL", label: "End Call", prompt: "Thank you for calling DemoBank. Goodbye." } } as IVRNode,
+    },
+    { id: "knowledge", type: "ivr", position: { x: 900, y: 100 }, data: { nodeKind: "KNOWLEDGE", label: "Personal Loan Knowledge", question: "Answer the caller's personal loan question.", knowledgeDocumentIds: [knowledgeId] } },
+    ...(transferId ? [{ id: "human_transfer", type: "ivr", position: { x: 900, y: 300 }, data: { nodeKind: "HUMAN_TRANSFER", label: "Human Transfer", transferDestinationId: transferId } }] : []),
+    { id: "end_call", type: "ivr", position: { x: 1200, y: 220 }, data: { nodeKind: "END_CALL", label: "End Call", prompt: "Thank you for calling DemoBank. Goodbye." } },
   ];
   const edges: IVREdge[] = [
     { id: "start-greeting", source: startNode.id, target: "greeting", type: "smoothstep", data: { trigger: "DEFAULT" } },
@@ -311,7 +342,7 @@ function buildPersonalLoanMenuSuggestion(context: FlowCopilotContext) {
     suggestedTests: [],
     candidateFlow: {
       name: context.flowName,
-      nodes: nodes.map(toSafeNode),
+      nodes,
       edges: edges.map(edge => ({
         id: edge.id,
         source: edge.source,
@@ -325,11 +356,376 @@ function buildPersonalLoanMenuSuggestion(context: FlowCopilotContext) {
   };
 }
 
+function buildModifyHeuristicSuggestion(context: FlowCopilotContext) {
+  const currentNodes = context.currentFlow.nodes.map(toSafeNode);
+  const currentEdges = context.currentFlow.edges.map(edge => ({
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    type: edge.type,
+    sourceHandle: stringValue(edge.sourceHandle) ?? undefined,
+    targetHandle: stringValue(edge.targetHandle) ?? undefined,
+    data: edge.data ? { ...edge.data } : undefined,
+  }));
+
+  const lowerPrompt = context.prompt.toLowerCase();
+  let modifiedNodes = [...currentNodes];
+  let modifiedEdges = [...currentEdges];
+  const changeSummaryItems: string[] = [];
+
+  const needsAuth = lowerPrompt.includes("auth") ||
+    lowerPrompt.includes("authentication") ||
+    context.validation?.errors?.some(err => err.code === "AUTH_PATH_REQUIRED");
+
+  if (needsAuth) {
+    const transferNode = modifiedNodes.find(node =>
+      nodeKind(node as unknown as IVRNode) === "HUMAN_TRANSFER" || nodeKind(node as unknown as IVRNode) === "TRANSFER"
+    );
+    const existingAuthGate = modifiedNodes.find(node => nodeKind(node as unknown as IVRNode) === "AUTH_GATE");
+
+    if (transferNode && !existingAuthGate) {
+      const authGateId = "auth_gate";
+      const authGateNode = {
+        id: authGateId,
+        type: "ivr",
+        position: { x: transferNode.position.x - 180, y: transferNode.position.y },
+        data: {
+          nodeKind: "AUTH_GATE",
+          label: "Authentication Gate",
+          requiredAuthLevel: "AUTH_LEVEL_1",
+          prompt: "Please verify your credentials before we connect you to an agent.",
+        },
+      };
+      modifiedNodes.push(authGateNode);
+      changeSummaryItems.push("Added Authentication Gate node before Human Transfer");
+
+      // Re-route incoming edges targeting transferNode to authGateId
+      for (const edge of modifiedEdges) {
+        if (edge.target === transferNode.id) {
+          edge.target = authGateId;
+        }
+      }
+
+      // Update menu options pointing to transferNode
+      for (const menuNode of modifiedNodes.filter(node => ["HYBRID_MENU", "DTMF_MENU"].includes(nodeKind(node as unknown as IVRNode)))) {
+        const data = menuNode.data as Record<string, unknown>;
+        if (Array.isArray(data.options)) {
+          data.options = (data.options as unknown as Array<Record<string, unknown>>).map(option => {
+            if (!option || typeof option !== "object") return option;
+            const opt = { ...option };
+            if (opt.destinationNodeId === transferNode.id || opt.targetNodeId === transferNode.id) {
+              opt.destinationNodeId = authGateId;
+              delete opt.targetNodeId;
+            }
+            return opt;
+          });
+        }
+      }
+
+      // Add AUTHENTICATED edge from authGate to transferNode
+      modifiedEdges.push({
+        id: `${authGateId}-authenticated`,
+        source: authGateId,
+        target: transferNode.id,
+        type: "smoothstep",
+        sourceHandle: "authenticated",
+        targetHandle: undefined,
+        data: { trigger: "AUTHENTICATED" },
+      });
+
+      // Add NOT_AUTHENTICATED edge from authGate to safe end or menu
+      const endNode = modifiedNodes.find(node => nodeKind(node as unknown as IVRNode) === "END_CALL");
+      const menuNode = modifiedNodes.find(node => ["HYBRID_MENU", "DTMF_MENU"].includes(nodeKind(node as unknown as IVRNode)));
+      const fallbackTarget = endNode?.id ?? menuNode?.id ?? "start";
+      modifiedEdges.push({
+        id: `${authGateId}-not-authenticated`,
+        source: authGateId,
+        target: fallbackTarget,
+        type: "smoothstep",
+        sourceHandle: "not_authenticated",
+        targetHandle: undefined,
+        data: { trigger: "NOT_AUTHENTICATED" },
+      });
+    }
+  }
+
+  const isRepeatMenuRequested = lowerPrompt.includes("repeat") ||
+    lowerPrompt.includes("dtmf 8") ||
+    lowerPrompt.includes("key 8") ||
+    lowerPrompt.includes("option 8");
+
+  if (isRepeatMenuRequested) {
+    const menuNode = modifiedNodes.find(node =>
+      ["HYBRID_MENU", "DTMF_MENU"].includes(nodeKind(node as unknown as IVRNode))
+    );
+    if (menuNode) {
+      const data = menuNode.data as Record<string, unknown>;
+      const options = Array.isArray(data.options) ? [...(data.options as Array<Record<string, unknown>>)] : [];
+      const hasDigit8 = options.some(opt => opt && typeof opt === "object" && (opt.digit === "8" || opt.dtmf === "8"));
+      if (!hasDigit8) {
+        options.push({
+          digit: "8",
+          action: "REPEAT_MENU",
+          label: "Repeat Menu",
+          destinationNodeId: menuNode.id,
+          voicePhrases: ["repeat", "repeat menu", "main menu"],
+        });
+        data.options = options;
+        changeSummaryItems.push("Added DTMF 8 to repeat Main Menu");
+
+        const hasEdge8 = modifiedEdges.some(edge =>
+          edge.source === menuNode.id &&
+          (edge.sourceHandle === "8" || edge.data?.value === "8")
+        );
+        if (!hasEdge8) {
+          modifiedEdges.push({
+            id: `${menuNode.id}-repeat-8`,
+            source: menuNode.id,
+            target: menuNode.id,
+            type: "smoothstep",
+            sourceHandle: "8",
+            targetHandle: undefined,
+            data: { trigger: "DTMF", value: "8" },
+          });
+        }
+      }
+    }
+  }
+
+  // --- Experience Presets ---
+  const isTraditionalRequested = lowerPrompt.includes("traditional") ||
+    lowerPrompt.includes("no ai") ||
+    lowerPrompt.includes("disable ai") ||
+    lowerPrompt.includes("zero-ai") ||
+    lowerPrompt.includes("classic ivr") ||
+    lowerPrompt.includes("remove all ai") ||
+    lowerPrompt.includes("without ai");
+
+  const isSmartRequested = lowerPrompt.includes("smart ivr") ||
+    lowerPrompt.includes("convert to smart") ||
+    lowerPrompt.includes("convert this flow to smart");
+
+  const isAdaptiveRequested = lowerPrompt.includes("adaptive ai") ||
+    lowerPrompt.includes("use adaptive") ||
+    lowerPrompt.includes("make this adaptive") ||
+    lowerPrompt.includes("convert to adaptive");
+
+  const isConversationalRequested = lowerPrompt.includes("make this conversational") ||
+    lowerPrompt.includes("convert to conversational") ||
+    lowerPrompt.includes("conversational ai ivr");
+
+  if (isTraditionalRequested) {
+    const result = applyPresetToFlow({ nodes: modifiedNodes as unknown as IVRNode[], edges: modifiedEdges as unknown as IVREdge[] }, "CLASSIC_IVR");
+    modifiedNodes = result.nodes.map(toSafeNode);
+    modifiedEdges = result.edges.map(edge => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      type: edge.type,
+      sourceHandle: stringValue(edge.sourceHandle) ?? undefined,
+      targetHandle: stringValue(edge.targetHandle) ?? undefined,
+      data: edge.data ? { ...edge.data } : undefined,
+    }));
+    changeSummaryItems.push(...result.summary);
+  } else if (isSmartRequested) {
+    const result = applyPresetToFlow({ nodes: modifiedNodes as unknown as IVRNode[], edges: modifiedEdges as unknown as IVREdge[] }, "SMART_IVR");
+    modifiedNodes = result.nodes.map(toSafeNode);
+    modifiedEdges = result.edges.map(edge => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      type: edge.type,
+      sourceHandle: stringValue(edge.sourceHandle) ?? undefined,
+      targetHandle: stringValue(edge.targetHandle) ?? undefined,
+      data: edge.data ? { ...edge.data } : undefined,
+    }));
+    changeSummaryItems.push(...result.summary);
+  } else if (isAdaptiveRequested) {
+    const result = applyPresetToFlow({ nodes: modifiedNodes as unknown as IVRNode[], edges: modifiedEdges as unknown as IVREdge[] }, "ADAPTIVE_IVR");
+    modifiedNodes = result.nodes.map(toSafeNode);
+    modifiedEdges = result.edges.map(edge => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      type: edge.type,
+      sourceHandle: stringValue(edge.sourceHandle) ?? undefined,
+      targetHandle: stringValue(edge.targetHandle) ?? undefined,
+      data: edge.data ? { ...edge.data } : undefined,
+    }));
+    changeSummaryItems.push(...result.summary);
+  } else if (isConversationalRequested) {
+    const result = applyPresetToFlow({ nodes: modifiedNodes as unknown as IVRNode[], edges: modifiedEdges as unknown as IVREdge[] }, "CONVERSATIONAL_IVR");
+    modifiedNodes = result.nodes.map(toSafeNode);
+    modifiedEdges = result.edges.map(edge => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      type: edge.type,
+      sourceHandle: stringValue(edge.sourceHandle) ?? undefined,
+      targetHandle: stringValue(edge.targetHandle) ?? undefined,
+      data: edge.data ? { ...edge.data } : undefined,
+    }));
+    changeSummaryItems.push(...result.summary);
+  }
+
+  // --- Phase 4: AI Policy Free-Form Only ---
+  const isFreeFormAiRequested = lowerPrompt.includes("only for caller questions") ||
+    lowerPrompt.includes("ai only for questions") ||
+    lowerPrompt.includes("free_form_only") ||
+    lowerPrompt.includes("free form only");
+
+  if (isFreeFormAiRequested && !isAdaptiveRequested) {
+    for (const node of modifiedNodes) {
+      if (nodeKind(node as unknown as IVRNode) === "KNOWLEDGE") {
+        const data = node.data as Record<string, unknown>;
+        data.aiPolicy = { mode: "FREE_FORM_ONLY", timeoutMs: 8000, failureBehavior: "LOCAL_KB", confidenceThreshold: 0.7, allowRerank: true };
+      }
+    }
+    changeSummaryItems.push("Enabled AI policy ONLY for caller questions (FREE_FORM_ONLY)");
+  }
+
+  // --- Phase 5: Conversational Escape ---
+  const isEscapeRequested = lowerPrompt.includes("ask questions from this menu") ||
+    lowerPrompt.includes("ask questions from menu") ||
+    lowerPrompt.includes("conversational escape") ||
+    lowerPrompt.includes("let callers ask questions");
+
+  const isDisableEscapeRequested = lowerPrompt.includes("disable conversational escape") ||
+    lowerPrompt.includes("turn off conversational escape") ||
+    lowerPrompt.includes("remove conversational escape");
+
+  if (isDisableEscapeRequested && !isTraditionalRequested) {
+    for (const node of modifiedNodes) {
+      if (["HYBRID_MENU", "DTMF_MENU"].includes(nodeKind(node as unknown as IVRNode))) {
+        const data = node.data as Record<string, unknown>;
+        data.conversationalEscape = { enabled: false };
+        delete data.allowNaturalLanguageEscape;
+      }
+    }
+    changeSummaryItems.push("Disabled Conversational Escape on menus");
+  } else if (isEscapeRequested && !isAdaptiveRequested) {
+    const knowledgeNode = modifiedNodes.find(node => nodeKind(node as unknown as IVRNode) === "KNOWLEDGE" || nodeKind(node as unknown as IVRNode) === "AI" || nodeKind(node as unknown as IVRNode) === "AI_CONVERSATION");
+    const targetNodeId = knowledgeNode?.id ?? "knowledge";
+    for (const node of modifiedNodes) {
+      if (["HYBRID_MENU", "DTMF_MENU"].includes(nodeKind(node as unknown as IVRNode))) {
+        const data = node.data as Record<string, unknown>;
+        data.conversationalEscape = {
+          enabled: true,
+          targetNodeId,
+          returnBehavior: "RETURN_CONTEXT",
+          prompt: null,
+        };
+      }
+    }
+    changeSummaryItems.push("Enabled Conversational Escape with return-to-context (side-turn)");
+  }
+
+  // --- Phase 2: Post-Action (Return Previous / Return Home) ---
+  const isReturnPreviousRequested = lowerPrompt.includes("return to previous") ||
+    lowerPrompt.includes("return to the previous menu") ||
+    lowerPrompt.includes("return_previous");
+
+  const isReturnHomeRequested = lowerPrompt.includes("return to main menu") ||
+    lowerPrompt.includes("return home") ||
+    lowerPrompt.includes("return_home");
+
+  if (isReturnPreviousRequested || isReturnHomeRequested) {
+    const mode = isReturnPreviousRequested ? "RETURN_PREVIOUS" : "RETURN_HOME";
+    // Find node matching target mentioned in prompt (e.g. eligibility) or non-menu action/knowledge nodes
+    const targetMatch = lowerPrompt.match(/(?:after|for) ([a-z0-9_ -]+) return/i);
+    const targetKeyword = targetMatch ? targetMatch[1].trim() : null;
+
+    for (const node of modifiedNodes) {
+      const kind = nodeKind(node as unknown as IVRNode);
+      const label = stringValue(node.data?.label)?.toLowerCase() ?? "";
+      const matchesTarget = targetKeyword ? (label.includes(targetKeyword) || node.id.includes(targetKeyword)) : (kind === "ACTION" || kind === "KNOWLEDGE");
+
+      if (matchesTarget && kind !== "START" && kind !== "HYBRID_MENU" && kind !== "DTMF_MENU") {
+        const data = node.data as Record<string, unknown>;
+        data.postAction = { mode };
+      }
+    }
+    changeSummaryItems.push(`Configured post-action behavior to ${mode}`);
+  }
+
+  // --- Phase 1: Navigation Configuration (e.g. Change Home to digit 5) ---
+  const homeDigitMatch = lowerPrompt.match(/(?:home|home button|home command) (?:to |as )?(?:digit )?([0-9*#])/i);
+  if (homeDigitMatch) {
+    const digit = homeDigitMatch[1];
+    for (const startNode of modifiedNodes.filter(node => nodeKind(node as unknown as IVRNode) === "START")) {
+      const data = startNode.data as Record<string, unknown>;
+      const nav = isRecord(data.navigation) ? { ...data.navigation } : {};
+      const home = isRecord(nav.home) ? { ...nav.home } : { enabled: true, digits: ["0"], phrases: ["main menu", "start over"] };
+      home.digits = [digit];
+      nav.home = home;
+      data.navigation = nav;
+    }
+    for (const menuNode of modifiedNodes.filter(node => ["HYBRID_MENU", "DTMF_MENU"].includes(nodeKind(node as unknown as IVRNode)))) {
+      const data = menuNode.data as Record<string, unknown>;
+      if (isRecord(data.navigation)) {
+        data.navigation = {
+          ...data.navigation,
+          home: {
+            ...(isRecord(data.navigation.home) ? data.navigation.home : { enabled: true, phrases: ["main menu"] }),
+            digits: [digit],
+          },
+        };
+      }
+    }
+    changeSummaryItems.push(`Configured HOME command to digit ${digit}`);
+  }
+
+  // --- Menu Voice Alias (e.g. Allow callers to say support) ---
+  const sayAliasMatch = lowerPrompt.match(/(?:say|allow callers to say|add phrase|voice phrase) (?:for )?([a-z0-9_ -]+)/i);
+  if (sayAliasMatch && !isRepeatMenuRequested && !isTraditionalRequested && !isEscapeRequested) {
+    const phrase = sayAliasMatch[1].trim().toLowerCase();
+    for (const menuNode of modifiedNodes.filter(node => ["HYBRID_MENU", "DTMF_MENU"].includes(nodeKind(node as unknown as IVRNode)))) {
+      const data = menuNode.data as Record<string, unknown>;
+      if (Array.isArray(data.options)) {
+        for (const opt of data.options as Array<Record<string, unknown>>) {
+          if (!opt || typeof opt !== "object") continue;
+          const label = stringValue(opt.label)?.toLowerCase() ?? "";
+          if (label.includes(phrase) || phrase.includes(label) || lowerPrompt.includes(label)) {
+            const currentPhrases = toStringArray(opt.voicePhrases);
+            if (!currentPhrases.includes(phrase)) {
+              opt.voicePhrases = [...currentPhrases, phrase];
+              changeSummaryItems.push(`Added speech alias "${phrase}" to menu option "${opt.label}"`);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const summary = changeSummaryItems.length > 0
+    ? `Modified current draft: ${changeSummaryItems.join("; ")}.`
+    : `Modified current draft according to instructions: "${context.prompt.slice(0, 100)}"`;
+
+  const flowGraph = { nodes: modifiedNodes as unknown as IVRNode[], edges: modifiedEdges as unknown as IVREdge[] };
+
+  return {
+    summary,
+    warnings: [],
+    assumptions: ["Preserved all unrelated nodes, connections, and metadata from the previous draft."],
+    missingResources: collectMissingResources(context, flowGraph),
+    suggestedTests: deriveSuggestedTests(flowGraph),
+    candidateFlow: {
+      name: context.flowName,
+      nodes: modifiedNodes,
+      edges: modifiedEdges,
+    },
+  };
+}
+
 function buildHeuristicSuggestion(
   context: FlowCopilotContext
 ) {
+  if (context.mode === "MODIFY") {
+    return buildModifyHeuristicSuggestion(context);
+  }
+
   const requestedPersonalLoanMenu =
-    context.mode === "GENERATE" &&
+    (context.mode === "GENERATE" || (context.mode as string) === "CREATE") &&
     context.knowledgeDocuments.length > 0 &&
     /loan|eligib|document|kyc/.test(context.prompt.toLowerCase());
   if (requestedPersonalLoanMenu) {
@@ -1433,7 +1829,15 @@ function enrichSuggestion(
 export async function buildFlowCopilotSuggestion(
   context: FlowCopilotContext
 ) {
-  const isDemoBankPersonalLoanRequest = context.mode === "GENERATE"
+  if (context.mode === "MODIFY" && context.currentFlow.nodes.length === 0) {
+    throw new AppError(
+      "A current flow draft with at least one node is required to modify.",
+      422,
+      "COPILOT_INVALID_REQUEST"
+    );
+  }
+
+  const isDemoBankPersonalLoanRequest = (context.mode === "GENERATE" || (context.mode as string) === "CREATE")
     && /demobank/.test(context.prompt.toLowerCase())
     && /personal loan|loan information|eligibility|kyc|documents/.test(context.prompt.toLowerCase())
     && context.currentFlow.nodes.some(node => nodeKind(node) === "START");
@@ -1452,10 +1856,21 @@ export async function buildFlowCopilotSuggestion(
     }
   }
 
+  const validationSummary = context.validation?.errors?.length
+    ? [
+        `Deterministic validation status: INVALID (${context.validation.errors.length} error(s), ${context.validation.warnings?.length ?? 0} warning(s))`,
+        "Errors to resolve:",
+        ...context.validation.errors.map(err => `  - [${err.code}] (node: ${err.nodeId ?? "flow"}) ${err.message}`),
+      ].join("\n")
+    : context.validation
+      ? `Deterministic validation status: ${context.validation.valid ? "VALID" : "INVALID"}`
+      : "Deterministic validation summary: not provided";
+
   const prompt = [
     "You are an IVR flow copilot.",
     "Return JSON only.",
-    "Return structured JSON with summary, warnings, assumptions, missingResources, suggestedTests, candidateFlow, candidatePatch, and validation when relevant.",
+    "Return structured JSON with summary, warnings, assumptions, missingResources, suggestedTests, candidateFlow, and candidatePatch when relevant.",
+    "Do not return authoritative validation. The server independently validates the candidate.",
     "Use only supported node kinds, actions, and transfer destinations.",
     "Never invent cross-tenant data or unsupported capabilities.",
     "Do not emit CALLBACK when no callback configuration is listed, BUSINESS_HOURS when no policy is listed, ACTION when no action is listed, HUMAN_TRANSFER without a listed destination, or KNOWLEDGE without a listed document.",
@@ -1471,9 +1886,25 @@ export async function buildFlowCopilotSuggestion(
     `Inbound profiles: ${context.inboundProfiles?.map(profile => profile.label).join(", ") || "none"}`,
     `Campaigns: ${context.campaigns?.map(campaign => campaign.label).join(", ") || "none"}`,
     `Resource warnings: ${context.resourceWarnings?.join(" | ") || "none"}`,
-    context.validation
-      ? `Deterministic validation summary: ${context.validation.valid ? "valid" : "invalid"}`
-      : "Deterministic validation summary: not provided",
+    validationSummary,
+    ...(context.mode === "MODIFY"
+      ? [
+          "",
+          "IMPORTANT MODIFICATION INSTRUCTIONS:",
+          "- You are modifying the provided existing IVR graph incrementally.",
+          "- Preserve all existing nodes, connections, and metadata that are unrelated to the user's requested changes.",
+          "- Do not rebuild the entire graph from scratch unless explicitly requested by the user.",
+          "- When asked for traditional / zero-AI IVR, set aiPolicy: { mode: 'NEVER' } on knowledge nodes and disable conversationalEscape on menus.",
+          "- When asked to configure postAction (e.g. return to previous menu), set postAction: { mode: 'RETURN_PREVIOUS' | 'RETURN_HOME' | 'STAY_CURRENT' | 'ASK_NEXT_ACTION' | 'CONTINUE_TO_NODE' } on the node.",
+          "- When asked to enable AI only for questions, set aiPolicy: { mode: 'FREE_FORM_ONLY', timeoutMs: 8000, failureBehavior: 'LOCAL_KB' } on knowledge nodes.",
+          "- When asked for conversational escape from menus, set conversationalEscape: { enabled: true, targetNodeId: '<knowledgeNodeId>', returnBehavior: 'RETURN_CONTEXT' } on menu nodes.",
+          "- When asked to configure global navigation shortcuts, set navigation: { home: { enabled: true, digits: ['0'], phrases: ['main menu'] }, back: { enabled: true, digits: ['*'], phrases: ['go back'] }, repeat: { enabled: true, digits: ['#'], phrases: ['repeat'] }, end: { enabled: true, digits: ['9'], phrases: ['end call'] } } on START / MENU nodes.",
+          "- When fixing AUTH_PATH_REQUIRED for sensitive nodes (such as HUMAN_TRANSFER), insert an AUTH_GATE node (requiredAuthLevel: 'AUTH_LEVEL_1') before the sensitive node, routing SUCCESS to the sensitive node and FAILURE to safe termination (END_CALL) or menu.",
+          "- When adding menu options (such as DTMF 8 to repeat the menu), add the option object to the menu's options array and add the corresponding DTMF edge.",
+          "- Use only supported node kinds and edge triggers.",
+          "- Never invent resource IDs; only use authorized resources provided in context.",
+        ]
+      : []),
     "",
     "Current flow JSON:",
     JSON.stringify(context.currentFlow, null, 2),
@@ -1525,7 +1956,18 @@ export async function buildFlowCopilotSuggestion(
       candidateEdgeCount: parsed.candidateFlow?.edges.length ?? 0,
     }, "IVR copilot response parsed");
   } catch (error) {
-    log.warn({ event: "ivr.copilot.model_candidate_invalid", mode: context.mode }, "IVR copilot JSON did not match the candidate contract");
+    const issueSummary = error instanceof z.ZodError
+      ? error.issues.map(issue => ({
+          path: issue.path.join("."),
+          code: issue.code,
+          message: issue.message,
+        }))
+      : [];
+    log.warn({
+      event: "ivr.copilot.model_candidate_invalid",
+      mode: context.mode,
+      issues: issueSummary,
+    }, "IVR copilot JSON did not match the candidate contract");
     throw new AppError(
       "IVR copilot returned an invalid structured candidate. The current draft was not changed.",
       422,

@@ -179,6 +179,9 @@ export async function resolveOutboundConversationContext(
         campaignId:
           true,
 
+        communicationCampaignId:
+          true,
+
         contact: {
           select: {
             id:
@@ -192,6 +195,64 @@ export async function resolveOutboundConversationContext(
 
             language:
               true,
+          },
+        },
+
+        communicationOutboundAttempt: {
+          select: {
+            campaignRecipient: {
+              select: {
+                externalRecipientId:
+                  true,
+
+                fullName:
+                  true,
+
+                phone:
+                  true,
+
+                language:
+                  true,
+              },
+            },
+          },
+        },
+
+        communicationCampaign: {
+          select: {
+            id:
+              true,
+
+            name:
+              true,
+
+            description:
+              true,
+
+            prompt:
+              true,
+
+            audienceSourceName:
+              true,
+
+            tier:
+              true,
+
+            channels:
+              true,
+
+            knowledgeDocumentIds:
+              true,
+
+            ownerUserId:
+              true,
+
+            ownerUser: {
+              select: {
+                tenantId:
+                  true,
+              },
+            },
           },
         },
 
@@ -220,6 +281,12 @@ export async function resolveOutboundConversationContext(
                 name:
                   true,
 
+                description:
+                  true,
+
+                prompt:
+                  true,
+
                 audienceSourceName:
                   true,
 
@@ -246,7 +313,8 @@ export async function resolveOutboundConversationContext(
   }
 
   if (
-    !call.campaign
+    !call.campaign &&
+    !call.communicationCampaign
   ) {
     return {
       ...EMPTY_CONTEXT,
@@ -257,13 +325,13 @@ export async function resolveOutboundConversationContext(
   }
 
   const communicationCampaign =
-    call.campaign
-      .communicationVoiceParent ??
+    call.communicationCampaign ??
+    call.campaign?.communicationVoiceParent ??
     null;
 
   const communicationRecipient =
-    communicationCampaign &&
-    call.contact?.phone
+    call.communicationOutboundAttempt?.campaignRecipient ??
+    (communicationCampaign && call.contact?.phone
       ? await prisma.communicationCampaignRecipient.findFirst(
           {
             where: {
@@ -286,7 +354,7 @@ export async function resolveOutboundConversationContext(
             },
           }
         )
-      : null;
+      : null);
 
   const customerName =
     sanitizeTemplateValue(
@@ -311,35 +379,37 @@ export async function resolveOutboundConversationContext(
       campaignName:
         sanitizeTemplateValue(
           communicationCampaign?.name ??
-            call.campaign.name
+            call.campaign?.name ??
+            null
         ),
 
       campaignObjective:
         sanitizeTemplateValue(
           communicationCampaign?.audienceSourceName ??
-            String(
-              call.campaign.purpose
-            )
+            (call.campaign
+              ? String(call.campaign.purpose)
+              : null)
         ),
 
       campaignAudience:
         sanitizeTemplateValue(
-          communicationCampaign?.audienceSourceName
+          communicationCampaign?.audienceSourceName ??
+            null
         ),
 
       campaignDescription:
-        communicationCampaign
-          ? null
-          : sanitizeTemplateValue(
-              call.campaign.description
-            ),
+        sanitizeTemplateValue(
+          communicationCampaign?.description ??
+            call.campaign?.description ??
+            null
+        ),
 
       campaignInstruction:
-        communicationCampaign
-          ? null
-          : sanitizeTemplateValue(
-              call.campaign.prompt
-            ),
+        sanitizeTemplateValue(
+          communicationCampaign?.prompt ??
+            call.campaign?.prompt ??
+            null
+        ),
 
       customerName,
 
@@ -383,12 +453,18 @@ export async function resolveOutboundConversationContext(
                     ),
 
                   channels:
-                    communicationCampaign.channels.map(
+                    (communicationCampaign.channels ?? []).map(
                       channel =>
                         String(
                           channel
                         )
                     ),
+
+                  description:
+                    communicationCampaign.description,
+
+                  prompt:
+                    communicationCampaign.prompt,
                 }
               ),
               templateValues
@@ -398,16 +474,16 @@ export async function resolveOutboundConversationContext(
           const resolved =
             resolveOutboundWorkflow({
               purpose:
-                call.campaign.purpose,
+                call.campaign!.purpose,
 
               campaignName:
-                call.campaign.name,
+                call.campaign!.name,
 
               description:
-                call.campaign.description,
+                call.campaign!.description,
 
               prompt:
-                call.campaign.prompt,
+                call.campaign!.prompt,
 
               contactName:
                 customerName ??
@@ -442,11 +518,14 @@ export async function resolveOutboundConversationContext(
       workflow.purpose,
 
     campaignId:
-      call.campaign.id,
+      communicationCampaign?.id ??
+      call.campaign?.id ??
+      null,
 
     campaignName:
       communicationCampaign?.name ??
-      call.campaign.name,
+      call.campaign?.name ??
+      null,
 
     instruction:
       workflow.systemInstruction,
@@ -457,17 +536,19 @@ export async function resolveOutboundConversationContext(
     campaign: {
       id:
         communicationCampaign?.id ??
-        call.campaign.id,
+        call.campaign?.id ??
+        null,
 
       name:
         communicationCampaign?.name ??
-        call.campaign.name,
+        call.campaign?.name ??
+        null,
 
       objective:
         communicationCampaign?.audienceSourceName ??
-        String(
-          call.campaign.purpose
-        ),
+        (call.campaign
+          ? String(call.campaign.purpose)
+          : null),
 
       audience:
         communicationCampaign?.audienceSourceName ??
@@ -475,16 +556,20 @@ export async function resolveOutboundConversationContext(
 
       description:
         communicationCampaign
-          ? null
+          ? sanitizeTemplateValue(
+              communicationCampaign.description
+            )
           : sanitizeTemplateValue(
-              call.campaign.description
+              call.campaign?.description
             ),
 
       instruction:
         communicationCampaign
-          ? null
+          ? sanitizeTemplateValue(
+              communicationCampaign.prompt
+            )
           : sanitizeTemplateValue(
-              call.campaign.prompt
+              call.campaign?.prompt
             ),
 
       runtime:
@@ -604,6 +689,12 @@ function buildCommunicationSystemInstruction(
 
     channels:
       string[];
+
+    description?:
+      string | null;
+
+    prompt?:
+      string | null;
   }
 ): string {
   return [
@@ -617,6 +708,12 @@ function buildCommunicationSystemInstruction(
     `Campaign tier: ${input.tier}.`,
     input.channels.length > 0
       ? `Enabled channels: ${input.channels.join(", ")}.`
+      : "",
+    input.description
+      ? `Campaign description: ${input.description}.`
+      : "",
+    input.prompt
+      ? `Campaign instructions: ${input.prompt}.`
       : "",
     "Use only the approved campaign context and customer snapshot below.",
     "Do not invent customer-specific facts.",

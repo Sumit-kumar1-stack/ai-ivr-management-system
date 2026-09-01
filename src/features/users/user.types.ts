@@ -3,6 +3,7 @@ export interface User {
   fullName: string;
   email: string;
   role: "SUPER_ADMIN" | "ADMIN" | "AGENT";
+  campaignCapabilities?: string[];
   phone?: string;
   avatar?: string;
   tenantId?: string | null;

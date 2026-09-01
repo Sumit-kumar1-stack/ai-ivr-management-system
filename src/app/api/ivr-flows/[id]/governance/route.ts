@@ -9,6 +9,7 @@ import { IVRFlowService } from "@/services/ivr-flow.service";
 import { assertIvrFlowOwnership } from "@/services/security/tenant-access.service";
 import { assertIvrFlowPermission, buildIvrFlowPermissions } from "@/services/ivr/ivr-flow-permissions";
 import { recordAuditEvent } from "@/services/audit/audit-event.service";
+import { recordSuperAdminSelfApprovalOverrideAudit } from "@/services/security/governance-override.service";
 
 const actionSchema = z.object({
   action: z.enum(["submit", "withdraw", "approve", "reject", "archive"]),
@@ -40,6 +41,10 @@ export const POST = asyncHandler(async (request: NextRequest, { params }: { para
   if (input.action === "approve") {
     assertIvrFlowPermission(permissions.canApprove, "You cannot approve this IVR flow. Creators cannot approve their own flow.");
     const updated = await IVRFlowService.approve(id, currentUser.id);
+    const isSelfApproval = flow.ownerUserId === currentUser.id || flow.submittedByUserId === currentUser.id;
+    if (isSelfApproval) {
+      await recordSuperAdminSelfApprovalOverrideAudit({ actor: currentUser, entityType: "IVR_FLOW", entityId: id, tenantId: flow.tenantId });
+    }
     await recordAuditEvent({ tenantId: flow.tenantId ?? "", actor: currentUser, entityType: "IVR_FLOW", entityId: id, action: "ivr.flow.approved", outcome: AuditEventOutcome.SUCCEEDED, beforeState: { lifecycle: flow.lifecycle }, afterState: { lifecycle: updated.lifecycle } });
     return success(updated, "IVR flow approved");
   }

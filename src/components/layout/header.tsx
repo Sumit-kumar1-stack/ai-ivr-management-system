@@ -1,4 +1,5 @@
 import { UserRole } from "@prisma/client";
+import { isSuperAdminSelfApprovalOverrideEnabled } from "@/services/security/governance-override.service";
 
 function getRoleLabel(role: UserRole): string {
   switch (role) {
@@ -16,11 +17,25 @@ export default function Header({
 }: {
   role: UserRole;
 }) {
+  const showOverrideIndicator =
+    role === UserRole.SUPER_ADMIN && isSuperAdminSelfApprovalOverrideEnabled();
+
   return (
     <header className="border-b border-slate-200/80 bg-white h-16 flex items-center justify-between px-8 shadow-sm shadow-slate-100/50">
-      <h1 className="text-sm font-semibold text-slate-850 tracking-tight">
-        Enterprise Workspace
-      </h1>
+      <div className="flex items-center gap-3">
+        <h1 className="text-sm font-semibold text-slate-850 tracking-tight">
+          Enterprise Workspace
+        </h1>
+        {showOverrideIndicator && (
+          <span
+            id="super-admin-testing-override-badge"
+            className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-amber-50 text-amber-800 border border-amber-300 shadow-sm"
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+            Testing Mode: Super Admin Self-Approval Enabled
+          </span>
+        )}
+      </div>
 
       <div className="flex items-center gap-3">
         <div className="flex items-center gap-2">

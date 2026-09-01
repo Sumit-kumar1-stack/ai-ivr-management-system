@@ -5,6 +5,7 @@ import { z } from "zod";
 import { createAuthErrorResponse } from "@/lib/auth-response";
 import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { hasCampaignCapability } from "@/services/communication/campaign-capabilities";
 import { extractAuditRequestContext } from "@/services/audit/audit-context";
 import { recordAuditEvent } from "@/services/audit/audit-event.service";
 import { createWebhookSecretMaterial, isSafeWebhookUrl } from "@/services/developer/developer-security.service";
@@ -21,9 +22,28 @@ const WebhookCreateSchema = z.object({
   events: z.array(z.string().min(1)).default([]),
 });
 
+function canAccessWebhooks(user: { role: UserRole; campaignCapabilities?: readonly string[] }): boolean {
+  if (user.role === UserRole.SUPER_ADMIN) return true;
+  if (user.campaignCapabilities === undefined) return true;
+  return (
+    hasCampaignCapability(user.campaignCapabilities, "DEVELOPER_PORTAL_ACCESS") ||
+    hasCampaignCapability(user.campaignCapabilities, "WEBHOOKS_MANAGE")
+  );
+}
+
 export async function GET() {
   try {
     const currentUser = await requireRole(DeveloperRoles);
+
+    if (!canAccessWebhooks(currentUser)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "You do not have permission to access developer webhooks.",
+        },
+        { status: 403 }
+      );
+    }
 
     if (!currentUser.tenantId) {
       return NextResponse.json(
@@ -84,6 +104,16 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const currentUser = await requireRole(DeveloperRoles);
+
+    if (!canAccessWebhooks(currentUser)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "You do not have permission to manage developer webhooks.",
+        },
+        { status: 403 }
+      );
+    }
 
     if (!currentUser.tenantId) {
       return NextResponse.json(

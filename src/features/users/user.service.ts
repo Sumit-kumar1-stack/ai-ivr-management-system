@@ -73,6 +73,7 @@ export const UserService = {
       ...data,
       tenantId,
       campaignCapabilities:
+        data.campaignCapabilities ??
         getDefaultCampaignCapabilitiesForRole(
           data.role as UserRole
         ),

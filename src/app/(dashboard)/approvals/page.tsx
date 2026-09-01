@@ -42,7 +42,11 @@ export default function ApprovalsPage() {
 
     try {
       await api.post(`/ivr-flows/${flowId}/governance`, { action, reason });
-      toast.success(action === "approve" ? "IVR flow approved" : "IVR flow rejected");
+      toast.success(
+        action === "approve"
+          ? "IVR flow approved! An authorized publisher can now release it under IVR Flows."
+          : "IVR flow rejected"
+      );
       await queryClient.invalidateQueries({ queryKey: ["ivr-flows"] });
     } catch (error) {
       toast.error((error as { response?: { data?: { message?: string } } }).response?.data?.message ?? "The IVR decision could not be recorded.");

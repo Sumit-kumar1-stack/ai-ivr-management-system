@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerLogger, maskPhoneNumber, normalizeError } from "@/lib/logger";
 import { createPlivoAuthErrorResponse, validatePlivoWebhook } from "@/lib/plivo-webhook-auth";
 import { getPlivoPublicCallbackUrl } from "@/lib/plivo-public-url";
-import { getPlivoBidirectionalStreamUrl, normalizePlivoInboundPayload, PlivoProvider } from "@/providers/telephony/plivo.provider";
+import { getPlivoBidirectionalStreamUrl, normalizePlivoInboundPayload } from "@/providers/telephony/plivo.provider";
 import { createOrGetInboundCall } from "@/services/calls/inbound-call.service";
 import { resolveActiveInboundConfiguration } from "@/services/calls/inbound-number.service";
 import { startIVRGraphExecution, type IVRGraphExecutionResult } from "@/services/ivr/ivr-graph-executor.service";
 import { resolveRealtimeInputCapability } from "@/services/ivr/realtime-input-capability.service";
+import { startPlivoRecordingIfNeeded } from "@/services/telephony/plivo-recording.service";
 import { prisma } from "@/lib/prisma";
 
 const log = createServerLogger("plivo-inbound-route");
@@ -28,7 +29,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       if (!outbound) return plivoXmlResponse("The call session could not be verified.", true, request.nextUrl);
       if (outbound.providerCallId && outbound.providerCallId !== inbound.providerCallId) return plivoXmlResponse("The call session could not be verified.", true, request.nextUrl);
       if (!outbound.providerCallId) await prisma.call.updateMany({ where: { id: outbound.id, provider: "PLIVO", providerCallId: null }, data: { providerCallId: inbound.providerCallId } });
-      await startRecordingIfNeeded(outbound.id, inbound.providerCallId);
+      await startPlivoRecordingIfNeeded(outbound.id, inbound.providerCallId);
       const execution = await startIVRGraphExecution(outbound.id);
       logIvrExecution(outbound.id, execution, null);
       return plivoXmlResponse(execution.speechText ?? "Welcome.", execution.endCall, request.nextUrl, outbound.id, execution, outbound.requestedRuntime ?? undefined);
@@ -37,11 +38,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (!configuration.configured) { log.warn({ event: "plivo.inbound.unconfigured_number", calledNumber: maskPhoneNumber(inbound.calledNumber), reason: configuration.reason }, "Plivo inbound number is not configured"); return plivoXmlResponse("This number is not available for incoming calls right now.", true, request.nextUrl); }
     log.info({ event: "plivo.inbound.ivr_version_resolved", inboundProfileId: configuration.configuration.inboundProfileId, ivrFlowVersionId: configuration.configuration.ivrFlowVersionId, requestedRuntime: configuration.configuration.requestedRuntime }, "Plivo inbound IVR version resolved");
     const call = await createOrGetInboundCall({ provider: "PLIVO", providerCallId: inbound.providerCallId, callerNumber: inbound.callerNumber, calledNumber: inbound.calledNumber, language: configuration.configuration.defaultLanguage, tenantId: configuration.configuration.tenantId, inboundProfileId: configuration.configuration.inboundProfileId, ivrFlowVersionId: configuration.configuration.ivrFlowVersionId, requestedRuntime: configuration.configuration.requestedRuntime });
-    await startRecordingIfNeeded(call.callId, inbound.providerCallId);
+    await startPlivoRecordingIfNeeded(call.callId, inbound.providerCallId);
     const execution = await startIVRGraphExecution(call.callId);
     logRealtimeInputCapability(call.callId, configuration.configuration.requestedRuntime, execution);
     logIvrExecution(call.callId, execution, configuration.configuration.ivrFlowVersionId);
-    logGeminiLiveXmlStreamIfRequired(call.callId, inbound.providerCallId, configuration.configuration.requestedRuntime);
+    logPlivoXmlStreamIfRequired(call.callId, inbound.providerCallId, configuration.configuration.requestedRuntime);
     log.info({ event: "plivo.inbound.received", providerCallId: inbound.providerCallId, internalCallId: call.callId, tenantId: call.tenantId, durationMs: 0 }, "Plivo inbound call initialized");
     return plivoXmlResponse(execution.speechText ?? "Welcome.", execution.endCall, request.nextUrl, call.callId, execution, configuration.configuration.requestedRuntime);
   } catch (error) { const auth = createPlivoAuthErrorResponse(error); if (auth) return auth; log.error({ event: "plivo.inbound.failed", error: normalizeError(error) }, "Plivo inbound webhook failed"); return plivoXmlResponse("A call initialization error occurred.", true, request.nextUrl); }
@@ -49,17 +50,39 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 export async function GET(): Promise<NextResponse> { return NextResponse.json({ success: false, message: "Method not allowed" }, { status: 405, headers: { Allow: "POST" } }); }
 export function plivoXmlResponse(speech: string, endCall: boolean, _baseUrl: URL, callId?: string, execution?: IVRGraphExecutionResult, requestedRuntime?: string): NextResponse {
   const inputUrl = callId ? getPlivoPublicCallbackUrl("/api/plivo/input", { callId }) : null;
+  const timeoutUrl = callId ? getPlivoPublicCallbackUrl("/api/plivo/input", { callId, timeout: "1" }) : null;
   const text = escapeXml(speech);
-  const liveStreamUrl = !endCall && requestedRuntime === "GEMINI_LIVE" && callId ? getPlivoBidirectionalStreamUrl(callId) : null;
+  const isStreaming = isVoiceStreamingRuntime(requestedRuntime);
+  const liveStreamUrl = !endCall && isStreaming && callId ? getPlivoBidirectionalStreamUrl(callId) : null;
   const stagedEntry = Boolean(liveStreamUrl && execution?.entryInputStage && execution.awaitInput && inputUrl);
-  const mode = stagedEntry ? "STAGED_ENTRY" : liveStreamUrl ? "GEMINI_LIVE_STREAM" : endCall ? "HANGUP" : execution?.awaitInput && inputUrl ? "GET_DIGITS" : "SPEAK";
+  const terminalExhaustion = execution?.transitionReason === "MAX_ATTEMPTS_EXHAUSTED";
+  const mode = endCall || terminalExhaustion ? "HANGUP" : stagedEntry ? "STAGED_ENTRY" : liveStreamUrl ? "STREAM" : execution?.awaitInput && inputUrl ? "GET_INPUT" : "SPEAK";
   const entryPrompt = escapeXml(execution?.entryPrompt ?? speech);
-  const timeoutPrompt = escapeXml(execution?.entryTimeoutPrompt ?? "I will connect you with our AI assistant.");
-  // GetDigits and Stream execute sequentially: a digit redirects to the signed
-  // action callback; no input falls through to the configured AI entry Stream.
   const timeoutSeconds = execution?.entryTimeoutSeconds ?? 8;
-  const xml = mode === "HANGUP" ? `<?xml version="1.0" encoding="UTF-8"?><Response><Speak>${text}</Speak><Hangup/></Response>` : mode === "STAGED_ENTRY" ? `<?xml version="1.0" encoding="UTF-8"?><Response><GetDigits action="${escapeXml(inputUrl!.toString())}" method="POST" numDigits="1" timeout="${timeoutSeconds}"><Speak>${entryPrompt}</Speak></GetDigits><Speak>${timeoutPrompt}</Speak><Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-mulaw;rate=8000">${escapeXml(liveStreamUrl!.toString())}</Stream></Response>` : mode === "GEMINI_LIVE_STREAM" ? `<?xml version="1.0" encoding="UTF-8"?><Response><Speak>${text}</Speak><Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-mulaw;rate=8000">${escapeXml(liveStreamUrl!.toString())}</Stream></Response>` : mode === "GET_DIGITS" ? `<?xml version="1.0" encoding="UTF-8"?><Response><GetDigits action="${escapeXml(inputUrl!.toString())}" method="POST" numDigits="1" timeout="8"><Speak>${text}</Speak></GetDigits></Response>` : `<?xml version="1.0" encoding="UTF-8"?><Response><Speak>${text}</Speak></Response>`;
-  log.info({ event: "plivo.inbound.answer_xml.generated", mode, verbs: mode === "HANGUP" ? ["Speak", "Hangup"] : mode === "STAGED_ENTRY" ? ["GetDigits", "Speak", "Stream"] : mode === "GEMINI_LIVE_STREAM" ? ["Speak", "Stream"] : mode === "GET_DIGITS" ? ["GetDigits", "Speak"] : ["Speak"], stream: liveStreamUrl ? { keepCallAlive: true, bidirectional: true, contentType: "audio/x-mulaw;rate=8000", serviceHost: liveStreamUrl.host, servicePath: liveStreamUrl.pathname } : null, entryInputStage: stagedEntry, awaitInput: Boolean(execution?.awaitInput), currentIvrNodeId: execution?.currentNodeId ?? null, callIdPresent: Boolean(callId) }, "Plivo inbound Answer XML generated");
+  const inputTimeoutSeconds = Math.max(5, Math.min(60, timeoutSeconds));
+  const greeting = text !== entryPrompt ? `<Speak>${text}</Speak>` : "";
+  const entryInputType = execution?.entryInputType ?? "dtmf speech";
+  const input = `<GetInput action="${escapeXml(inputUrl!.toString())}" method="POST" inputType="${escapeXml(entryInputType)}" numDigits="1" executionTimeout="${inputTimeoutSeconds}" startInputTimeout="${inputTimeoutSeconds}" speechModel="command_and_search" retries="1"><Speak>${entryPrompt}</Speak></GetInput>`;
+  const xml = mode === "HANGUP"
+    ? `<?xml version="1.0" encoding="UTF-8"?><Response><Speak>${text}</Speak><Hangup/></Response>`
+    : mode === "STAGED_ENTRY"
+      ? `<?xml version="1.0" encoding="UTF-8"?><Response>${greeting}${input}<Redirect method="POST">${escapeXml(timeoutUrl!.toString())}</Redirect></Response>`
+      : mode === "STREAM"
+        ? `<?xml version="1.0" encoding="UTF-8"?><Response><Speak>${text}</Speak><Stream keepCallAlive="true" bidirectional="true" contentType="audio/x-mulaw;rate=8000">${escapeXml(liveStreamUrl!.toString())}</Stream></Response>`
+        : mode === "GET_INPUT"
+          ? `<?xml version="1.0" encoding="UTF-8"?><Response>${input}</Response>`
+          : `<?xml version="1.0" encoding="UTF-8"?><Response><Speak>${text}</Speak></Response>`;
+  log.info({
+    event: "plivo.inbound.answer_xml.generated",
+    mode,
+    verbs: mode === "HANGUP" ? ["Speak", "Hangup"] : mode === "STAGED_ENTRY" ? ["Speak", "GetInput", "Redirect"] : mode === "STREAM" ? ["Speak", "Stream"] : mode === "GET_INPUT" ? ["GetInput", "Speak"] : ["Speak"],
+    stream: liveStreamUrl ? { keepCallAlive: true, bidirectional: true, contentType: "audio/x-mulaw;rate=8000", serviceHost: liveStreamUrl.host, servicePath: liveStreamUrl.pathname } : null,
+    entryInputStage: stagedEntry,
+    awaitInput: Boolean(execution?.awaitInput),
+    currentIvrNodeId: execution?.currentNodeId ?? null,
+    callIdPresent: Boolean(callId),
+    requestedRuntime: requestedRuntime ?? null,
+  }, "Plivo inbound Answer XML generated");
   if (stagedEntry) log.info({ event: "plivo.entry_input.started", internalCallId: callId, currentIvrNodeId: execution?.currentNodeId ?? null }, "Plivo XML entry input started");
   return new NextResponse(xml, { status: 200, headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-store" } });
 }
@@ -71,16 +94,15 @@ function describeNumber(raw: unknown, normalized: string | null) {
   };
 }
 
-async function startRecordingIfNeeded(callId: string, providerCallId: string): Promise<void> {
-  const claimed = await prisma.call.updateMany({ where: { id: callId, provider: "PLIVO", recordingStatus: null }, data: { recordingStatus: "REQUESTED" } });
-  if (claimed.count === 0) return;
-  try {
-    await new PlivoProvider().startRecording(callId, providerCallId);
-    await prisma.call.updateMany({ where: { id: callId, provider: "PLIVO", recordingStatus: "REQUESTED" }, data: { recordingStatus: "STARTED" } });
-  } catch (error) {
-    await prisma.call.updateMany({ where: { id: callId, provider: "PLIVO", recordingStatus: "REQUESTED" }, data: { recordingStatus: "FAILED" } });
-    throw error;
-  }
+function isVoiceStreamingRuntime(runtime?: string | null): boolean {
+  if (!runtime) return false;
+  const normalized = runtime.trim().toUpperCase();
+  return (
+    normalized === "GEMINI_LIVE" ||
+    normalized === "CASCADED" ||
+    normalized === "PREMIUM" ||
+    normalized === "STANDARD"
+  );
 }
 
 function logIvrExecution(callId: string, execution: IVRGraphExecutionResult, ivrFlowVersionId: string | null): void {
@@ -95,8 +117,8 @@ function logRealtimeInputCapability(callId: string, runtime: string, execution: 
   log.warn({ event: "plivo.inbound.realtime_input_degraded", internalCallId: callId, runtime, currentIvrNodeId: execution.currentNodeId, currentNodeKind: execution.currentNodeKind, support: capability.support, message: capability.message }, "Active input node requires keypad support unavailable during Plivo media streaming");
 }
 
-function logGeminiLiveXmlStreamIfRequired(callId: string, providerCallId: string, requestedRuntime: string): void {
-  if (requestedRuntime !== "GEMINI_LIVE") return;
+function logPlivoXmlStreamIfRequired(callId: string, providerCallId: string, requestedRuntime?: string): void {
+  if (!isVoiceStreamingRuntime(requestedRuntime)) return;
   const mediaUrl = getPlivoBidirectionalStreamUrl(callId);
-  log.info({ event: "plivo.inbound.stream.xml_configured", internalCallId: callId, providerCallId, requestedRuntime, mediaServiceProtocol: mediaUrl.protocol, mediaServiceHost: mediaUrl.host, mediaServicePath: mediaUrl.pathname, keepCallAlive: true, bidirectional: true }, "Plivo Gemini Live XML stream configured");
+  log.info({ event: "plivo.inbound.stream.xml_configured", internalCallId: callId, providerCallId, requestedRuntime, mediaServiceProtocol: mediaUrl.protocol, mediaServiceHost: mediaUrl.host, mediaServicePath: mediaUrl.pathname, keepCallAlive: true, bidirectional: true }, "Plivo XML stream configured");
 }

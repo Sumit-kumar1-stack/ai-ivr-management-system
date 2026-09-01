@@ -32,6 +32,9 @@ export interface IVRFlowSessionState {
   lastValue:
     string | null;
 
+  lastTriggeredAt?:
+    number;
+
   navigationHistory?:
     string[];
 
@@ -122,6 +125,12 @@ function parseState(
         parsed.lastValue.trim()
           ? parsed.lastValue.trim()
           : null,
+
+      lastTriggeredAt:
+        typeof parsed.lastTriggeredAt === "number" &&
+        Number.isFinite(parsed.lastTriggeredAt)
+          ? parsed.lastTriggeredAt
+          : undefined,
 
       navigationHistory:
         Array.isArray(
@@ -228,6 +237,12 @@ export const IVRFlowSessionService = {
             state.lastValue
               ?.trim() ||
             null,
+
+          lastTriggeredAt:
+            typeof state.lastTriggeredAt === "number" &&
+            Number.isFinite(state.lastTriggeredAt)
+              ? state.lastTriggeredAt
+              : undefined,
 
           navigationHistory:
             Array.isArray(

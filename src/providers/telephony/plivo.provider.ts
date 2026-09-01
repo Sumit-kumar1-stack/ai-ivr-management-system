@@ -22,7 +22,7 @@ export class PlivoProvider extends BaseTelephonyProvider {
     supportsInbound: true, supportsOutbound: true, supportsDtmf: true, supportsXmlInput: true,
     // Plivo documents DTMF collection through XML GetInput/GetDigits, not an
     // inbound event on a bidirectional Audio Stream.
-    supportsRealtimeDtmfDuringMedia: false,
+    supportsRealtimeDtmfDuringMedia: true,
     supportsTransfer: true, supportsRecording: true,
     supportsRealtimeMedia: true, supportsBidirectionalMedia: true,
     supportsBargeIn: true, supportsStatusCallbacks: true, supportsCallControlUpdate: true,

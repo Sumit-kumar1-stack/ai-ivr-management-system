@@ -16,7 +16,7 @@ type RealtimeInputProviderCapabilities = {
 const REALTIME_INPUT_CAPABILITIES: Record<string, RealtimeInputProviderCapabilities> = {
   TWILIO: { supportsDtmf: true, supportsXmlInput: true, supportsRealtimeMedia: true, supportsBidirectionalMedia: true, supportsRealtimeDtmfDuringMedia: true },
   EXOTEL: { supportsDtmf: true, supportsXmlInput: false, supportsRealtimeMedia: true, supportsBidirectionalMedia: true, supportsRealtimeDtmfDuringMedia: true },
-  PLIVO: { supportsDtmf: true, supportsXmlInput: true, supportsRealtimeMedia: true, supportsBidirectionalMedia: true, supportsRealtimeDtmfDuringMedia: false },
+  PLIVO: { supportsDtmf: true, supportsXmlInput: true, supportsRealtimeMedia: true, supportsBidirectionalMedia: true, supportsRealtimeDtmfDuringMedia: true },
   MOCK: { supportsDtmf: false, supportsXmlInput: false, supportsRealtimeMedia: false, supportsBidirectionalMedia: false, supportsRealtimeDtmfDuringMedia: false },
 };
 

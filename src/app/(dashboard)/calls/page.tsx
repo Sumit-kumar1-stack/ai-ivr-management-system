@@ -50,9 +50,16 @@ type CallRow = {
   id: string;
   providerCallId: string | null;
   status: CallStatus;
+  direction?: "INBOUND" | "OUTBOUND" | null;
+  provider?: string | null;
   language: string;
   duration: number | null;
-  recordingUrl: string | null;
+  hasRecording?: boolean;
+  recordingStatus?: string | null;
+  recordingAvailableAt?: string | null;
+  recordingUrl?: string | null;
+  requestedRuntime?: string | null;
+  effectiveRuntime?: string | null;
   summary: string | null;
   contactPhoneSnapshot: string | null;
   providerDestination: string | null;
@@ -74,14 +81,14 @@ type CallRow = {
     phone: string;
     language: string;
     status: string;
-  };
+  } | null;
 
   campaign: {
     id: string;
     name: string;
     status: string;
     language: string;
-  };
+  } | null;
 
   campaignRun: {
     id: string;
@@ -427,30 +434,31 @@ export default function CallsPage() {
           cell:
             ({
               row,
-            }) => (
-              <div>
-                <p className="font-medium">
-                  {
-                    row.original
-                      .contact
-                      .fullName
-                  }
-                </p>
+            }) => {
+              const contact = row.original.contact;
+              const displayName = contact?.fullName ?? "Inbound caller";
+              const displayPhone =
+                contact?.phone ??
+                row.original.contactPhoneSnapshot ??
+                row.original.providerDestination ??
+                "—";
+              return (
+                <div>
+                  <p className="font-medium">
+                    {displayName}
+                  </p>
 
-                <p
-                  className="
-                    text-xs
-                    text-muted-foreground
-                  "
-                >
-                  {
-                    row.original
-                      .contact
-                      .phone
-                  }
-                </p>
-              </div>
-            ),
+                  <p
+                    className="
+                      text-xs
+                      text-muted-foreground
+                    "
+                  >
+                    {displayPhone}
+                  </p>
+                </div>
+              );
+            },
         },
 
         {
@@ -463,30 +471,25 @@ export default function CallsPage() {
           cell:
             ({
               row,
-            }) => (
-              <div>
-                <p className="font-medium">
-                  {
-                    row.original
-                      .campaign
-                      .name
-                  }
-                </p>
+            }) => {
+              const campaign = row.original.campaign;
+              return (
+                <div>
+                  <p className="font-medium">
+                    {campaign?.name ?? "Direct inbound"}
+                  </p>
 
-                <p
-                  className="
-                    text-xs
-                    text-muted-foreground
-                  "
-                >
-                  {
-                    row.original
-                      .campaign
-                      .language
-                  }
-                </p>
-              </div>
-            ),
+                  <p
+                    className="
+                      text-xs
+                      text-muted-foreground
+                    "
+                  >
+                    {campaign?.language ?? "—"}
+                  </p>
+                </div>
+              );
+            },
         },
 
         {
@@ -704,7 +707,48 @@ export default function CallsPage() {
           </p>
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href="/calls"
+            className="
+              inline-flex
+              h-10
+              items-center
+              justify-center
+              rounded-md
+              bg-primary
+              px-4
+              text-sm
+              font-medium
+              text-primary-foreground
+              shadow
+            "
+          >
+            All Calls
+          </Link>
+
+          <Link
+            href="/calls/recordings"
+            className="
+              inline-flex
+              h-10
+              items-center
+              justify-center
+              rounded-md
+              border
+              border-input
+              bg-background
+              px-4
+              text-sm
+              font-medium
+              transition-colors
+              hover:bg-accent
+              hover:text-accent-foreground
+            "
+          >
+            Recordings
+          </Link>
+
           <Link
             href="/dashboard"
             className="

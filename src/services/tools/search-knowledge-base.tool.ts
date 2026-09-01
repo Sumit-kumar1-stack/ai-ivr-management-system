@@ -26,6 +26,10 @@ import {
   resolveInboundKnowledgeDocumentIds,
 } from "@/services/knowledge/inbound-knowledge-scope.service";
 
+import {
+  IVRFlowSessionService,
+} from "@/services/ivr/ivr-flow-session.service";
+
 import type {
   BusinessToolDefinition,
   ToolExecutionContext,
@@ -216,33 +220,36 @@ async function executeKnowledgeSearch(
     input.limit ??
     5;
 
-    const knowledgeDocumentIds =
-      call.direction === CallDirection.INBOUND
-        ? resolveInboundKnowledgeDocumentIds({
-            tenantId: call.tenantId,
-            profileKnowledgeDocumentIds: call.inboundProfile?.knowledgeDocumentIds,
-            ivrFlowVersion: call.ivrFlowVersion,
-          })
-        : call.communicationCampaign
-          ? normalizeDocumentIds(call.communicationCampaign.knowledgeDocumentIds)
-          : call.campaignId && call.campaign
-            ? await resolveSecureCampaignKnowledgeDocumentIds(
-                call.campaignId,
-                { ownerUserId: call.campaign.ownerUserId }
-              )
-            : [];
+  const session = await IVRFlowSessionService.get(context.callId);
 
-    const tenantId =
-      call.tenantId ??
-      call.communicationCampaign?.ownerUser?.tenantId ??
-      call.campaign?.ownerUser?.tenantId ??
-      null;
+  const knowledgeDocumentIds =
+    call.direction === CallDirection.INBOUND
+      ? resolveInboundKnowledgeDocumentIds({
+          tenantId: call.tenantId,
+          profileKnowledgeDocumentIds: call.inboundProfile?.knowledgeDocumentIds,
+          ivrFlowVersion: call.ivrFlowVersion,
+          currentNodeId: session?.currentNodeId,
+        })
+      : call.communicationCampaign
+        ? normalizeDocumentIds(call.communicationCampaign.knowledgeDocumentIds)
+        : call.campaignId && call.campaign
+          ? await resolveSecureCampaignKnowledgeDocumentIds(
+              call.campaignId,
+              { ownerUserId: call.campaign.ownerUserId }
+            )
+          : [];
 
-    const results =
-      await retrieveKnowledge(
-        input.query,
-        limit,
-        {
+  const tenantId =
+    call.tenantId ??
+    call.communicationCampaign?.ownerUser?.tenantId ??
+    call.campaign?.ownerUser?.tenantId ??
+    null;
+
+  const results =
+    await retrieveKnowledge(
+      input.query,
+      limit,
+      {
         knowledgeDocumentIds:
           knowledgeDocumentIds,
 

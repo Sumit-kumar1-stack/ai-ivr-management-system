@@ -97,6 +97,38 @@ describe("IVR Copilot route", () => {
     expect(response.status).toBe(422);
   });
 
+  it("handles MODIFY requests with currentFlow and validation context", async () => {
+    const modifyPayload = {
+      mode: "MODIFY",
+      prompt: "Add authentication step before transfer",
+      flowName: "DemoBank",
+      currentFlow: {
+        nodes: [{ id: "start" }, { id: "transfer" }],
+        edges: [{ id: "start-transfer", source: "start", target: "transfer" }],
+      },
+      validation: {
+        valid: false,
+        errors: [{ code: "AUTH_PATH_REQUIRED", nodeId: "transfer", message: "Auth required" }],
+        warnings: [],
+      },
+    };
+
+    const response = await POST(request(modifyPayload), {} as never);
+    expect(response.status).toBe(200);
+    expect(mocks.buildFlowCopilotSuggestion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "MODIFY",
+        prompt: "Add authentication step before transfer",
+        validation: expect.objectContaining({
+          valid: false,
+          errors: expect.arrayContaining([
+            expect.objectContaining({ code: "AUTH_PATH_REQUIRED" }),
+          ]),
+        }),
+      })
+    );
+  });
+
   it("returns 500 for unexpected failures", async () => {
     mocks.buildFlowCopilotSuggestion.mockRejectedValueOnce(new Error("Unexpected failure"));
     const response = await POST(request(body), {} as never);

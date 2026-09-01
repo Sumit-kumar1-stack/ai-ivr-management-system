@@ -1,4 +1,11 @@
+// @next/env has no Redis dependency — safe to import statically.
 import { loadEnvConfig } from "@next/env";
+
+// ---------------------------------------------------------------------------
+// Only pure, side-effect-free helpers are defined at module level.
+// Redis, BullMQ, Prisma, and all application service modules are imported
+// DYNAMICALLY inside main(), after loadEnvConfig() has populated process.env.
+// ---------------------------------------------------------------------------
 
 interface CommandOptions {
   campaignId: string;
@@ -37,12 +44,15 @@ export function parseReconcileCommandOptions(args: string[]): CommandOptions {
 }
 
 async function main(): Promise<void> {
-  // Load local Next.js environment configuration
+  // Step 1 — load .env / .env.local BEFORE anything that reads process.env.
   loadEnvConfig(process.cwd());
 
+  // Step 2 — parse CLI flags (pure, no env access).
   const options = parseReconcileCommandOptions(process.argv.slice(2));
 
-  // Dynamically import dependencies to avoid triggering side effects early
+  // Step 3 — dynamically import every module that transitively accesses Redis,
+  //           BullMQ, or any env accessor.  These imports resolve only now,
+  //           after the env variables are in process.env.
   const [
     reconcileModule,
     lifecycleModule,
@@ -87,7 +97,7 @@ async function main(): Promise<void> {
       console.log(`Reconciliation complete. Attempt ${result.attemptId} transitioned from ${result.statusBefore} to ${result.statusAfter}.`);
     }
   } finally {
-    // Ensure all network/DB connections are safely closed
+    // Safely close all connections regardless of success or failure.
     await queue.close();
     await prismaModule.closePrismaConnection();
     await redisModule.closeRedisConnection();

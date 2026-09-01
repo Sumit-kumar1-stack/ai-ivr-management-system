@@ -96,6 +96,8 @@ type CallDetails = {
   id: string;
   providerCallId: string | null;
   status: CallStatus;
+  direction?: "INBOUND" | "OUTBOUND" | null;
+  provider?: string | null;
   language: string;
   duration: number | null;
 
@@ -110,6 +112,16 @@ type CallDetails = {
   };
 
   hasRecording: boolean;
+  recordingStatus?:
+    | "NOT_STARTED"
+    | "REQUESTED"
+    | "STARTED"
+    | "AVAILABLE"
+    | "FAILED"
+    | null;
+  recordingAvailableAt?: string | null;
+  requestedRuntime?: string | null;
+  effectiveRuntime?: string | null;
   transcript: string | null;
   summary: string | null;
 
@@ -166,7 +178,7 @@ type CallDetails = {
     language: string;
     status: string;
     createdAt: string;
-  };
+  } | null;
 
   campaign: {
     id: string;
@@ -176,7 +188,7 @@ type CallDetails = {
     status: string;
     createdAt: string;
     completedAt: string | null;
-  };
+  } | null;
 
   campaignRun: {
     id: string;
@@ -852,6 +864,28 @@ export default function CallDetailsPage() {
           </Link>
 
           <Link
+            href="/calls/recordings"
+            className="
+              inline-flex
+              h-10
+              items-center
+              justify-center
+              rounded-md
+              border
+              border-input
+              bg-background
+              px-4
+              text-sm
+              font-medium
+              transition-colors
+              hover:bg-accent
+              hover:text-accent-foreground
+            "
+          >
+            Recordings
+          </Link>
+
+          <Link
             href="/dashboard"
             className="
               inline-flex
@@ -908,7 +942,7 @@ export default function CallDetailsPage() {
 
           <CardContent>
             <p className="text-xl font-semibold">
-              {call.contact.fullName}
+              {call.contact?.fullName ?? "Inbound caller"}
             </p>
 
             <p
@@ -918,7 +952,12 @@ export default function CallDetailsPage() {
                 text-muted-foreground
               "
             >
-              {call.contact.phone}
+              {
+                call.contact?.phone ??
+                call.phone?.contactPhoneSnapshot ??
+                call.phone?.providerDestination ??
+                "—"
+              }
             </p>
           </CardContent>
         </Card>
@@ -938,7 +977,7 @@ export default function CallDetailsPage() {
 
           <CardContent>
             <p className="text-xl font-semibold">
-              {call.campaign.name}
+              {call.campaign?.name ?? "Direct inbound"}
             </p>
 
             <p
@@ -948,7 +987,7 @@ export default function CallDetailsPage() {
                 text-muted-foreground
               "
             >
-              {call.campaign.status}
+              {call.campaign?.status ?? "—"}
             </p>
           </CardContent>
         </Card>
@@ -1134,8 +1173,7 @@ export default function CallDetailsPage() {
               "
             >
               {call.summary ??
-                call.conversation
-                  ?.summary ??
+                call.conversation?.summary ??
                 "No summary generated."}
             </p>
           </div>
@@ -1475,28 +1513,31 @@ export default function CallDetailsPage() {
             <DetailItem
               label="Full Name"
               value={
-                call.contact.fullName
+                call.contact?.fullName ?? "Inbound caller"
               }
             />
 
             <DetailItem
               label="Phone"
               value={
-                call.contact.phone
+                call.contact?.phone ??
+                call.phone?.contactPhoneSnapshot ??
+                call.phone?.providerDestination ??
+                "—"
               }
             />
 
             <DetailItem
               label="Language"
               value={
-                call.contact.language
+                call.contact?.language ?? "—"
               }
             />
 
             <DetailItem
               label="Contact Status"
               value={
-                call.contact.status
+                call.contact?.status ?? "—"
               }
             />
 
@@ -1536,21 +1577,21 @@ export default function CallDetailsPage() {
               <DetailItem
                 label="Campaign"
                 value={
-                  call.campaign.name
+                  call.campaign?.name ?? "Direct inbound"
                 }
               />
 
               <DetailItem
                 label="Status"
                 value={
-                  call.campaign.status
+                  call.campaign?.status ?? "—"
                 }
               />
 
               <DetailItem
                 label="Language"
                 value={
-                  call.campaign.language
+                  call.campaign?.language ?? "—"
                 }
               />
 
@@ -1584,7 +1625,7 @@ export default function CallDetailsPage() {
               </p>
 
               <p className="mt-2 text-sm leading-6">
-                {call.campaign.description ??
+                {call.campaign?.description ??
                   "No campaign description."}
               </p>
             </div>
@@ -1873,59 +1914,122 @@ export default function CallDetailsPage() {
         "
       >
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>
               Recording
             </CardTitle>
+
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="text-xs uppercase tracking-wider">
+                {call.provider ?? "PLIVO"}
+              </Badge>
+
+              {(() => {
+                const status = call.recordingStatus ?? (call.hasRecording ? "AVAILABLE" : "NOT_STARTED");
+                if (status === "AVAILABLE") {
+                  return (
+                    <Badge className="bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/20 border-emerald-500/30">
+                      Available
+                    </Badge>
+                  );
+                }
+                if (status === "STARTED" || status === "REQUESTED") {
+                  return (
+                    <Badge variant="secondary" className="bg-amber-500/15 text-amber-700 border-amber-500/30 animate-pulse">
+                      Processing
+                    </Badge>
+                  );
+                }
+                if (status === "FAILED") {
+                  return (
+                    <Badge variant="destructive">
+                      Recording Failed
+                    </Badge>
+                  );
+                }
+                return (
+                  <Badge variant="outline" className="text-muted-foreground">
+                    Not Recorded
+                  </Badge>
+                );
+              })()}
+            </div>
           </CardHeader>
 
           <CardContent>
-            {call.hasRecording ? (
-  <div
-    className="
-      space-y-4
-      rounded-xl
-      border
-      bg-muted/20
-      p-4
-    "
-  >
-    <p
-      className="
-        text-sm
-        text-muted-foreground
-      "
-    >
-      Listen to the recorded customer and AI conversation.
-    </p>
+            {call.hasRecording || call.recordingStatus === "AVAILABLE" ? (
+              <div
+                className="
+                  space-y-4
+                  rounded-xl
+                  border
+                  bg-muted/20
+                  p-4
+                "
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p
+                    className="
+                      text-sm
+                      text-muted-foreground
+                    "
+                  >
+                    Listen to the recorded customer and AI conversation.
+                  </p>
 
-    <audio
-      controls
-      preload="metadata"
-      className="w-full"
-      src={`/api/calls/${call.id}/recording`}
-    >
-      Your browser does not support audio playback.
-    </audio>
+                  {call.recordingAvailableAt && (
+                    <p className="text-xs text-muted-foreground">
+                      Available: {formatDate(call.recordingAvailableAt)}
+                    </p>
+                  )}
+                </div>
 
-    <a
-      href={`/api/calls/${call.id}/recording?download=1`}
-      className={buttonVariants({
-        variant: "outline",
-        size: "sm",
-      })}
-    >
-      Download recording
-    </a>
-  </div>
-) : (
+                <audio
+                  controls
+                  preload="metadata"
+                  className="w-full"
+                  src={`/api/calls/${call.id}/recording`}
+                >
+                  Your browser does not support audio playback.
+                </audio>
+
+                <a
+                  href={`/api/calls/${call.id}/recording?download=1`}
+                  download={`call-${call.id}.mp3`}
+                  className={buttonVariants({
+                    variant: "outline",
+                    size: "sm",
+                  })}
+                >
+                  Download recording
+                </a>
+              </div>
+            ) : call.recordingStatus === "REQUESTED" || call.recordingStatus === "STARTED" ? (
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-2">
+                <p className="text-sm font-medium text-amber-800">
+                  Recording processing…
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Call recording was requested from the provider and is currently being processed. Once completed by Plivo, audio playback and download will appear here automatically.
+                </p>
+              </div>
+            ) : call.recordingStatus === "FAILED" ? (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 space-y-2">
+                <p className="text-sm font-medium text-destructive">
+                  Recording failed
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  The recording initiation request could not be completed by the telephony provider. The active voice conversation completed independently.
+                </p>
+              </div>
+            ) : (
               <p
                 className="
                   text-sm
                   text-muted-foreground
                 "
               >
-                No recording is currently available for this call.
+                No recording was requested or available for this call.
               </p>
             )}
           </CardContent>

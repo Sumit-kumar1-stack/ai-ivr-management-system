@@ -107,7 +107,7 @@ describe("IVRFlowValidator", () => {
     ]));
   });
 
-  it("warns, without invalidating the flow, when Plivo Gemini Live is bound to hybrid keypad input", () => {
+  it("accepts Plivo Gemini Live hybrid keypad input supported by the stream protocol", () => {
     const result = validateIVRFlowDefinition({
       nodes: [
         { id: "start", data: { nodeKind: "START", inputMode: "VOICE_AND_DTMF" } },
@@ -123,12 +123,10 @@ describe("IVRFlowValidator", () => {
     });
 
     expect(result.valid).toBe(true);
-    expect(result.warnings).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "REALTIME_INPUT_UNSUPPORTED", field: "inputMode" }),
-    ]));
+    expect(result.warnings.some(issue => issue.code === "REALTIME_INPUT_UNSUPPORTED")).toBe(false);
   });
 
-  it("keeps Plivo staged hybrid valid while retaining the realtime-DTMF warning", () => {
+  it("keeps Plivo staged hybrid valid without a realtime-DTMF warning", () => {
     const result = validateIVRFlowDefinition({
       nodes: [
         { id: "start", data: { nodeKind: "START", inputExperience: "STAGED_HYBRID", runtimeMode: "AUTO", runtimeDefault: "STANDARD", defaultAiNodeId: "ai" } },
@@ -396,5 +394,355 @@ describe("IVRFlowValidator", () => {
     expect(result.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({ severity: "INFO", code: "AUTO_RUNTIME_INFORMATIONAL" }),
     ]));
+  });
+
+  describe("Navigation Configuration Validation", () => {
+    it("detects conflicting digits and phrases between navigation commands", () => {
+      const result = validateIVRFlowDefinition({
+        nodes: [
+          {
+            id: "start",
+            data: {
+              nodeKind: "START",
+              navigation: {
+                home: { enabled: true, digits: ["0", "9"], phrases: ["main menu", "exit"] },
+                back: { enabled: true, digits: ["0"], phrases: ["go back"] },
+                end: { enabled: true, digits: ["9"], phrases: ["exit"] },
+              },
+            },
+          },
+          { id: "end", data: { nodeKind: "END_CALL" } },
+        ],
+        edges: [
+          { source: "start", target: "end", data: { trigger: "DEFAULT" } },
+        ],
+      });
+
+      expect(result.warnings.map(w => w.code)).toEqual(expect.arrayContaining([
+        "NAV_COMMAND_DIGIT_COLLISION",
+        "NAV_COMMAND_PHRASE_COLLISION",
+      ]));
+    });
+
+    it("warns when menu option digit collides with enabled navigation digit", () => {
+      const result = validateIVRFlowDefinition({
+        nodes: [
+          {
+            id: "start",
+            data: {
+              nodeKind: "START",
+              navigation: {
+                home: { enabled: true, digits: ["1"], phrases: ["main menu"] },
+              },
+            },
+          },
+          {
+            id: "menu",
+            data: {
+              nodeKind: "HYBRID_MENU",
+              prompt: "Choose",
+              options: [{ digit: "1", label: "Support", destinationNodeId: "end" }],
+            },
+          },
+          { id: "end", data: { nodeKind: "END_CALL" } },
+        ],
+        edges: [
+          { source: "start", target: "menu", data: { trigger: "DEFAULT" } },
+          { source: "menu", target: "end", sourceHandle: "1", data: { trigger: "DTMF", value: "1" } },
+        ],
+      });
+
+      expect(result.warnings.map(w => w.code)).toContain("NAV_MENU_OPTION_COLLISION");
+    });
+
+    it("errors when HOME target node does not exist in flow", () => {
+      const result = validateIVRFlowDefinition({
+        nodes: [
+          {
+            id: "start",
+            data: {
+              nodeKind: "START",
+              navigation: {
+                home: { enabled: true, digits: ["0"], phrases: ["main menu"], targetNodeId: "missing_menu" },
+              },
+            },
+          },
+          { id: "end", data: { nodeKind: "END_CALL" } },
+        ],
+        edges: [
+          { source: "start", target: "end", data: { trigger: "DEFAULT" } },
+        ],
+      });
+
+      expect(result.errors.map(e => e.code)).toContain("NAV_HOME_TARGET_INVALID");
+      expect(result.valid).toBe(false);
+    });
+  });
+
+  describe("Post-Action Configuration Validation", () => {
+    it("errors when CONTINUE_TO_NODE has missing or invalid targetNodeId", () => {
+      const missingTargetResult = validateIVRFlowDefinition({
+        nodes: [
+          { id: "start", data: { nodeKind: "START" } },
+          { id: "knowledge", data: { nodeKind: "KNOWLEDGE", postAction: { mode: "CONTINUE_TO_NODE" } } },
+          { id: "end", data: { nodeKind: "END_CALL" } },
+        ],
+        edges: [
+          { source: "start", target: "knowledge", data: { trigger: "DEFAULT" } },
+        ],
+      });
+
+      expect(missingTargetResult.errors.map(e => e.code)).toContain("POST_ACTION_TARGET_MISSING");
+
+      const invalidTargetResult = validateIVRFlowDefinition({
+        nodes: [
+          { id: "start", data: { nodeKind: "START" } },
+          { id: "knowledge", data: { nodeKind: "KNOWLEDGE", postAction: { mode: "CONTINUE_TO_NODE", targetNodeId: "non_existent" } } },
+          { id: "end", data: { nodeKind: "END_CALL" } },
+        ],
+        edges: [
+          { source: "start", target: "knowledge", data: { trigger: "DEFAULT" } },
+        ],
+      });
+
+      expect(invalidTargetResult.errors.map(e => e.code)).toContain("POST_ACTION_TARGET_INVALID");
+    });
+
+    it("warns when postAction is placed on an incompatible node or forms a self loop", () => {
+      const result = validateIVRFlowDefinition({
+        nodes: [
+          { id: "start", data: { nodeKind: "START", postAction: { mode: "RETURN_HOME" } } },
+          { id: "knowledge", data: { nodeKind: "KNOWLEDGE", postAction: { mode: "CONTINUE_TO_NODE", targetNodeId: "knowledge" } } },
+          { id: "end", data: { nodeKind: "END_CALL", postAction: { mode: "RETURN_PREVIOUS" } } },
+        ],
+        edges: [
+          { source: "start", target: "knowledge", data: { trigger: "DEFAULT" } },
+        ],
+      });
+
+      expect(result.warnings.map(w => w.code)).toEqual(expect.arrayContaining([
+        "POST_ACTION_INCOMPATIBLE_NODE",
+        "POST_ACTION_SELF_LOOP",
+      ]));
+    });
+  });
+
+  describe("Phase 4: Builder-Controlled AI Policy Validation", () => {
+    it("validates valid AI policies without errors", () => {
+      const result = validateIVRFlowDefinition({
+        nodes: [
+          { id: "start", data: { nodeKind: "START" } },
+          {
+            id: "knowledge_1",
+            data: {
+              nodeKind: "KNOWLEDGE",
+              aiPolicy: {
+                mode: "FREE_FORM_ONLY",
+                timeoutMs: 8000,
+                failureBehavior: "LOCAL_KB",
+                confidenceThreshold: 0.7,
+                allowRerank: true,
+              },
+            },
+          },
+          {
+            id: "knowledge_2",
+            data: {
+              nodeKind: "KNOWLEDGE",
+              aiPolicy: {
+                mode: "LOW_CONFIDENCE_ONLY",
+                confidenceThreshold: 0.85,
+                timeoutMs: 5000,
+              },
+            },
+          },
+          { id: "end", data: { nodeKind: "END_CALL" } },
+        ],
+        edges: [
+          { source: "start", target: "knowledge_1", data: { trigger: "DEFAULT" } },
+          { source: "knowledge_1", target: "knowledge_2", data: { trigger: "DEFAULT" } },
+          { source: "knowledge_2", target: "end", data: { trigger: "DEFAULT" } },
+        ],
+      });
+
+      expect(result.errors.filter(e => e.code.startsWith("AI_POLICY"))).toHaveLength(0);
+      expect(result.warnings.filter(w => w.code.startsWith("AI_POLICY"))).toHaveLength(0);
+    });
+
+    it("detects invalid AI policy modes and missing custom failure targets", () => {
+      const result = validateIVRFlowDefinition({
+        nodes: [
+          { id: "start", data: { nodeKind: "START" } },
+          {
+            id: "knowledge_bad_mode",
+            data: {
+              nodeKind: "KNOWLEDGE",
+              aiPolicy: {
+                mode: "INVALID_MODE" as any,
+              },
+            },
+          },
+          {
+            id: "knowledge_missing_target",
+            data: {
+              nodeKind: "KNOWLEDGE",
+              aiPolicy: {
+                mode: "ALWAYS_CONVERSATIONAL",
+                failureBehavior: "CUSTOM_DESTINATION",
+                failureTargetNodeId: "non_existent_node",
+              },
+            },
+          },
+          { id: "end", data: { nodeKind: "END_CALL" } },
+        ],
+        edges: [
+          { source: "start", target: "knowledge_bad_mode", data: { trigger: "DEFAULT" } },
+          { source: "knowledge_bad_mode", target: "knowledge_missing_target", data: { trigger: "DEFAULT" } },
+          { source: "knowledge_missing_target", target: "end", data: { trigger: "DEFAULT" } },
+        ],
+      });
+
+      expect(result.errors.map(e => e.code)).toContain("AI_POLICY_INVALID_MODE");
+      expect(result.errors.map(e => e.code)).toContain("AI_POLICY_FAILURE_TARGET_INVALID");
+    });
+
+    it("warns when aiPolicy is placed on incompatible structural nodes or forms a self loop", () => {
+      const result = validateIVRFlowDefinition({
+        nodes: [
+          { id: "start", data: { nodeKind: "START", aiPolicy: { mode: "NEVER" } } },
+          { id: "auth_gate", data: { nodeKind: "AUTH_GATE", aiPolicy: { mode: "FREE_FORM_ONLY" } } },
+          {
+            id: "knowledge",
+            data: {
+              nodeKind: "KNOWLEDGE",
+              aiPolicy: {
+                mode: "ALWAYS_CONVERSATIONAL",
+                failureBehavior: "CUSTOM_DESTINATION",
+                failureTargetNodeId: "knowledge",
+                confidenceThreshold: 1.5,
+                timeoutMs: 50,
+              },
+            },
+          },
+          { id: "end", data: { nodeKind: "END_CALL" } },
+        ],
+        edges: [
+          { source: "start", target: "auth_gate", data: { trigger: "DEFAULT" } },
+          { source: "auth_gate", target: "knowledge", data: { trigger: "PASS" } },
+          { source: "knowledge", target: "end", data: { trigger: "DEFAULT" } },
+        ],
+      });
+
+      expect(result.warnings.map(w => w.code)).toEqual(expect.arrayContaining([
+        "AI_POLICY_INCOMPATIBLE_NODE",
+        "AI_POLICY_INVALID_CONFIDENCE",
+        "AI_POLICY_INVALID_TIMEOUT",
+        "AI_POLICY_SELF_LOOP",
+      ]));
+    });
+  });
+
+  describe("Phase 5: Conversational Escape Validation", () => {
+    it("validates valid Conversational Escape configuration without errors", () => {
+      const result = validateIVRFlowDefinition({
+        nodes: [
+          { id: "start", data: { nodeKind: "START" } },
+          {
+            id: "menu",
+            data: {
+              nodeKind: "HYBRID_MENU",
+              options: [{ digit: "1", label: "Sales", destinationNodeId: "sales" }],
+              conversationalEscape: {
+                enabled: true,
+                targetNodeId: "faq_assistant",
+                returnBehavior: "RETURN_CONTEXT",
+              },
+            },
+          },
+          { id: "sales", data: { nodeKind: "ACTION" } },
+          { id: "faq_assistant", data: { nodeKind: "KNOWLEDGE" } },
+          { id: "end", data: { nodeKind: "END_CALL" } },
+        ],
+        edges: [
+          { source: "start", target: "menu", data: { trigger: "DEFAULT" } },
+          { source: "menu", target: "sales", data: { trigger: "DTMF", value: "1" } },
+          { source: "menu", target: "faq_assistant", data: { trigger: "DEFAULT" } },
+          { source: "sales", target: "end", data: { trigger: "DEFAULT" } },
+          { source: "faq_assistant", target: "end", data: { trigger: "DEFAULT" } },
+        ],
+      });
+
+      expect(result.errors.filter(e => e.code.startsWith("CONVERSATIONAL_ESCAPE"))).toHaveLength(0);
+    });
+
+    it("detects missing target and invalid target nodes", () => {
+      const result = validateIVRFlowDefinition({
+        nodes: [
+          { id: "start", data: { nodeKind: "START" } },
+          {
+            id: "menu_no_target",
+            data: {
+              nodeKind: "HYBRID_MENU",
+              options: [{ digit: "1", label: "Option", destinationNodeId: "opt" }],
+              conversationalEscape: {
+                enabled: true,
+                targetNodeId: null,
+              },
+            },
+          },
+          {
+            id: "menu_invalid_target",
+            data: {
+              nodeKind: "HYBRID_MENU",
+              options: [{ digit: "1", label: "Option", destinationNodeId: "opt" }],
+              conversationalEscape: {
+                enabled: true,
+                targetNodeId: "non_existent_node",
+              },
+            },
+          },
+          { id: "opt", data: { nodeKind: "ACTION" } },
+          { id: "end", data: { nodeKind: "END_CALL" } },
+        ],
+        edges: [
+          { source: "start", target: "menu_no_target", data: { trigger: "DEFAULT" } },
+          { source: "menu_no_target", target: "menu_invalid_target", data: { trigger: "DEFAULT" } },
+          { source: "menu_invalid_target", target: "opt", data: { trigger: "DEFAULT" } },
+          { source: "opt", target: "end", data: { trigger: "DEFAULT" } },
+        ],
+      });
+
+      expect(result.errors.map(e => e.code)).toContain("CONVERSATIONAL_ESCAPE_TARGET_REQUIRED");
+      expect(result.errors.map(e => e.code)).toContain("CONVERSATIONAL_ESCAPE_TARGET_INVALID");
+    });
+
+    it("warns when Conversational Escape is placed on incompatible structural nodes or targets itself", () => {
+      const result = validateIVRFlowDefinition({
+        nodes: [
+          { id: "start", data: { nodeKind: "START", conversationalEscape: { enabled: true, targetNodeId: "end" } } },
+          {
+            id: "menu",
+            data: {
+              nodeKind: "HYBRID_MENU",
+              options: [{ digit: "1", label: "Option", destinationNodeId: "end" }],
+              conversationalEscape: {
+                enabled: true,
+                targetNodeId: "menu",
+              },
+            },
+          },
+          { id: "end", data: { nodeKind: "END_CALL" } },
+        ],
+        edges: [
+          { source: "start", target: "menu", data: { trigger: "DEFAULT" } },
+          { source: "menu", target: "end", data: { trigger: "DEFAULT" } },
+        ],
+      });
+
+      expect(result.warnings.map(w => w.code)).toEqual(expect.arrayContaining([
+        "CONVERSATIONAL_ESCAPE_INCOMPATIBLE_NODE",
+        "CONVERSATIONAL_ESCAPE_SELF_LOOP",
+      ]));
+    });
   });
 });

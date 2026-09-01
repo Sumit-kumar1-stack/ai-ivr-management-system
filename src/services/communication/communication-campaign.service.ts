@@ -59,6 +59,7 @@ import {
 import {
   recordAuditEvent,
 } from "@/services/audit/audit-event.service";
+import { recordSuperAdminSelfApprovalOverrideAudit } from "@/services/security/governance-override.service";
 import type {
   AuthenticatedUser,
 } from "@/lib/auth";
@@ -1855,6 +1856,15 @@ async function reviewCommunicationCampaign(
           : "REJECT",
     reason,
   });
+
+  if (decision === "APPROVED" && (campaign.ownerUserId === user.id || campaign.submittedByUserId === user.id)) {
+    await recordSuperAdminSelfApprovalOverrideAudit({
+      actor: user,
+      entityType: "CAMPAIGN",
+      entityId: campaign.id,
+      tenantId: campaignTenantId,
+    });
+  }
 
   const updated =
     await prisma.communicationCampaign.findUniqueOrThrow({

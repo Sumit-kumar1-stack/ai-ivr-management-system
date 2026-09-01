@@ -120,10 +120,15 @@ export interface IVRRuntimeMenuConfig {
   exhaustedPrompt:
     string;
 
+  repeatPrompt?:
+    string;
+
   maxAttempts:
     number;
 
   timeoutSeconds?: number;
+
+  inputMode?: "DTMF" | "SPEECH" | "BOTH";
 
   options:
     IVRRuntimeMenuOption[];
@@ -302,6 +307,95 @@ export interface IVRNodeData
 
   runtimeMenu?:
     IVRRuntimeMenuSettings;
+
+  navigation?:
+    IVRNavigationConfig;
+
+  postAction?:
+    IVRPostActionConfig;
+
+  aiPolicy?:
+    IVRAIPolicyConfig;
+
+  conversationalEscape?:
+    IVRConversationalEscapeConfig;
+}
+
+//--------------------------------------------------
+// Conversational Escape Configuration
+//--------------------------------------------------
+
+export type IVRConversationalEscapeReturnBehavior =
+  | "RETURN_CONTEXT"
+  | "STAY_CONVERSATIONAL"
+  | "FOLLOW_TARGET_POST_ACTION";
+
+export interface IVRConversationalEscapeConfig {
+  enabled: boolean;
+  targetNodeId?: string | null;
+  prompt?: string | null;
+  returnBehavior?: IVRConversationalEscapeReturnBehavior | null;
+}
+
+//--------------------------------------------------
+// AI Policy Configuration
+//--------------------------------------------------
+
+export type IVRAIPolicyMode =
+  | "NEVER"
+  | "FREE_FORM_ONLY"
+  | "LOW_CONFIDENCE_ONLY"
+  | "ALWAYS_CONVERSATIONAL";
+
+export type IVRAIFailureBehavior =
+  | "LOCAL_KB"
+  | "RETURN_CONTEXT"
+  | "TRANSFER"
+  | "CUSTOM_DESTINATION";
+
+export interface IVRAIPolicyConfig {
+  mode: IVRAIPolicyMode;
+  timeoutMs?: number | null;
+  failureBehavior?: IVRAIFailureBehavior | null;
+  failureTargetNodeId?: string | null;
+  confidenceThreshold?: number | null;
+  allowRerank?: boolean | null;
+}
+
+//--------------------------------------------------
+// Post Action Configuration
+//--------------------------------------------------
+
+export type IVRPostActionMode =
+  | "RETURN_HOME"
+  | "RETURN_PREVIOUS"
+  | "STAY_CURRENT"
+  | "ASK_NEXT_ACTION"
+  | "CONTINUE_TO_NODE"
+  | "END_CALL";
+
+export interface IVRPostActionConfig {
+  mode: IVRPostActionMode;
+  targetNodeId?: string | null;
+  prompt?: string | null;
+}
+
+//--------------------------------------------------
+// Navigation Configuration
+//--------------------------------------------------
+
+export interface IVRNavigationActionConfig {
+  enabled?: boolean;
+  digits?: string[];
+  phrases?: string[];
+  targetNodeId?: string | null;
+}
+
+export interface IVRNavigationConfig {
+  home?: IVRNavigationActionConfig;
+  back?: IVRNavigationActionConfig;
+  repeat?: IVRNavigationActionConfig;
+  end?: IVRNavigationActionConfig;
 }
 
 //--------------------------------------------------

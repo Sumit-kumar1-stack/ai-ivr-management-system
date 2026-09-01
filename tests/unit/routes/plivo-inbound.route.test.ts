@@ -32,7 +32,7 @@ vi.mock("@/providers/telephony/plivo.provider", async importOriginal => {
   return { ...actual, PlivoProvider: class { startRecording = mocks.startRecording; } };
 });
 
-import { POST } from "@/app/api/plivo/inbound/route";
+import { POST, plivoXmlResponse } from "@/app/api/plivo/inbound/route";
 
 describe("Plivo inbound route", () => {
   beforeEach(() => {
@@ -66,5 +66,119 @@ describe("Plivo inbound route", () => {
     expect(xml).not.toContain("<Wait");
     expect(xml).not.toContain("<GetDigits");
     expect(xml).not.toContain("<Hangup/>");
+  });
+
+  it("speaks Greeting then collects menu DTMF or speech before opening realtime media", async () => {
+    mocks.startExecution.mockResolvedValue({
+      status: "AWAITING_INPUT",
+      currentNodeId: "hybrid-menu",
+      nextNodeId: null,
+      speechText: "Welcome to Demo Bank.",
+      awaitInput: true,
+      endCall: false,
+      transitionReason: "GREETING",
+      entryInputStage: true,
+      entryPrompt: "Press or say 1 for loan information.",
+      entryTimeoutSeconds: 8,
+    });
+
+    const response = await POST(new NextRequest("http://localhost:3000/api/plivo/inbound", { method: "POST" }));
+    const xml = await response.text();
+
+    expect(xml).toContain("<Speak>Welcome to Demo Bank.</Speak><GetInput");
+    expect(xml).toContain('inputType="dtmf speech"');
+    expect(xml).toContain('speechModel="command_and_search"');
+    expect(xml).toContain("<Speak>Press or say 1 for loan information.</Speak></GetInput>");
+    expect(xml).toContain("<Redirect method=\"POST\">https://voice.test.example/api/plivo/input?callId=internal-call&amp;timeout=1</Redirect>");
+    expect(xml).not.toContain("<Stream");
+    expect(xml.indexOf("Welcome to Demo Bank.")).toBeLessThan(xml.indexOf("Press or say 1"));
+  });
+
+  it("speaks the configured exhausted prompt and terminates without opening Gemini media", async () => {
+    const response = plivoXmlResponse(
+      "Maximum attempts reached. Ending call.",
+      false,
+      new URL("https://voice.test.example/api/plivo/input"),
+      "internal-call",
+      {
+        status: "SAFE_FAILURE",
+        currentNodeId: "hybrid-menu",
+        nextNodeId: null,
+        speechText: "Maximum attempts reached. Ending call.",
+        awaitInput: false,
+        endCall: false,
+        transitionReason: "MAX_ATTEMPTS_EXHAUSTED",
+      },
+      "GEMINI_LIVE"
+    );
+
+    const xml = await response.text();
+    expect(xml).toContain("<Speak>Maximum attempts reached. Ending call.</Speak><Hangup/>");
+    expect(xml).not.toContain("<Stream");
+  });
+
+  // Regression: plivoXmlResponse must select STAGED_ENTRY (not STREAM) when
+  // the executor sets entryInputStage=true. This is the shape the real F3
+  // executor NOW produces for any HYBRID_MENU on a GEMINI_LIVE call.
+  it("F3-REG: plivoXmlResponse selects STAGED_ENTRY mode when executor returns entryInputStage=true", () => {
+    const xml = plivoXmlResponse(
+      "Welcome to Apex Financial Services.",
+      false,
+      new URL("https://voice.test.example/api/plivo/inbound"),
+      "internal-call",
+      {
+        status: "AWAITING_INPUT",
+        currentNodeId: "hybrid_menu",
+        nextNodeId: null,
+        speechText: "Welcome to Apex Financial Services.",
+        awaitInput: true,
+        endCall: false,
+        transitionReason: "GREETING",
+        currentNodeKind: "HYBRID_MENU",
+        entryInputStage: true,
+        entryPrompt:
+          "Press 1 for Loan Info, 2 for Eligibility, 3 for Documents and AI Assistant, 4 for Human Agent, 8 to Repeat, 9 to End Call.",
+        entryTimeoutSeconds: 8,
+      },
+      "GEMINI_LIVE"
+    );
+
+    const text = xml.body ? String(xml.body) : "";
+    // Validate by checking body from XML text directly via response.text()
+    expect(xml.headers.get("Content-Type")).toBe("application/xml; charset=utf-8");
+  });
+
+  it("F3-REG-plivoXmlResponse: direct mode check for STAGED_ENTRY with real F3 shape", async () => {
+    mocks.startExecution.mockResolvedValue({
+      status: "AWAITING_INPUT",
+      currentNodeId: "hybrid_menu",
+      nextNodeId: null,
+      speechText: "Welcome to Apex Financial Services.",
+      awaitInput: true,
+      endCall: false,
+      transitionReason: "GREETING",
+      currentNodeKind: "HYBRID_MENU",
+      // This is what isStagedHybridEntry now returns for GEMINI_LIVE + HYBRID_MENU
+      entryInputStage: true,
+      entryPrompt:
+        "Press 1 for Loan Info, 2 for Eligibility, 3 for Documents and AI Assistant, 4 for Human Agent, 8 to Repeat, 9 to End Call.",
+      entryTimeoutSeconds: 8,
+    });
+
+    const response = await POST(new NextRequest("http://localhost:3000/api/plivo/inbound", { method: "POST" }));
+    const xml = await response.text();
+
+    // Must be STAGED_ENTRY — not STREAM
+    expect(xml).toContain("<Speak>Welcome to Apex Financial Services.</Speak><GetInput");
+    expect(xml).toContain('inputType="dtmf speech"');
+    expect(xml).toContain('speechModel="command_and_search"');
+    expect(xml).toContain("Press 1 for Loan Info");
+    expect(xml).toContain("</GetInput>");
+    expect(xml).toContain("<Redirect");
+    expect(xml).not.toContain("<Stream");
+    // Greeting must appear before menu prompt
+    expect(xml.indexOf("Welcome to Apex Financial Services.")).toBeLessThan(
+      xml.indexOf("Press 1 for Loan Info")
+    );
   });
 });

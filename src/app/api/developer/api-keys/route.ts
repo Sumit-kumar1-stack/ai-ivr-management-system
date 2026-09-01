@@ -5,6 +5,7 @@ import { z } from "zod";
 import { createAuthErrorResponse } from "@/lib/auth-response";
 import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { hasCampaignCapability } from "@/services/communication/campaign-capabilities";
 import { recordAuditEvent } from "@/services/audit/audit-event.service";
 import { extractAuditRequestContext } from "@/services/audit/audit-context";
 import { createApiKeyMaterial } from "@/services/developer/developer-security.service";
@@ -20,9 +21,28 @@ const ApiKeyCreateSchema = z.object({
   expiresAt: z.string().datetime().optional().nullable(),
 });
 
+function canAccessApiKeys(user: { role: UserRole; campaignCapabilities?: readonly string[] }): boolean {
+  if (user.role === UserRole.SUPER_ADMIN) return true;
+  if (user.campaignCapabilities === undefined) return true;
+  return (
+    hasCampaignCapability(user.campaignCapabilities, "DEVELOPER_PORTAL_ACCESS") ||
+    hasCampaignCapability(user.campaignCapabilities, "API_KEYS_MANAGE")
+  );
+}
+
 export async function GET() {
   try {
     const currentUser = await requireRole(DeveloperRoles);
+
+    if (!canAccessApiKeys(currentUser)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "You do not have permission to access developer API keys.",
+        },
+        { status: 403 }
+      );
+    }
 
     if (!currentUser.tenantId) {
       return NextResponse.json(
@@ -88,6 +108,16 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const currentUser = await requireRole(DeveloperRoles);
+
+    if (!canAccessApiKeys(currentUser)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "You do not have permission to manage developer API keys.",
+        },
+        { status: 403 }
+      );
+    }
 
     if (!currentUser.tenantId) {
       return NextResponse.json(

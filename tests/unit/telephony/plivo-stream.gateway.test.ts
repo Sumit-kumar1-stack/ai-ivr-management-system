@@ -54,25 +54,83 @@ describe("Plivo stream gateway", () => {
     expect(mocks.warn).not.toHaveBeenCalledWith(expect.objectContaining({ event: "plivo.stream.media_rejected", reason: "start_not_registered" }), expect.any(String));
   });
 
-  it("does not route an undocumented DTMF stream frame or close the active media session", async () => {
+  it("routes a valid Plivo DTMF stream frame to the shared stream gateway", async () => {
     const connection = socket();
     await PlivoStreamGateway.handle(connection as never, start(), CALL_ID);
     await PlivoStreamGateway.handle(connection as never, JSON.stringify({ event: "dtmf", streamId: STREAM_ID, dtmf: { digit: "1" } }), CALL_ID);
 
-    expect(mocks.gatewayHandle).toHaveBeenCalledTimes(1);
+    expect(mocks.gatewayHandle).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(mocks.gatewayHandle.mock.calls[1]?.[1]))).toEqual({
+      event: "dtmf",
+      streamSid: STREAM_ID,
+      dtmf: { digit: "1" },
+    });
     expect(connection.close).not.toHaveBeenCalled();
-    expect(mocks.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "plivo.stream.dtmf_unsupported" }),
+    expect(mocks.info).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "plivo.stream.dtmf_received", internalCallId: CALL_ID }),
       expect.any(String)
     );
   });
 
-  it("rejects media before a valid start rather than attaching unauthenticated frames", async () => {
+  it("buffers authenticated media received before START and flushes it after matching registration", async () => {
     const connection = socket();
-    await PlivoStreamGateway.handle(connection as never, JSON.stringify({ event: "media", streamId: STREAM_ID, media: { payload: Buffer.from([1]).toString("base64") } }), CALL_ID);
+    const payload = Buffer.from([1]).toString("base64");
+    await PlivoStreamGateway.handle(connection as never, JSON.stringify({ event: "media", streamId: STREAM_ID, media: { payload } }), CALL_ID);
 
     expect(mocks.gatewayHandle).not.toHaveBeenCalled();
-    expect(mocks.warn).toHaveBeenCalledWith(expect.objectContaining({ event: "plivo.stream.media_rejected", reason: "start_not_registered" }), expect.any(String));
+    expect(mocks.debug).toHaveBeenCalledWith(expect.objectContaining({ event: "plivo.stream.media_buffered_pre_start", queueSize: 1 }), expect.any(String));
+
+    await PlivoStreamGateway.handle(connection as never, start(), CALL_ID);
+
+    expect(mocks.gatewayHandle).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(mocks.gatewayHandle.mock.calls[1]?.[1]))).toEqual({
+      event: "media",
+      streamSid: STREAM_ID,
+      media: { payload },
+    });
+    expect(mocks.warn).not.toHaveBeenCalledWith(expect.objectContaining({ event: "plivo.stream.media_rejected", reason: "start_not_registered" }), expect.any(String));
+  });
+
+  it("never forwards buffered media when START is invalid", async () => {
+    const connection = socket();
+    const payload = Buffer.from([1]).toString("base64");
+    await PlivoStreamGateway.handle(connection as never, JSON.stringify({ event: "media", streamId: STREAM_ID, media: { payload } }), CALL_ID);
+    await PlivoStreamGateway.handle(connection as never, JSON.stringify({
+      event: "start",
+      start: {
+        callId: PROVIDER_CALL_ID,
+        streamId: STREAM_ID,
+        mediaFormat: { encoding: "audio/pcm", sampleRate: 16000 },
+      },
+    }), CALL_ID);
+
+    expect(mocks.gatewayHandle).not.toHaveBeenCalled();
+    expect(connection.close).toHaveBeenCalledWith(1008, "Expected mu-law audio at 8000 Hz");
+    expect(mocks.warn).toHaveBeenCalledWith(expect.objectContaining({ event: "plivo.stream.start_rejected", reason: "unsupported_media_format" }), expect.any(String));
+  });
+
+  it("keeps START and immediately concurrent MEDIA deterministic", async () => {
+    const connection = socket();
+    const payload = Buffer.from([2]).toString("base64");
+    let releaseStart: (() => void) | undefined;
+    const startBarrier = new Promise<void>(resolve => { releaseStart = resolve; });
+    mocks.gatewayHandle.mockImplementationOnce(async () => startBarrier);
+
+    const startHandling = PlivoStreamGateway.handle(connection as never, start(), CALL_ID);
+    await vi.waitFor(() => expect(mocks.gatewayHandle).toHaveBeenCalledTimes(1));
+    const mediaHandling = PlivoStreamGateway.handle(connection as never, JSON.stringify({ event: "media", streamId: STREAM_ID, media: { payload } }), CALL_ID);
+    await mediaHandling;
+    expect(mocks.gatewayHandle).toHaveBeenCalledTimes(1);
+
+    releaseStart?.();
+    await startHandling;
+
+    expect(mocks.gatewayHandle).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(mocks.gatewayHandle.mock.calls[1]?.[1]))).toEqual({
+      event: "media",
+      streamSid: STREAM_ID,
+      media: { payload },
+    });
   });
 
   it("emits Plivo's playAudio envelope for shared runtime outbound mu-law", async () => {

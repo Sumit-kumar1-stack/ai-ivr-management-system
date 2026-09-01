@@ -148,6 +148,16 @@ export async function executeBusinessTool(
               },
             },
           },
+
+          communicationCampaign: {
+            select: {
+              ownerUser: {
+                select: {
+                  tenantId: true,
+                },
+              },
+            },
+          },
         },
       });
 
@@ -206,12 +216,12 @@ export async function executeBusinessTool(
         requestedBy:
           request.requestedBy,
 
+        requiredAuthLevel,
+
         currentAuthLevel:
           call.authenticationLevel,
-
-        requiredAuthLevel,
       },
-      "Business tool rejected because customer authentication is insufficient"
+      "Business tool execution rejected due to insufficient authentication level"
     );
 
     return failure(
@@ -232,6 +242,7 @@ export async function executeBusinessTool(
 
   const tenantId =
     call.tenantId ??
+    call.communicationCampaign?.ownerUser?.tenantId ??
     call.campaign?.ownerUser?.tenantId ??
     null;
 

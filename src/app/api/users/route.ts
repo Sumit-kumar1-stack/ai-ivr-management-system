@@ -27,7 +27,7 @@ import {
 import {
   toUserResponse,
 } from "@/features/users/user.mapper";
-
+import { hasCampaignCapability } from "@/services/communication/campaign-capabilities";
 
 const USER_MANAGEMENT_ROLES = [
   UserRole.SUPER_ADMIN,
@@ -36,6 +36,11 @@ const USER_MANAGEMENT_ROLES = [
 
 const PLATFORM_SCOPE = "platform";
 
+function canManageUsers(user: { role: UserRole; campaignCapabilities?: readonly string[] }): boolean {
+  if (user.role === UserRole.SUPER_ADMIN) return true;
+  if (user.campaignCapabilities === undefined) return true;
+  return hasCampaignCapability(user.campaignCapabilities, "ORG_USERS_MANAGE");
+}
 
 //--------------------------------------------------
 // Get Users
@@ -51,6 +56,16 @@ export async function GET(
       await requireRole(
       USER_MANAGEMENT_ROLES
       );
+
+    if (!canManageUsers(currentUser)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "You do not have permission to manage organization users.",
+        },
+        { status: 403 }
+      );
+    }
 
     const scope =
       request.nextUrl.searchParams.get(
@@ -168,6 +183,16 @@ export async function POST(
       await requireRole(
       USER_MANAGEMENT_ROLES
       );
+
+    if (!canManageUsers(currentUser)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "You do not have permission to manage organization users.",
+        },
+        { status: 403 }
+      );
+    }
 
     const scope =
       request.nextUrl.searchParams.get(

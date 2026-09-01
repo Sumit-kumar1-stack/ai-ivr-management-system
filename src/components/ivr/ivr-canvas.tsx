@@ -4,6 +4,7 @@ import "@xyflow/react/dist/style.css";
 
 import {
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -18,6 +19,8 @@ import {
 import {
   toast,
 } from "sonner";
+
+import { useQueryClient } from "@tanstack/react-query";
 
 import {
   useFlow,
@@ -62,6 +65,8 @@ import type {
   IVRFlowVersionSummary,
 } from "./types";
 
+import { createDefaultRuntimeMenu } from "./default-runtime-menu";
+
 //--------------------------------------------------
 // React Flow Nodes
 //--------------------------------------------------
@@ -70,120 +75,6 @@ const nodeTypes = {
   ivr:
     IVRNode,
 };
-
-//--------------------------------------------------
-// Default Runtime Menu
-//--------------------------------------------------
-
-function createDefaultRuntimeMenu():
-  IVRRuntimeMenuConfig {
-  return {
-    type:
-      "DTMF_MENU",
-
-    prompt:
-      "Press 1 for loan information, 2 for deposits, 3 for branch information, 4 to request a callback, 9 for a human agent.",
-
-    invalidPrompt:
-      "That option is not available. Please try again.",
-
-    timeoutPrompt:
-      "I did not receive a selection. Please try again.",
-
-    exhaustedPrompt:
-      "I am having trouble receiving your keypad selection. Please continue using the voice assistant.",
-
-    maxAttempts:
-      3,
-
-    options: [
-      {
-        digit:
-          "1",
-
-        action:
-          "LOAN_INFORMATION",
-
-        label:
-          "Loan information",
-
-        response:
-          "You selected loan information.",
-      },
-
-      {
-        digit:
-          "2",
-
-        action:
-          "DEPOSIT_INFORMATION",
-
-        label:
-          "Deposit information",
-
-        response:
-          "You selected deposit information.",
-      },
-
-      {
-        digit:
-          "3",
-
-        action:
-          "BRANCH_INFORMATION",
-
-        label:
-          "Branch information",
-
-        response:
-          "You selected branch information.",
-      },
-
-      {
-        digit:
-          "4",
-
-        action:
-          "REQUEST_CALLBACK",
-
-        label:
-          "Request callback",
-
-        response:
-          "You selected callback.",
-      },
-
-      {
-        digit:
-          "9",
-
-        action:
-          "HUMAN_AGENT",
-
-        label:
-          "Human agent",
-          
-response:
-  "You requested a human agent. I will check whether an agent is available.",
-          
-      },
-
-      {
-        digit:
-          "0",
-
-        action:
-          "REPEAT_MENU",
-
-        label:
-          "Repeat menu",
-
-        response:
-          "Repeating the menu.",
-      },
-    ],
-  };
-}
 
 //--------------------------------------------------
 // Node Factory
@@ -396,11 +287,12 @@ export default function IVRCanvas() {
     setFlowName,
 
     setCampaignId,
-
     builderContext,
     saveState,
     setSaveState,
     markDirty,
+    markSaved,
+    isDirty,
 
     mode,
 
@@ -415,6 +307,8 @@ export default function IVRCanvas() {
   } =
     useIVRBuilder();
 
+  const queryClient = useQueryClient();
+  const lastLoadedFlowIdRef = useRef<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [reactFlow, setReactFlow] = useState<ReactFlowInstance | null>(null);
@@ -486,141 +380,122 @@ export default function IVRCanvas() {
   }, [saveState]);
 
   //------------------------------------------------
-  // Load Existing Flow
+  // Load Existing Flow (Only when flow identity changes)
   //--------------------------------------------------
 
-useEffect(
-  () => {
-    if (
-      !flow
-    ) {
+  useEffect(() => {
+    if (!flow) {
       return;
     }
 
-    const timer =
-      window.setTimeout(
-        () => {
-          setNodes(
-            flow.nodes ??
-              []
-          );
+    if (flow.id === lastLoadedFlowIdRef.current) {
+      return;
+    }
 
-          setEdges(
-            flow.edges ??
-              []
-          );
+    lastLoadedFlowIdRef.current = flow.id;
 
-          setFlowName(
-            flow.name ??
-              "Untitled Flow"
-          );
-
-          setCampaignId(
-            builderContext.kind === "CAMPAIGN"
-              ? builderContext.campaignId ?? ""
-              : flow.campaignId ?? ""
-          );
-
-          setSelectedPublishedVersionId(
-            flow.versions?.find(
-              (version: IVRFlowVersionSummary) =>
-                version.status === "PUBLISHED" &&
-                version.versionNumber === flow.version
-            )?.id ?? null
-          );
-
-          setSaveState("SAVED");
-
-          setSelectedNode(
-            null
-          );
-
-          setSelectedEdge(
-            null
-          );
-
-          setInspectorMode(
-            "PROPERTIES"
-          );
-        },
-        0
-      );
-
-    return () => {
-      window.clearTimeout(
-        timer
-      );
-    };
-  },
-  [
+    setNodes(Array.isArray(flow.nodes) ? flow.nodes : []);
+    setEdges(Array.isArray(flow.edges) ? flow.edges : []);
+    setFlowName(flow.name ?? "Untitled Flow");
+    setCampaignId(
+      builderContext.kind === "CAMPAIGN"
+        ? builderContext.campaignId ?? ""
+        : flow.campaignId ?? ""
+    );
+    setSelectedPublishedVersionId(
+      flow.versions?.find(
+        (version: IVRFlowVersionSummary) =>
+          version.status === "PUBLISHED" &&
+          version.versionNumber === flow.version
+      )?.id ?? null
+    );
+    markSaved();
+    setSelectedNode(null);
+    setSelectedEdge(null);
+    setInspectorMode("PROPERTIES");
+  }, [
     flow,
     setNodes,
     setEdges,
     setFlowName,
     setCampaignId,
     setSelectedPublishedVersionId,
-    setSaveState,
+    markSaved,
     builderContext,
-  ]
-);
+  ]);
 
   //------------------------------------------------
-  // Save
+  // Persist Current Draft
   //--------------------------------------------------
 
-  function handleSave(): void {
+  async function persistCurrentDraft(): Promise<string | null> {
     if (saveFlow.isPending || updateFlow.isPending) {
-      return;
+      return null;
     }
 
     const normalizedName = flowName.trim();
     if (!normalizedName) {
       toast.error("Enter a flow name.");
-      return;
+      return null;
     }
 
     setSaveState("SAVING");
 
-    if (selectedFlow) {
-      updateFlow.mutate(
-        {
+    try {
+      if (selectedFlow) {
+        await updateFlow.mutateAsync({
           id: selectedFlow,
           name: normalizedName,
           nodes,
           edges,
-        },
-        {
-          onSuccess() {
-            setSaveState("SAVED");
-          },
-          onError() {
-            setSaveState("FAILED");
-          },
+        });
+        lastLoadedFlowIdRef.current = selectedFlow;
+        markSaved();
+        return selectedFlow;
+      } else {
+        const created = await saveFlow.mutateAsync({
+          name: normalizedName,
+          nodes,
+          edges,
+          context: builderContext,
+        });
+        if (created?.id) {
+          lastLoadedFlowIdRef.current = created.id;
+          setSelectedFlow(created.id);
+          setSelectedPublishedVersionId(null);
+          markSaved();
+          return created.id;
         }
-      );
+        markSaved();
+        return null;
+      }
+    } catch {
+      setSaveState("FAILED");
+      return null;
+    }
+  }
+
+  function handleSave(): void {
+    void persistCurrentDraft();
+  }
+
+  async function handleSaveAndValidate(): Promise<void> {
+    if (saveFlow.isPending || updateFlow.isPending) {
       return;
     }
 
-    saveFlow.mutate(
-      {
-        name: normalizedName,
-        nodes,
-        edges,
-        context: builderContext,
-      },
-      {
-        onSuccess(created) {
-          if (created?.id) {
-            setSelectedFlow(created.id);
-            setSelectedPublishedVersionId(null);
-          }
-          setSaveState("SAVED");
-        },
-        onError() {
-          setSaveState("FAILED");
-        },
+    let targetFlowId = selectedFlow;
+    if (!targetFlowId || isDirty || saveState !== "SAVED") {
+      const savedId = await persistCurrentDraft();
+      if (!savedId) {
+        return;
       }
-    );
+      targetFlowId = savedId;
+    }
+
+    setInspectorMode("VALIDATION");
+    setSelectedNode(null);
+    setSelectedEdge(null);
   }
 
   async function handleSubmitForApproval(): Promise<void> {
@@ -642,6 +517,8 @@ useEffect(
       }
       toast.success("IVR flow submitted for approval.");
       await refetchFlow();
+      queryClient.invalidateQueries({ queryKey: ["ivr-flow", selectedFlow] });
+      queryClient.invalidateQueries({ queryKey: ["ivr-flows"] });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "The IVR flow could not be submitted for approval.");
     } finally {
@@ -831,7 +708,14 @@ useEffect(
 
         submitting={submitting}
 
-        canSubmit={Boolean(flow?.permissions?.canSubmit)}
+        canSubmit={Boolean(
+          selectedFlow &&
+          !isDirty &&
+          saveState === "SAVED" &&
+          flow?.lifecycle === "VALIDATED" &&
+          flow?.validationStatus === "VALID" &&
+          flow?.permissions?.canSubmit
+        )}
 
         canEdit={Boolean(!selectedFlow || flow?.permissions?.canEdit)}
 
@@ -856,9 +740,7 @@ useEffect(
 
         onShowValidation={
           () => {
-            setInspectorMode("VALIDATION");
-            setSelectedNode(null);
-            setSelectedEdge(null);
+            void handleSaveAndValidate();
           }
         }
 
@@ -992,7 +874,10 @@ useEffect(
             flowId={
               selectedFlow
             }
+            isDirty={isDirty}
             onFocusNode={focusNodeById}
+            onClose={() => setInspectorMode("PROPERTIES")}
+            onSaveAndValidate={handleSaveAndValidate}
           />
         ) : inspectorMode === "SIMULATOR" ? (
           <IVRSimulatorPanel
@@ -1008,6 +893,7 @@ useEffect(
               edges.map(edge => ({ ...edge, label: edgeBusinessLabel(edge, nodes), labelStyle: { fill: "#334155", fontSize: 11, fontWeight: 600 }, labelBgStyle: { fill: "#ffffff", fillOpacity: 0.9 } }))
             }
             onFocusNode={focusNodeById}
+            onClose={() => setInspectorMode("PROPERTIES")}
           />
         ) : selectedEdge ? (
           <EdgePropertiesPanel

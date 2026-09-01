@@ -74,4 +74,17 @@ describe("Copilot candidate application to the Manual Builder draft", () => {
     expect(validateIVRFlowDefinition(applied)).toMatchObject({ valid: false });
     expect(validateIVRFlowDefinition(applied).errors.map(issue => issue.code)).toContain("AUTH_PATH_REQUIRED");
   });
+
+  it("preserves and normalizes user-provided or copilot-generated flow names on draft application", () => {
+    const candidateWithName = {
+      ...demoBankCandidate,
+      name: "  DemoBank Support Flow  ",
+    };
+
+    const applied = applyGeneratedGraphToDraft(candidateWithName as never);
+
+    expect(applied.name).toBe("DemoBank Support Flow");
+    expect(applied.saveState).toBe("UNSAVED");
+    expect(applied.mode).toBe("MANUAL");
+  });
 });

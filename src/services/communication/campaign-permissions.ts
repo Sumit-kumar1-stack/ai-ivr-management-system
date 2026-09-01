@@ -12,6 +12,7 @@ import {
   hasCampaignCapability,
   type CampaignCapability,
 } from "@/services/communication/campaign-capabilities";
+import { canBypassMakerCheckerForTesting } from "@/services/security/governance-override.service";
 
 export interface CampaignPermissionUser {
   id: string;
@@ -256,11 +257,16 @@ export function isCampaignSelfApproval(
     "approvalStatus" | "ownerUserId" | "submittedByUserId"
   >
 ): boolean {
-  return (
+  const isSelf =
     campaign.approvalStatus === CommunicationCampaignApprovalStatus.SUBMITTED &&
     (campaign.ownerUserId === user.id ||
-      campaign.submittedByUserId === user.id)
-  );
+      campaign.submittedByUserId === user.id);
+
+  if (isSelf && canBypassMakerCheckerForTesting(user)) {
+    return false;
+  }
+
+  return isSelf;
 }
 
 export function canApproveCampaign(

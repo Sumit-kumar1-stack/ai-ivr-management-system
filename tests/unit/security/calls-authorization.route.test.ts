@@ -484,6 +484,12 @@ describe(
                 campaignId:
                   null,
 
+                hasRecording:
+                  false,
+
+                recordingStatus:
+                  null,
+
                 dateFrom:
                   null,
 

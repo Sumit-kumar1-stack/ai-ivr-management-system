@@ -54,22 +54,6 @@ export default function IVRSidebar() {
 
   const { data: selectedFlowDetails } = useFlow(selectedFlow);
 
-  useEffect(() => {
-    if (!selectedFlowDetails) return;
-    replaceGraph({
-      nodes: Array.isArray(selectedFlowDetails.nodes) ? selectedFlowDetails.nodes : [],
-      edges: Array.isArray(selectedFlowDetails.edges) ? selectedFlowDetails.edges : [],
-    });
-    setFlowName(selectedFlowDetails.name);
-    setCampaignId(selectedFlowDetails.campaignId ?? "");
-    setSelectedPublishedVersionId(null);
-    setMode("MANUAL");
-    setSaveState("SAVED");
-    // The editor should load only when the selected saved-flow identity changes;
-    // depending on query object references here would overwrite local edits.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedFlowDetails?.id]);
-
   const catalogSummary = [
     `${resourceCatalog?.knowledgeDocuments.length ?? 0} knowledge docs`,
     `${resourceCatalog?.actions.length ?? 0} actions`,

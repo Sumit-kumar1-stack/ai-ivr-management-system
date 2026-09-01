@@ -19,6 +19,10 @@ import {
   prisma,
 } from "@/lib/prisma";
 
+import {
+  normalizeRecordingStatus,
+} from "@/services/telephony/plivo-recording.service";
+
 
 const CALL_LIST_ROLES:
   readonly UserRole[] = [
@@ -170,6 +174,23 @@ export async function GET(
         ?.trim() ??
       "";
 
+    const hasRecordingParameter =
+      searchParams
+        .get(
+          "hasRecording"
+        )
+        ?.trim()
+        .toLowerCase() ??
+      "";
+
+    const recordingStatusParameter =
+      searchParams
+        .get(
+          "recordingStatus"
+        )
+        ?.trim()
+        .toUpperCase() ??
+      "";
 
     const dateFrom =
       searchParams
@@ -339,6 +360,37 @@ export async function GET(
       filters.push({
         campaignId,
       });
+    }
+
+    if (hasRecordingParameter === "true") {
+      filters.push({
+        OR: [
+          { recordingUrl: { not: null } },
+          { recordingStatus: { in: ["REQUESTED", "STARTED", "AVAILABLE", "FAILED"] } },
+        ],
+      });
+    }
+
+    if (recordingStatusParameter) {
+      if (recordingStatusParameter === "AVAILABLE") {
+        filters.push({
+          OR: [
+            { recordingStatus: "AVAILABLE" },
+            { recordingUrl: { not: null } },
+          ],
+        });
+      } else if (recordingStatusParameter === "NOT_STARTED") {
+        filters.push({
+          AND: [
+            { recordingStatus: null },
+            { recordingUrl: null },
+          ],
+        });
+      } else {
+        filters.push({
+          recordingStatus: recordingStatusParameter,
+        });
+      }
     }
 
 
@@ -599,6 +651,12 @@ export async function GET(
             status:
               call.status,
 
+            direction:
+              call.direction,
+
+            provider:
+              call.provider,
+
             language:
               call.language,
 
@@ -612,6 +670,21 @@ export async function GET(
               Boolean(
                 call.recordingUrl
               ),
+
+            recordingStatus:
+              normalizeRecordingStatus(
+                call.recordingStatus,
+                Boolean(call.recordingUrl)
+              ),
+
+            recordingAvailableAt:
+              call.recordingAvailableAt,
+
+            requestedRuntime:
+              call.requestedRuntime,
+
+            effectiveRuntime:
+              call.effectiveRuntime,
 
             summary:
               call.summary,
@@ -730,6 +803,13 @@ export async function GET(
 
         campaignId:
           campaignId ||
+          null,
+
+        hasRecording:
+          hasRecordingParameter === "true",
+
+        recordingStatus:
+          recordingStatusParameter ||
           null,
 
         dateFrom:

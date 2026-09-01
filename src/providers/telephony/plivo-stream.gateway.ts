@@ -1,5 +1,6 @@
 import { WebSocket } from "ws";
 import { createServerLogger, normalizeError } from "@/lib/logger";
+import { prisma } from "@/lib/prisma";
 import { AudioSessionService } from "./audio-session.service";
 import { TwilioStreamGateway } from "./twilio-stream.gateway";
 
@@ -7,16 +8,27 @@ type PlivoEvent = {
   event?: string;
   streamId?: string;
   stream_id?: string;
+  streamSid?: string;
   callId?: string;
   callUUID?: string;
+  callUuid?: string;
+  call_id?: string;
   call_uuid?: string;
+  digit?: string;
+  digits?: string;
+  dtmf?: {
+    digit?: string;
+    digits?: string;
+  };
   start?: {
     callId?: string;
     callUUID?: string;
     callUuid?: string;
     call_id?: string;
+    call_uuid?: string;
     streamId?: string;
     stream_id?: string;
+    streamSid?: string;
     mediaFormat?: { encoding?: string; sampleRate?: number | string };
   };
   media?: { payload?: string };
@@ -24,8 +36,25 @@ type PlivoEvent = {
 
 type RegisteredPlivoStream = { streamId: string; internalCallId: string; providerCallId: string };
 
+interface PlivoSocketState {
+  registered: RegisteredPlivoStream | null;
+  starting: boolean;
+  preStartMediaQueue: Array<{ payload: string; streamId: string }>;
+}
+
+const MAX_PRE_START_MEDIA_FRAMES = 50;
+
 const log = createServerLogger("plivo-stream-gateway");
-const streams = new WeakMap<WebSocket, RegisteredPlivoStream>();
+const socketStates = new WeakMap<WebSocket, PlivoSocketState>();
+
+function getSocketState(socket: WebSocket): PlivoSocketState {
+  let state = socketStates.get(socket);
+  if (!state) {
+    state = { registered: null, starting: false, preStartMediaQueue: [] };
+    socketStates.set(socket, state);
+  }
+  return state;
+}
 
 /** Plivo protocol adapter over the established shared audio/session runtime. */
 export class PlivoStreamGateway {
@@ -38,18 +67,16 @@ export class PlivoStreamGateway {
 
     try {
       if (event.event === "connected") {
-        log.info({ event: "plivo.stream.connected", internalCallIdPresent: Boolean(internalCallId) }, "Plivo stream connected event received");
+        log.info({
+          event: "plivo.stream.connected",
+          internalCallIdPresent: Boolean(internalCallId),
+          topLevelKeys: Object.keys(event),
+        }, "Plivo stream connected event received");
         return;
       }
       if (event.event === "start") return await this.handleStart(socket, event, internalCallId);
-      if (event.event === "media") return await this.handleMedia(socket, event);
-      if (event.event === "dtmf") {
-        // This is deliberately not routed. Plivo's documented Audio Stream
-        // protocol does not expose an inbound DTMF frame for a bidirectional
-        // stream, so accepting one would advertise unsupported live behavior.
-        log.warn({ event: "plivo.stream.dtmf_unsupported" }, "Ignoring unsupported Plivo stream DTMF frame");
-        return;
-      }
+      if (event.event === "media") return await this.handleMedia(socket, event, internalCallId);
+      if (event.event === "dtmf") return await this.handleDtmf(socket, event, internalCallId);
       if (event.event === "stop") return await this.handleStop(socket, event);
       log.debug({ event: "plivo.stream.event_ignored", eventType: event.event ?? null }, "Unknown Plivo stream event ignored");
     } catch (error) {
@@ -59,56 +86,215 @@ export class PlivoStreamGateway {
   }
 
   private static async handleStart(socket: WebSocket, event: PlivoEvent, internalCallId: string): Promise<void> {
-    const streamId = firstValue(event.start?.streamId, event.start?.stream_id, event.streamId, event.stream_id);
-    // The current Plivo protocol uses start.callId (not callUUID).
-    const providerCallId = firstValue(event.start?.callId, event.callId, event.start?.callUUID, event.start?.callUuid, event.start?.call_id, event.callUUID, event.call_uuid);
+    const state = getSocketState(socket);
+    state.starting = true;
+
+    const streamId = firstValue(
+      event.start?.streamId,
+      event.start?.stream_id,
+      event.start?.streamSid,
+      event.streamId,
+      event.stream_id,
+      event.streamSid
+    );
+    let providerCallId = firstValue(
+      event.start?.callId,
+      event.start?.callUUID,
+      event.start?.callUuid,
+      event.start?.call_id,
+      event.start?.call_uuid,
+      event.callId,
+      event.callUUID,
+      event.callUuid,
+      event.call_id,
+      event.call_uuid
+    );
+
+    if (!providerCallId && internalCallId) {
+      try {
+        const call = await prisma.call.findUnique({
+          where: { id: internalCallId },
+          select: { providerCallId: true },
+        });
+        providerCallId = call?.providerCallId ?? internalCallId;
+      } catch {
+        providerCallId = internalCallId;
+      }
+    }
+
     const format = event.start?.mediaFormat;
-    log.info({ event: "plivo.stream.start_received", internalCallIdPresent: Boolean(internalCallId), streamIdPresent: Boolean(streamId), providerCallIdPresent: Boolean(providerCallId), mediaEncoding: format?.encoding ?? null, mediaSampleRate: format?.sampleRate ?? null }, "Plivo stream start event received");
+    log.info({
+      event: "plivo.stream.start_received",
+      internalCallIdPresent: Boolean(internalCallId),
+      streamIdPresent: Boolean(streamId),
+      providerCallIdPresent: Boolean(providerCallId),
+      topLevelKeys: Object.keys(event),
+      startKeys: event.start ? Object.keys(event.start) : [],
+      mediaEncoding: format?.encoding ?? null,
+      mediaSampleRate: format?.sampleRate ?? null,
+    }, "Plivo stream start event received");
 
     if (!streamId || !providerCallId) {
+      state.starting = false;
+      state.preStartMediaQueue = [];
       log.warn({ event: "plivo.stream.start_rejected", reason: !streamId ? "missing_stream_id" : "missing_provider_call_id", internalCallIdPresent: Boolean(internalCallId) }, "Plivo stream start is missing required identifiers");
       socket.close(1008, "Missing Plivo stream identifiers");
       return;
     }
-    if (format && (format.encoding !== "audio/x-mulaw" || Number(format.sampleRate) !== 8000)) {
-      log.warn({ event: "plivo.stream.start_rejected", reason: "unsupported_media_format", mediaEncoding: format.encoding ?? null, mediaSampleRate: format.sampleRate ?? null }, "Plivo stream start used an unsupported media format");
+
+    const isMulawEncoding = !format?.encoding || isMulawFormat(format.encoding);
+    const isSampleRateValid = !format?.sampleRate || Number(format.sampleRate) === 8000;
+
+    if (!isMulawEncoding || !isSampleRateValid) {
+      state.starting = false;
+      state.preStartMediaQueue = [];
+      log.warn({ event: "plivo.stream.start_rejected", reason: "unsupported_media_format", mediaEncoding: format?.encoding ?? null, mediaSampleRate: format?.sampleRate ?? null }, "Plivo stream start used an unsupported media format");
       socket.close(1008, "Expected mu-law audio at 8000 Hz");
       return;
     }
-    const existing = streams.get(socket);
-    if (existing && existing.streamId === streamId && existing.internalCallId === internalCallId) {
+
+    if (state.registered && state.registered.streamId === streamId && state.registered.internalCallId === internalCallId) {
+      state.starting = false;
       log.debug({ event: "plivo.stream.start_ignored", reason: "duplicate_start", streamIdPresent: true }, "Duplicate Plivo stream start ignored");
       return;
     }
 
-    await TwilioStreamGateway.handle(transportSocket(socket, { internalCallId, streamId }), JSON.stringify({ event: "start", streamSid: streamId, start: { streamSid: streamId, callSid: providerCallId, customParameters: { callId: internalCallId, twilioCallSid: providerCallId } } }));
+    try {
+      await TwilioStreamGateway.handle(
+        transportSocket(socket, { internalCallId, streamId }),
+        JSON.stringify({
+          event: "start",
+          streamSid: streamId,
+          start: {
+            streamSid: streamId,
+            callSid: providerCallId,
+            customParameters: { callId: internalCallId, twilioCallSid: providerCallId },
+          },
+        })
+      );
+    } catch (error) {
+      state.starting = false;
+      state.preStartMediaQueue = [];
+      log.error({ event: "plivo.stream.start_failed", error: normalizeError(error) }, "TwilioStreamGateway.handle start failed");
+      socket.close(1011, "Stream start initialization failed");
+      return;
+    }
+
     const session = AudioSessionService.get(streamId);
     if (!session || session.callId !== internalCallId) {
+      state.starting = false;
+      state.preStartMediaQueue = [];
       log.warn({ event: "plivo.stream.start_rejected", reason: "shared_session_not_registered", streamIdPresent: true, internalCallIdPresent: Boolean(internalCallId) }, "Plivo stream could not register a shared audio session");
       socket.close(1011, "Unable to register media session");
       return;
     }
 
-    streams.set(socket, { streamId, internalCallId, providerCallId });
-    log.info({ event: "plivo.stream.session_registered", internalCallId, providerCallIdPresent: true, streamIdPresent: true, requestedRuntime: session.requestedRuntime, effectiveRuntime: session.effectiveRuntime }, "Plivo stream registered with the shared audio runtime");
+    const registered: RegisteredPlivoStream = { streamId, internalCallId, providerCallId };
+    state.registered = registered;
+    state.starting = false;
+
+    log.info({
+      event: "plivo.stream.session_registered",
+      internalCallId,
+      providerCallIdPresent: true,
+      streamIdPresent: true,
+      requestedRuntime: session.requestedRuntime,
+      effectiveRuntime: session.effectiveRuntime,
+    }, "Plivo stream registered with the shared audio runtime");
+
+    // Flush only frames that belong to the stream authenticated by START.
+    if (state.preStartMediaQueue.length > 0) {
+      const queue = state.preStartMediaQueue;
+      state.preStartMediaQueue = [];
+      const matchingFrames = queue.filter(item => item.streamId === registered.streamId);
+      log.info({
+        event: "plivo.stream.pre_start_media_flushed",
+        count: matchingFrames.length,
+        discardedStreamMismatchCount: queue.length - matchingFrames.length,
+        internalCallId,
+      }, "Flushing pre-start media buffer after successful registration");
+
+      for (const item of matchingFrames) {
+        await TwilioStreamGateway.handle(
+          transportSocket(socket, registered),
+          JSON.stringify({ event: "media", streamSid: registered.streamId, media: { payload: item.payload } })
+        );
+      }
+    }
   }
 
-  private static async handleMedia(socket: WebSocket, event: PlivoEvent): Promise<void> {
-    const registered = streams.get(socket);
-    const streamId = firstValue(event.streamId, event.stream_id);
+  private static async handleMedia(socket: WebSocket, event: PlivoEvent, _internalCallId: string): Promise<void> {
+    const state = getSocketState(socket);
+    const streamId = firstValue(event.streamId, event.stream_id, event.streamSid);
     const payload = event.media?.payload?.trim() ?? "";
-    if (!registered || !streamId || registered.streamId !== streamId || !payload || !isValidBase64(payload)) {
-      log.warn({ event: "plivo.stream.media_rejected", reason: !registered ? "start_not_registered" : !streamId || registered.streamId !== streamId ? "stream_id_mismatch" : "invalid_payload", streamIdPresent: Boolean(streamId) }, "Plivo media was received before a valid stream start");
+
+    if (!payload || !isValidBase64(payload)) {
+      log.warn({ event: "plivo.stream.media_rejected", reason: "invalid_payload", streamIdPresent: Boolean(streamId) }, "Plivo media payload was invalid");
       return;
     }
+
+    if (!state.registered) {
+      if (streamId) {
+        state.preStartMediaQueue.push({ streamId, payload });
+        if (state.preStartMediaQueue.length > MAX_PRE_START_MEDIA_FRAMES) {
+          state.preStartMediaQueue.shift();
+        }
+        log.debug({ event: "plivo.stream.media_buffered_pre_start", queueSize: state.preStartMediaQueue.length, streamIdPresent: true, registrationInProgress: state.starting }, "Plivo media frame buffered pending stream registration");
+        return;
+      }
+
+      log.warn({ event: "plivo.stream.media_rejected", reason: "missing_stream_id", streamIdPresent: false }, "Plivo media before stream registration was missing its stream ID");
+      return;
+    }
+
+    const registered = state.registered;
+    if (streamId && registered.streamId !== streamId) {
+      log.warn({ event: "plivo.stream.media_rejected", reason: "stream_id_mismatch", streamIdPresent: true }, "Plivo media stream ID mismatched registered stream");
+      return;
+    }
+
     log.debug({ event: "plivo.stream.media_received", internalCallId: registered.internalCallId, streamIdPresent: true, audioSizeBytes: Buffer.from(payload, "base64").length }, "Plivo media received");
     await TwilioStreamGateway.handle(transportSocket(socket, registered), JSON.stringify({ event: "media", streamSid: registered.streamId, media: { payload } }));
     log.debug({ event: "plivo.stream.media_forwarded", internalCallId: registered.internalCallId, streamIdPresent: true }, "Plivo media forwarded to shared audio runtime");
   }
 
+  private static async handleDtmf(socket: WebSocket, event: PlivoEvent, internalCallId: string): Promise<void> {
+    const state = getSocketState(socket);
+    const registered = state.registered;
+    const streamId = firstValue(event.streamId, event.stream_id, event.streamSid, registered?.streamId);
+    const digit = firstValue(event.dtmf?.digit, event.dtmf?.digits, event.digit, event.digits)?.trim();
+    const callId = registered?.internalCallId || internalCallId;
+
+    log.info({
+      event: "plivo.stream.dtmf_received",
+      internalCallId: callId,
+      streamIdPresent: Boolean(streamId),
+      digitPresent: Boolean(digit),
+    }, "Plivo stream DTMF frame received");
+
+    if (!digit || !streamId) {
+      log.warn({
+        event: "plivo.stream.dtmf_rejected",
+        reason: !digit ? "missing_digit" : "missing_stream_id",
+        internalCallId: callId,
+      }, "Plivo stream DTMF frame missing digit or stream ID");
+      return;
+    }
+
+    await TwilioStreamGateway.handle(
+      transportSocket(socket, { internalCallId: callId, streamId }),
+      JSON.stringify({
+        event: "dtmf",
+        streamSid: streamId,
+        dtmf: { digit },
+      })
+    );
+  }
+
   private static async handleStop(socket: WebSocket, event: PlivoEvent): Promise<void> {
-    const registered = streams.get(socket);
-    const streamId = firstValue(event.streamId, event.stream_id) ?? registered?.streamId;
+    const state = getSocketState(socket);
+    const registered = state.registered;
+    const streamId = firstValue(event.streamId, event.stream_id, event.streamSid) ?? registered?.streamId;
     if (!registered || !streamId || registered.streamId !== streamId) {
       log.warn({ event: "plivo.stream.stop_ignored", reason: "start_not_registered", streamIdPresent: Boolean(streamId) }, "Plivo stop was received without a registered stream");
       return;
@@ -119,7 +305,8 @@ export class PlivoStreamGateway {
 
   /** Cleans up a live runtime when Plivo closes the WebSocket without a stop event. */
   static async close(socket: WebSocket, code: number, reason: string): Promise<void> {
-    const registered = streams.get(socket);
+    const state = getSocketState(socket);
+    const registered = state.registered;
     log.info({ event: "plivo.stream.closed", closeCode: code, closeReasonPresent: Boolean(reason), closeReasonLength: reason.length, sessionRegistered: Boolean(registered), internalCallId: registered?.internalCallId ?? null, streamIdPresent: Boolean(registered?.streamId) }, "Plivo stream WebSocket closed");
     if (!registered) return;
     await this.closeRegisteredStream(socket, registered, "socket_close");
@@ -130,9 +317,25 @@ export class PlivoStreamGateway {
       await TwilioStreamGateway.handle(transportSocket(socket, registered), JSON.stringify({ event: "stop", streamSid: registered.streamId }));
       log.info({ event: "plivo.stream.session_cleaned_up", internalCallId: registered.internalCallId, streamIdPresent: true, source }, "Plivo stream runtime cleaned up");
     } finally {
-      streams.delete(socket);
+      const state = getSocketState(socket);
+      state.registered = null;
+      state.starting = false;
+      state.preStartMediaQueue = [];
+      socketStates.delete(socket);
     }
   }
+}
+
+function isMulawFormat(encoding: string): boolean {
+  const enc = encoding.toLowerCase().trim();
+  return (
+    enc === "audio/x-mulaw" ||
+    enc.startsWith("audio/x-mulaw") ||
+    enc === "audio/mulaw" ||
+    enc.startsWith("audio/mulaw") ||
+    enc === "mulaw" ||
+    enc === "pcmu"
+  );
 }
 
 function firstValue(...inputs: unknown[]): string | null { for (const input of inputs) { if (typeof input === "string" && input.trim()) return input.trim(); } return null; }

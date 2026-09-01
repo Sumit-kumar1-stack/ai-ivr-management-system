@@ -4,9 +4,11 @@ import {
   AlertTriangle,
   Bot,
   CheckCircle2,
+  History,
   Loader2,
   RefreshCw,
   Sparkles,
+  Undo2,
   WandSparkles,
   X,
 } from "lucide-react";
@@ -146,6 +148,17 @@ interface CopilotValidation {
   }>;
 }
 
+interface CandidateHistoryEntry {
+  candidateFlow: CandidateFlow;
+  candidatePatch: CandidatePatch | null;
+  validation: CopilotValidation | null;
+  summary: string | null;
+  warnings: string[];
+  assumptions: string[];
+  missingResources: string[];
+  suggestedTests: string[];
+}
+
 export function getCopilotErrorMessage(error: unknown): string {
   if (!isAxiosError(error) || !error.response?.data || typeof error.response.data !== "object") {
     return error instanceof Error ? error.message : "IVR copilot could not generate a suggestion";
@@ -178,9 +191,13 @@ export default function FlowCopilotPanel() {
     applyGeneratedGraph,
   } = useIVRBuilder();
 
+  const [copilotMode, setCopilotMode] = useState<"CREATE" | "MODIFY">("CREATE");
   const [command, setCommand] = useState<FlowCopilotMode>("GENERATE");
   const [prompt, setPrompt] = useState(
     "Create a friendly outbound flow with a greeting, AI conversation, lead capture for interested callers, callback handling, and human transfer when requested."
+  );
+  const [modifyPrompt, setModifyPrompt] = useState(
+    "Add an authentication step before Human Transfer and add key 8 to repeat the main menu."
   );
   const [phase, setPhase] = useState<CopilotPhase>("idle");
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -197,7 +214,10 @@ export default function FlowCopilotPanel() {
   const [candidateVersion, setCandidateVersion] = useState(0);
   const [candidateBaseFingerprint, setCandidateBaseFingerprint] = useState<string | null>(null);
   const [appliedCandidateVersion, setAppliedCandidateVersion] = useState<number | null>(null);
+  const [candidateHistory, setCandidateHistory] = useState<CandidateHistoryEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  const activeCommand: FlowCopilotMode = copilotMode === "MODIFY" ? "MODIFY" : command;
 
   const draftFingerprint = useMemo(
     () => getCopilotDraftFingerprint({ nodes, edges }),
@@ -213,8 +233,8 @@ export default function FlowCopilotPanel() {
   }, [builderContext.kind, nodes.length, edges.length]);
 
   const hasGeneratedResult = candidateFlow !== null;
-  const controls = getCopilotActionState({ command, hasGeneratedResult, phase });
-  const { isGenerating, isGenerateCommand } = controls;
+  const controls = getCopilotActionState({ command: activeCommand, hasGeneratedResult, phase });
+  const { isGenerating, isGenerateCommand, isModifyCommand } = controls;
   const applyState = getCopilotApplyState({
     hasCandidate: candidateFlow !== null,
     validationValid: Boolean(validation?.valid),
@@ -225,6 +245,7 @@ export default function FlowCopilotPanel() {
     appliedCandidateVersion,
     phase,
   });
+
   const candidatePatchSummary = useMemo(() => (
     candidateFlow
       ? summarizeCopilotPatch(
@@ -234,8 +255,26 @@ export default function FlowCopilotPanel() {
       : []
   ), [candidateFlow, edges, nodes]);
 
-  async function requestSuggestion(kind: "generate" | "regenerate" = "generate") {
+  async function requestSuggestion(kind: "generate" | "regenerate" | "modify" = "generate") {
     if (isGenerating || phase === "applying") {
+      return;
+    }
+
+    const isModifying = copilotMode === "MODIFY" || kind === "modify";
+    const activePrompt = isModifying ? modifyPrompt : prompt;
+
+    if (!activePrompt.trim()) {
+      setError("Please provide an instruction for the Copilot.");
+      return;
+    }
+
+    // When modifying, use candidateFlow if available, otherwise canvas draft
+    const baseFlow = isModifying && candidateFlow
+      ? { nodes: candidateFlow.nodes, edges: candidateFlow.edges }
+      : { nodes, edges };
+
+    if (isModifying && baseFlow.nodes.length === 0) {
+      setError("A current flow draft with at least one node is required to modify.");
       return;
     }
 
@@ -247,18 +286,37 @@ export default function FlowCopilotPanel() {
     setPhase(kind === "regenerate" ? "regenerating" : "generating");
     setError(null);
 
+    // Save previous candidate to history if modifying an existing candidate
+    if (isModifying && candidateFlow) {
+      setCandidateHistory(prev => [
+        ...prev,
+        {
+          candidateFlow,
+          candidatePatch,
+          validation,
+          summary,
+          warnings,
+          assumptions,
+          missingResources,
+          suggestedTests,
+        },
+      ]);
+    }
+
     try {
       const { data } = await api.post<CopilotResponse>("/ivr-flows/copilot", {
-        mode: command,
-        prompt,
-        flowName,
-        campaignId: builderContext.campaignId ?? null,
-        inboundProfileId: builderContext.inboundProfileId ?? null,
-        returnTo: builderContext.returnTo ?? null,
-        currentFlow: {
-          nodes,
-          edges,
-        },
+        mode: isModifying ? "MODIFY" : command,
+        prompt: activePrompt.trim(),
+        flowName: flowName?.trim() || "Untitled Flow",
+        campaignId: builderContext.campaignId?.trim() || null,
+        inboundProfileId: builderContext.inboundProfileId?.trim() || null,
+        returnTo: builderContext.returnTo?.trim() || null,
+        currentFlow: baseFlow,
+        validation: isModifying && validation ? {
+          valid: validation.valid,
+          errors: validation.errors,
+          warnings: validation.warnings,
+        } : undefined,
       });
 
       if (!data.success || !data.data) {
@@ -298,14 +356,12 @@ export default function FlowCopilotPanel() {
             ],
           }
         : null);
-      setPreviewOpen(isGenerateCommand ? (kind === "regenerate" ? wasPreviewOpen : false) : true);
+      setPreviewOpen(true);
       setPhase("generated");
     } catch (suggestionError) {
       if (sequence !== requestSequence.current) return;
-      setError(
-        getCopilotErrorMessage(suggestionError)
-      );
-      // A failed regeneration must leave the last successful preview intact.
+      setError(getCopilotErrorMessage(suggestionError));
+      // A failed regeneration or modification must leave the last successful preview intact.
       if (!hadPreviousResult) {
         setCandidateFlow(null);
         setCandidatePatch(null);
@@ -319,9 +375,29 @@ export default function FlowCopilotPanel() {
       setPhase(hadPreviousResult ? "generated" : "error");
     } finally {
       if (sequence === requestSequence.current) {
-        setPhase(current => current === "regenerating" || current === "generating" ? (hasGeneratedResult ? "generated" : "idle") : current);
+        setPhase(current =>
+          current === "regenerating" || current === "generating"
+            ? hasGeneratedResult
+              ? "generated"
+              : "idle"
+            : current
+        );
       }
     }
+  }
+
+  function handleUndoModification() {
+    if (candidateHistory.length === 0) return;
+    const previous = candidateHistory[candidateHistory.length - 1];
+    setCandidateHistory(prev => prev.slice(0, -1));
+    setCandidateFlow(previous.candidateFlow);
+    setCandidatePatch(previous.candidatePatch);
+    setValidation(previous.validation);
+    setSummary(previous.summary);
+    setWarnings(previous.warnings);
+    setAssumptions(previous.assumptions);
+    setMissingResources(previous.missingResources);
+    setSuggestedTests(previous.suggestedTests);
   }
 
   function applySuggestion() {
@@ -345,6 +421,7 @@ export default function FlowCopilotPanel() {
       applyGeneratedGraph({
         nodes: normalizedGraph.nodes as never,
         edges: normalizedGraph.edges as never,
+        name: candidateFlow.name,
       });
       setAppliedCandidateVersion(candidateVersion);
       setPhase("generated");
@@ -375,7 +452,39 @@ export default function FlowCopilotPanel() {
         </button>
       </div>
 
-      <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600">
+      {/* Mode Switcher: Create New vs Modify Current Draft */}
+      <div className="mt-4 flex rounded-xl border border-slate-200 bg-slate-100 p-1">
+        <button
+          type="button"
+          onClick={() => {
+            setCopilotMode("CREATE");
+            setCommand("GENERATE");
+          }}
+          className={`flex-1 rounded-lg py-2 text-xs font-semibold transition-all ${
+            copilotMode === "CREATE"
+              ? "bg-white text-blue-700 shadow-sm"
+              : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          Create New
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setCopilotMode("MODIFY");
+            setCommand("MODIFY");
+          }}
+          className={`flex-1 rounded-lg py-2 text-xs font-semibold transition-all ${
+            copilotMode === "MODIFY"
+              ? "bg-white text-blue-700 shadow-sm"
+              : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          Modify Current Draft
+        </button>
+      </div>
+
+      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600">
         {capabilitySummary.map(line => (
           <div key={line} className="py-0.5">
             {line}
@@ -383,85 +492,149 @@ export default function FlowCopilotPanel() {
         ))}
       </div>
 
-      <div className="mt-6 space-y-4">
-        <div>
-          <label className="text-sm font-medium text-slate-700">Command</label>
-          <select
-            value={command}
-            onChange={event => setCommand(event.target.value as FlowCopilotMode)}
-            className="mt-2 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-          >
-            <option value="GENERATE">Generate</option>
-            <option value="MODIFY">Modify</option>
-            <option value="EXPLAIN">Explain</option>
-            <option value="VALIDATE">Validate</option>
-            <option value="REPAIR">Repair</option>
-          </select>
+      {/* Context Badge when Modifying */}
+      {copilotMode === "MODIFY" && (
+        <div className="mt-4 rounded-2xl border border-indigo-200 bg-indigo-50/60 p-4 text-xs text-indigo-900">
+          <div className="flex items-center justify-between font-semibold">
+            <span>
+              {candidateFlow ? "Modifying current candidate" : "Modifying canvas draft"}
+            </span>
+            {validation && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                  validation.valid
+                    ? "bg-emerald-100 text-emerald-700"
+                    : "bg-rose-100 text-rose-700"
+                }`}
+              >
+                {validation.valid ? "VALID" : `${validation.errors.length} ERRORS`}
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-[11px] text-indigo-700">
+            {candidateFlow
+              ? `Target: Preview candidate with ${candidateFlow.nodes.length} nodes, ${candidateFlow.edges.length} edges`
+              : `Target: Canvas draft with ${nodes.length} nodes, ${edges.length} edges`}
+          </p>
         </div>
+      )}
 
-        <div>
-          <label className="text-sm font-medium text-slate-700">Prompt</label>
-          <Textarea
-            rows={10}
-            value={prompt}
-            onChange={event => setPrompt(event.target.value)}
-            placeholder="Describe the flow change you want..."
-            className="mt-2"
-          />
-        </div>
+      <div className="mt-5 space-y-4">
+        {copilotMode === "CREATE" ? (
+          <>
+            <div>
+              <label className="text-sm font-medium text-slate-700">Prompt</label>
+              <Textarea
+                rows={8}
+                value={prompt}
+                onChange={event => setPrompt(event.target.value)}
+                placeholder="Describe the complete IVR flow you want to create..."
+                className="mt-2"
+              />
+            </div>
 
-        <div className="flex gap-2">
-          {controls.showInitialGenerate ? (
-            <Button
-              type="button"
-              onClick={() => void requestSuggestion("generate")}
-              disabled={isGenerating}
-              className="flex-1"
-            >
-              {isGenerating ? (
-                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Generating...</>
+            <div className="flex gap-2">
+              {controls.showInitialGenerate ? (
+                <Button
+                  type="button"
+                  onClick={() => void requestSuggestion("generate")}
+                  disabled={isGenerating}
+                  className="flex-1"
+                >
+                  {isGenerating ? (
+                    <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Generating...</>
+                  ) : (
+                    <><Sparkles className="mr-2 h-4 w-4" />Generate</>
+                  )}
+                </Button>
+              ) : controls.showGeneratedActions ? (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setPreviewOpen(true);
+                      setPhase("previewing");
+                    }}
+                    disabled={isGenerating}
+                    className="flex-1"
+                  >
+                    Preview Changes
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => void requestSuggestion("regenerate")}
+                    disabled={isGenerating}
+                    className="flex-1"
+                  >
+                    {phase === "regenerating" ? (
+                      <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Regenerating...</>
+                    ) : (
+                      <><RefreshCw className="mr-2 h-4 w-4" />Regenerate</>
+                    )}
+                  </Button>
+                </>
               ) : (
-                <><Sparkles className="mr-2 h-4 w-4" />Generate</>
+                <Button
+                  type="button"
+                  onClick={() => void requestSuggestion("generate")}
+                  disabled={isGenerating}
+                  className="flex-1"
+                >
+                  {isGenerating ? (
+                    <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Working...</>
+                  ) : (
+                    <><Sparkles className="mr-2 h-4 w-4" />Generate</>
+                  )}
+                </Button>
               )}
-            </Button>
-          ) : controls.showGeneratedActions ? (
-            <>
+            </div>
+          </>
+        ) : (
+          <>
+            <div>
+              <label className="text-sm font-medium text-slate-700">
+                Modification Instruction
+              </label>
+              <Textarea
+                rows={8}
+                value={modifyPrompt}
+                onChange={event => setModifyPrompt(event.target.value)}
+                placeholder="Describe what you want to change (e.g. Add authentication before Human Transfer and add key 8 to repeat the main menu)..."
+                className="mt-2"
+              />
+            </div>
+
+            <div className="flex gap-2">
               <Button
                 type="button"
-                variant="outline"
-                onClick={() => {
-                  setPreviewOpen(true);
-                  setPhase("previewing");
-                }}
+                onClick={() => void requestSuggestion("modify")}
                 disabled={isGenerating}
-                className="flex-1"
+                className="flex-1 bg-indigo-600 hover:bg-indigo-700"
               >
-                Preview Changes
-              </Button>
-              <Button
-                type="button"
-                onClick={() => void requestSuggestion("regenerate")}
-                disabled={isGenerating}
-                className="flex-1"
-              >
-                {phase === "regenerating" ? (
-                  <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Regenerating...</>
+                {isGenerating ? (
+                  <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Modifying...</>
                 ) : (
-                  <><RefreshCw className="mr-2 h-4 w-4" />Regenerate</>
+                  <><Sparkles className="mr-2 h-4 w-4" />Modify Draft</>
                 )}
               </Button>
-            </>
-          ) : controls.showGenericPreview ? (
-            <Button
-              type="button"
-              onClick={() => void requestSuggestion("generate")}
-              disabled={isGenerating}
-              className="flex-1"
-            >
-              {isGenerating ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Working...</> : <><Sparkles className="mr-2 h-4 w-4" />Preview Changes</>}
-            </Button>
-          ) : null}
-        </div>
+
+              {candidateHistory.length > 0 && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleUndoModification}
+                  disabled={isGenerating}
+                  title="Undo last Copilot modification"
+                  className="px-3 text-slate-700"
+                >
+                  <Undo2 className="h-4 w-4 mr-1" />
+                  Undo
+                </Button>
+              )}
+            </div>
+          </>
+        )}
 
         {error && (
           <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
@@ -469,7 +642,7 @@ export default function FlowCopilotPanel() {
           </div>
         )}
 
-        {(previewOpen || !isGenerateCommand) && summary && (
+        {(previewOpen || hasGeneratedResult) && summary && (
           <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
             <div className="flex items-center gap-2 font-semibold">
               <WandSparkles className="h-4 w-4" />
@@ -479,7 +652,7 @@ export default function FlowCopilotPanel() {
           </div>
         )}
 
-        {(previewOpen || !isGenerateCommand) && assumptions.length > 0 && (
+        {(previewOpen || hasGeneratedResult) && assumptions.length > 0 && (
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800">
             <div className="font-semibold text-slate-900">Assumptions</div>
             <ul className="mt-2 space-y-1 leading-6">
@@ -490,7 +663,7 @@ export default function FlowCopilotPanel() {
           </div>
         )}
 
-        {(previewOpen || !isGenerateCommand) && warnings.length > 0 && (
+        {(previewOpen || hasGeneratedResult) && warnings.length > 0 && (
           <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
             <div className="flex items-center gap-2 font-semibold">
               <AlertTriangle className="h-4 w-4" />
@@ -504,7 +677,7 @@ export default function FlowCopilotPanel() {
           </div>
         )}
 
-        {(previewOpen || !isGenerateCommand) && missingResources.length > 0 && (
+        {(previewOpen || hasGeneratedResult) && missingResources.length > 0 && (
           <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
             <div className="font-semibold">Missing resources</div>
             <ul className="mt-2 space-y-1 leading-6">
@@ -515,7 +688,7 @@ export default function FlowCopilotPanel() {
           </div>
         )}
 
-        {(previewOpen || !isGenerateCommand) && suggestedTests.length > 0 && (
+        {(previewOpen || hasGeneratedResult) && suggestedTests.length > 0 && (
           <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-800">
             <div className="font-semibold text-slate-900">Suggested tests</div>
             <ul className="mt-2 space-y-1 leading-6">
@@ -526,7 +699,7 @@ export default function FlowCopilotPanel() {
           </div>
         )}
 
-        {(previewOpen || !isGenerateCommand) && validation && (
+        {(previewOpen || hasGeneratedResult) && validation && (
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800">
             <div className="flex items-center justify-between gap-2">
               <span className="font-semibold text-slate-900">Deterministic validation</span>
@@ -561,7 +734,7 @@ export default function FlowCopilotPanel() {
           </div>
         )}
 
-        {(previewOpen || !isGenerateCommand) && candidatePatch && (
+        {(previewOpen || hasGeneratedResult) && candidatePatch && (
           <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex items-center justify-between gap-2 text-sm text-slate-700">
               <span className="font-semibold">Change summary</span>
@@ -577,7 +750,7 @@ export default function FlowCopilotPanel() {
           </div>
         )}
 
-        {(previewOpen || !isGenerateCommand) && candidateFlow && (
+        {(previewOpen || hasGeneratedResult) && candidateFlow && (
           <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex items-center justify-between gap-2 text-sm text-slate-700">
               <span className="font-semibold">Preview</span>
@@ -591,7 +764,6 @@ export default function FlowCopilotPanel() {
                 {JSON.stringify(candidateFlow, null, 2)}
               </pre>
             </div>
-
           </div>
         )}
 

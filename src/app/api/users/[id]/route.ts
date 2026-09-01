@@ -31,6 +31,7 @@ import {
 import {
   getDefaultCampaignCapabilitiesForRole,
 } from "@/features/users/user-campaign-capabilities";
+import { hasCampaignCapability } from "@/services/communication/campaign-capabilities";
 
 interface RouteContext {
   params: Promise<{
@@ -45,6 +46,12 @@ const USER_MANAGEMENT_ROLES = [
 
 const PLATFORM_SCOPE = "platform";
 
+function canManageUsers(user: { role: UserRole; campaignCapabilities?: readonly string[] }): boolean {
+  if (user.role === UserRole.SUPER_ADMIN) return true;
+  if (user.campaignCapabilities === undefined) return true;
+  return hasCampaignCapability(user.campaignCapabilities, "ORG_USERS_MANAGE");
+}
+
 //--------------------------------------------------
 // Get User
 //--------------------------------------------------
@@ -57,6 +64,16 @@ export async function GET(
     const currentUser = await requireRole(
       USER_MANAGEMENT_ROLES
     );
+
+    if (!canManageUsers(currentUser)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "You do not have permission to manage organization users.",
+        },
+        { status: 403 }
+      );
+    }
 
     const {
       id,
@@ -147,6 +164,16 @@ export async function PUT(
     const currentUser = await requireRole(
       USER_MANAGEMENT_ROLES
     );
+
+    if (!canManageUsers(currentUser)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "You do not have permission to manage organization users.",
+        },
+        { status: 403 }
+      );
+    }
 
     const {
       id,
@@ -268,6 +295,16 @@ export async function DELETE(
     const currentUser = await requireRole(
       USER_MANAGEMENT_ROLES
     );
+
+    if (!canManageUsers(currentUser)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "You do not have permission to manage organization users.",
+        },
+        { status: 403 }
+      );
+    }
 
     const {
       id,

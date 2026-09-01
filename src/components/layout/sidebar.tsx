@@ -127,12 +127,14 @@ export default function Sidebar({
             <ul className="space-y-1">
               {group.items.map(item => {
                 const Icon = item.icon;
+                const isRecordings = item.href === "/calls/recordings";
+                const isCalls = item.href === "/calls";
                 const isActive =
                   pathname === item.href ||
-                  (item.href !== "/dashboard" &&
-                    pathname.startsWith(`${item.href}/`)) ||
-                  (item.href === "/campaigns" &&
-                    pathname.startsWith("/communication/campaigns"));
+                  (isRecordings && pathname.startsWith("/calls/recordings")) ||
+                  (isCalls && pathname.startsWith("/calls/") && !pathname.startsWith("/calls/recordings")) ||
+                  (!isCalls && !isRecordings && item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`)) ||
+                  (item.href === "/campaigns" && pathname.startsWith("/communication/campaigns"));
 
                 return (
                   <li key={item.href}>

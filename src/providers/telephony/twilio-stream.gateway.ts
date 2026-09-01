@@ -55,6 +55,7 @@ import {
 
 import {
   routeRealtimeCallInput,
+  type RealtimeTelephonyProvider,
 } from "@/services/conversations/realtime-input.service";
 
 import {
@@ -892,16 +893,90 @@ export class TwilioStreamGateway {
       "IVR runtime selected at call entry"
     );
 
+    const currentVersionId =
+      call.ivrFlowVersion?.id ??
+      internalCallId;
+
+    const existingSession =
+      await IVRFlowSessionService.get(
+        internalCallId
+      );
+
+    const validSession =
+      existingSession &&
+      existingSession.flowId === currentVersionId
+        ? existingSession
+        : null;
+
+    const currentNodeId =
+      validSession?.currentNodeId ?? null;
+
+    const previousNodeId =
+      validSession?.previousNodeId ?? null;
+
+    const lastTrigger =
+      validSession?.lastTrigger ?? null;
+
+    const lastValue =
+      validSession?.lastValue ?? null;
+
+    const navigationHistory =
+      validSession?.navigationHistory ?? [];
+
+    const selectedIntent =
+      validSession?.selectedIntent ?? null;
+
+    const selectedDigit =
+      validSession?.selectedDigit ?? null;
+
+    const selectedDepartment =
+      validSession?.selectedDepartment ?? null;
+
+    const preferredLanguage =
+      validSession?.preferredLanguage ?? null;
+
+    const collectedFields =
+      validSession?.collectedFields ?? {};
+
+    const fallbackNodeId =
+      validSession?.fallbackNodeId ?? null;
+
+    const inputExperience =
+      validSession?.inputExperience ??
+      (startNode?.data?.inputExperience === "STAGED_HYBRID"
+        ? "STAGED_HYBRID"
+        : startNode?.data?.inputExperience === "KEYPAD"
+        ? "KEYPAD"
+        : "VOICE");
+
+    const conversationMode =
+      validSession?.conversationMode ??
+      (requestedRuntime === "GEMINI_LIVE"
+        ? "REALTIME_AI"
+        : "ENTRY_IVR");
+
+    const inputStage =
+      validSession?.inputStage ??
+      (requestedRuntime === "GEMINI_LIVE"
+        ? "REALTIME_AI"
+        : "ENTRY_IVR");
+
     await IVRFlowSessionService.set(
       internalCallId,
       {
         flowId:
-          call.ivrFlowVersion?.id ??
-          internalCallId,
-        currentNodeId: null,
-        previousNodeId: null,
-        lastTrigger: null,
-        lastValue: null,
+          currentVersionId,
+        currentNodeId,
+        previousNodeId,
+        lastTrigger,
+        lastValue,
+        navigationHistory,
+        selectedIntent,
+        selectedDigit,
+        selectedDepartment,
+        preferredLanguage,
+        collectedFields,
+        fallbackNodeId,
         selectedRuntime,
         runtimeReasonCode:
           pinnedRuntime ? "PINNED_RUNTIME" : runtimeSelection?.reasonCode ?? "LEGACY_RUNTIME",
@@ -909,22 +984,9 @@ export class TwilioStreamGateway {
           pinnedRuntime
             ? "The runtime selected before provider execution was preserved."
             : runtimeSelection?.reasonText ?? "Existing persisted runtime configuration was used.",
-        inputExperience:
-          startNode?.data?.inputExperience === "STAGED_HYBRID"
-            ? "STAGED_HYBRID"
-            : startNode?.data?.inputExperience === "KEYPAD"
-            ? "KEYPAD"
-            : "VOICE",
-        conversationMode:
-          requestedRuntime === "GEMINI_LIVE"
-            ? "REALTIME_AI"
-            : "ENTRY_IVR",
-        inputStage:
-          requestedRuntime === "GEMINI_LIVE"
-            ? "REALTIME_AI"
-            : "ENTRY_IVR",
-        fallbackNodeId:
-          null,
+        inputExperience,
+        conversationMode,
+        inputStage,
       }
     );
 
@@ -1200,6 +1262,65 @@ export class TwilioStreamGateway {
       requestedRuntime ===
       "GEMINI_LIVE"
     ) {
+      const currentNodeKind =
+        runtimeFlowNodes
+          .find(node => node.id === currentNodeId)
+          ?.data?.nodeKind
+          ?.trim()
+          .toUpperCase() ?? null;
+      const isIvrEntry =
+        currentNodeKind !== null &&
+        [
+          "START",
+          "GREETING",
+          "HYBRID_MENU",
+          "DTMF_MENU",
+          "AUTH_GATE",
+          "CONDITION",
+          "CONFIRMATION",
+        ].includes(currentNodeKind);
+
+      if (isIvrEntry) {
+        ConversationStateService.setState(
+          internalCallId,
+          "LISTENING"
+        );
+
+        await EventPublisher.publish(
+          AppEvent.AUDIO_CONNECTED,
+          {
+            callId: internalCallId,
+            runtime: "GEMINI_LIVE",
+            timestamp: Date.now(),
+          }
+        );
+
+        await EventPublisher.publish(
+          AppEvent.VOICE_LISTENING,
+          {
+            callId: internalCallId,
+            status: "Listening",
+            runtime: "GEMINI_LIVE",
+            resumed: false,
+            timestamp: Date.now(),
+          }
+        );
+
+        log.info(
+          {
+            event: "twilio.stream.gemini_live_lazy_registered",
+            requestedRuntime,
+            effectiveRuntime: "GEMINI_LIVE",
+            currentNodeId,
+            currentNodeKind,
+            conversationState: "LISTENING",
+          },
+          "Gemini Live registered lazily for IVR deterministic entry flow"
+        );
+
+        return;
+      }
+
       let conversationEstablished =
         false;
 
@@ -1295,7 +1416,6 @@ export class TwilioStreamGateway {
             newConversation:
               existingMessageCount ===
               0,
-
             existingConversationMessageCount:
               existingMessageCount,
 
@@ -1944,38 +2064,36 @@ export class TwilioStreamGateway {
       );
     }
 
-    //----------------------------------------------
-    // PREMIUM — Twilio → Gemini Live
-    //----------------------------------------------
-
     if (
       session.voiceRuntime ===
       "GEMINI_LIVE"
     ) {
-      try {
-        GeminiLiveMediaService
-          .sendTwilioAudio(
-            session.callId,
-            audio
+      if (GeminiLiveMediaService.has(session.callId)) {
+        try {
+          GeminiLiveMediaService
+            .sendTwilioAudio(
+              session.callId,
+              audio
+            );
+        } catch (
+          error
+        ) {
+          log.error(
+            {
+              event:
+                "twilio.stream.gemini_live_audio_forward_failed",
+
+              audioSizeBytes:
+                audio.length,
+
+              error:
+                normalizeError(
+                  error
+                ),
+            },
+            "Failed to send Twilio audio to Gemini Live"
           );
-      } catch (
-        error
-      ) {
-        log.error(
-          {
-            event:
-              "twilio.stream.gemini_live_audio_forward_failed",
-
-            audioSizeBytes:
-              audio.length,
-
-            error:
-              normalizeError(
-                error
-              ),
-          },
-          "Failed to send Twilio audio to Gemini Live"
-        );
+        }
       }
 
       /*
@@ -1987,10 +2105,6 @@ export class TwilioStreamGateway {
 
       return;
     }
-
-    //----------------------------------------------
-    // STANDARD / LEGACY — Twilio → STT
-    //----------------------------------------------
 
     try {
       StandardRuntimeUsage.recordSttAudio(
@@ -2031,10 +2145,12 @@ export class TwilioStreamGateway {
     const session = streamSid ? AudioSessionService.get(streamSid) : null;
 
     if (!session || !digit || ["TERMINATING", "ENDED"].includes(ConversationStateService.getState(session.callId))) return;
+    AudioSessionService.clearPlayback(session.callId);
+    const call = await prisma.call.findUnique({ where: { id: session.callId }, select: { provider: true } });
     await routeRealtimeCallInput({
       type: "DTMF",
       callId: session.callId,
-      provider: "TWILIO",
+      provider: (call?.provider as RealtimeTelephonyProvider) ?? "TWILIO",
       digit,
       timestamp: Date.now(),
     });

@@ -10,6 +10,7 @@ import { normalizePlivoInboundPayload } from "@/providers/telephony/plivo.provid
 import { plivoXmlResponse } from "@/app/api/plivo/inbound/route";
 import { processOutboundPlivoLifecycle } from "@/services/communication/communication-outbound-lifecycle.service";
 import { startIVRGraphExecution } from "@/services/ivr/ivr-graph-executor.service";
+import { startPlivoRecordingIfNeeded } from "@/services/telephony/plivo-recording.service";
 
 const log = createServerLogger("plivo-outbound-answer-route");
 
@@ -30,6 +31,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (!lifecycle.matched || lifecycle.conflict || !lifecycle.callId) {
       return plivoXmlResponse("The call session could not be verified.", true, request.nextUrl);
     }
+
+    await startPlivoRecordingIfNeeded(lifecycle.callId, providerCallId);
 
     const call = await prisma.call.findUnique({
       where: { id: lifecycle.callId },

@@ -238,11 +238,7 @@ describe(
         "CAMPAIGN_SUBMIT",
         "CAMPAIGN_LAUNCH",
       ]);
-      expect(getDefaultCampaignCapabilitiesForRole(UserRole.AGENT)).toEqual([
-        "CAMPAIGN_REVIEW",
-        "CAMPAIGN_APPROVE",
-        "CAMPAIGN_REJECT",
-      ]);
+      expect(getDefaultCampaignCapabilitiesForRole(UserRole.AGENT)).toEqual([]);
       expect(getDefaultCampaignCapabilitiesForRole(UserRole.SUPER_ADMIN)).toEqual(
         expect.arrayContaining([
           "CAMPAIGN_CREATE",

@@ -15,9 +15,18 @@ import { orchestrateHumanTransfer } from "@/services/telephony/human-transfer-or
 import { resolveTenantHumanTransferDestination } from "@/services/telephony/human-transfer-destination.service";
 import { createCallLogger } from "@/lib/logger";
 import { hasSufficientAuthLevel } from "@/services/security/call-security-session.service";
+import { executeExternalAction, resolveIntegrationEndpoint } from "@/services/integrations/integration-action-gateway.service";
 import { IVRMenuSessionService } from "@/services/ivr/ivr-menu-session.service";
 import { IVRFlowSessionService } from "./ivr-flow-session.service";
 import type { StandardInputRoute } from "./standard-input-router.service";
+import {
+  normalizeAIPolicy,
+  normalizeConversationalEscapeConfig,
+  normalizeMenuInputMode,
+  normalizeNavigationConfig,
+  normalizePostActionConfig,
+  plivoInputTypeForMode,
+} from "./ivr-runtime-menu.service";
 
 const MAX_AUTOMATIC_TRANSITIONS = 8;
 
@@ -69,6 +78,12 @@ export interface IVRGraphExecutionResult {
   entryPrompt?: string | null;
   entryTimeoutPrompt?: string | null;
   entryTimeoutSeconds?: number;
+  /**
+   * Builder-configured input mode for the current menu node.
+   * "dtmf" | "speech" | "dtmf speech" — maps directly to Plivo GetInput inputType.
+   * Only populated when entryInputStage is true.
+   */
+  entryInputType?: string;
 }
 
 export async function startIVRGraphExecution(
@@ -108,8 +123,117 @@ export async function executeIVRGraphRoute(
     );
   }
 
-  const destinationNodeId =
-    route.resultingNodeId ?? state.currentNodeId;
+  const currentNode = graph.nodes.find(n => n.id === state.currentNodeId);
+  let destinationNodeId = route.resultingNodeId ?? state.currentNodeId;
+  let nextHistory = [...(state.navigationHistory ?? [])];
+
+  if (route.action === "REPEAT" || route.transition === "REPEAT") {
+    // REPEAT preserves exact history and current node
+    destinationNodeId = state.currentNodeId;
+  } else if (route.action === "MAIN_MENU" || route.transition === "HOME" || route.transition === "MAIN_MENU") {
+    // HOME clears navigation history and navigates to configured root menu
+    destinationNodeId = resolveHomeTarget(graph, currentNode);
+    nextHistory = [];
+    createCallLogger(callId).info(
+      { event: "ivr.navigation.home_resolved", targetNodeId: destinationNodeId, callId },
+      "HOME navigation resolved and history cleared"
+    );
+  } else if (route.action === "GO_BACK" || route.transition === "GO_BACK") {
+    // BACK pops the most recent valid user-facing node
+    const popped = popHistory(state.navigationHistory, graph, state.currentNodeId);
+    if (popped.targetNodeId) {
+      destinationNodeId = popped.targetNodeId;
+      nextHistory = popped.updatedHistory;
+      createCallLogger(callId).info(
+        { event: "ivr.navigation.history_popped", targetNodeId: destinationNodeId, remainingDepth: nextHistory.length, callId },
+        "Navigation history popped for BACK command"
+      );
+    } else {
+      // Empty or no valid history -> safe fallback to HOME
+      destinationNodeId = resolveHomeTarget(graph, currentNode);
+      nextHistory = [];
+      createCallLogger(callId).info(
+        { event: "ivr.navigation.home_resolved", fallbackFromBack: true, targetNodeId: destinationNodeId, callId },
+        "BACK command fell back to HOME (empty history)"
+      );
+    }
+  } else if (
+    (route.transition === "CONVERSATIONAL_ESCAPE" || route.transition === "NATURAL_LANGUAGE_ESCAPE") &&
+    currentNode
+  ) {
+    const escapeConfig = normalizeConversationalEscapeConfig(currentNode.data);
+    const returnBehavior = escapeConfig?.returnBehavior ?? "RETURN_CONTEXT";
+
+    createCallLogger(callId).info(
+      {
+        event: "ivr.conversational_escape.matched",
+        callId,
+        sourceNodeId: state.currentNodeId,
+        targetNodeId: destinationNodeId,
+        returnBehavior,
+      },
+      "Conversational escape triggered from menu node"
+    );
+
+    if (returnBehavior === "RETURN_CONTEXT") {
+      // Execute the target conversational/knowledge node
+      const targetResult = await run(
+        callId,
+        graph,
+        destinationNodeId,
+        "CONVERSATIONAL_ESCAPE",
+        {
+          previousNodeId: state.currentNodeId,
+          navigationHistory: state.navigationHistory ?? [],
+        }
+      );
+
+      // Return caller to the current menu context without history pollution
+      await IVRFlowSessionService.set(callId, {
+        flowId: graph.version.id,
+        previousNodeId: destinationNodeId,
+        currentNodeId: state.currentNodeId,
+        lastTrigger: "CONVERSATIONAL_ESCAPE_RETURN",
+        lastValue: input.value,
+        lastTriggeredAt: Date.now(),
+        navigationHistory: state.navigationHistory ?? [],
+      });
+
+      createCallLogger(callId).info(
+        {
+          event: "ivr.conversational_escape.returned",
+          callId,
+          sourceNodeId: state.currentNodeId,
+          targetNodeId: destinationNodeId,
+          returnedToNodeId: state.currentNodeId,
+        },
+        "Conversational escape side-turn returned to menu context"
+      );
+
+      return {
+        ...targetResult,
+        status: "AWAITING_INPUT",
+        currentNodeId: state.currentNodeId,
+        speechText: targetResult.speechText,
+        awaitInput: true,
+        endCall: false,
+        transitionReason: "CONVERSATIONAL_ESCAPE_RETURN",
+      };
+    }
+
+    // STAY_CONVERSATIONAL / FOLLOW_TARGET_POST_ACTION: push menu node to history
+    nextHistory = pushHistory(state.navigationHistory, state.currentNodeId);
+  } else {
+    // Standard user navigation:
+    // Push current node into history if transitioning to a different node and current node is user-facing
+    if (destinationNodeId !== state.currentNodeId && currentNode && isUserFacingNode(currentNode)) {
+      nextHistory = pushHistory(state.navigationHistory, state.currentNodeId);
+      createCallLogger(callId).debug(
+        { event: "ivr.navigation.history_pushed", pushedNodeId: state.currentNodeId, depth: nextHistory.length, callId },
+        "Navigation history pushed"
+      );
+    }
+  }
 
   await IVRFlowSessionService.set(callId, {
     flowId: graph.version.id,
@@ -117,10 +241,8 @@ export async function executeIVRGraphRoute(
     currentNodeId: destinationNodeId,
     lastTrigger: route.transition,
     lastValue: input.value,
-    navigationHistory: appendHistory(
-      state.navigationHistory,
-      state.currentNodeId
-    ),
+    lastTriggeredAt: Date.now(),
+    navigationHistory: nextHistory,
   });
 
   return run(
@@ -130,12 +252,135 @@ export async function executeIVRGraphRoute(
     route.transition ?? "MENU_OPTION",
     {
       previousNodeId: state.currentNodeId,
-      navigationHistory: appendHistory(
-        state.navigationHistory,
-        state.currentNodeId
-      ),
+      navigationHistory: nextHistory,
+      lastValue: input.value,
+      lastTriggeredAt: Date.now(),
     }
   );
+}
+
+function applyPostAction(
+  graph: LoadedGraph,
+  node: Node,
+  previousNodeId: string | null,
+  navigationHistory: string[] | undefined,
+  speechText: string | null,
+  fallbackTransitionReason: string
+): {
+  type: "NAVIGATE";
+  targetNodeId: string;
+  previousNodeId: string;
+  navigationHistory: string[];
+  transitionReason: string;
+  speechText: string | null;
+} | {
+  type: "RETURN_STEP";
+  result: IVRGraphExecutionResult;
+} | null {
+  const postAction = normalizePostActionConfig(node.data);
+  if (!postAction) return null;
+
+  switch (postAction.mode) {
+    case "RETURN_HOME": {
+      const homeTarget = resolveHomeTarget(graph, node);
+      return {
+        type: "NAVIGATE",
+        targetNodeId: homeTarget,
+        previousNodeId: node.id,
+        navigationHistory: [],
+        transitionReason: "RETURN_HOME",
+        speechText,
+      };
+    }
+
+    case "RETURN_PREVIOUS": {
+      const popped = popHistory(navigationHistory, graph, node.id);
+      const target = popped.targetNodeId ?? resolveHomeTarget(graph, node);
+      const nextHist = popped.targetNodeId ? popped.updatedHistory : [];
+      return {
+        type: "NAVIGATE",
+        targetNodeId: target,
+        previousNodeId: node.id,
+        navigationHistory: nextHist,
+        transitionReason: "RETURN_PREVIOUS",
+        speechText,
+      };
+    }
+
+    case "STAY_CURRENT": {
+      return {
+        type: "RETURN_STEP",
+        result: {
+          status: "AWAITING_INPUT",
+          currentNodeId: node.id,
+          nextNodeId: null,
+          speechText,
+          awaitInput: true,
+          endCall: false,
+          transitionReason: "STAY_CURRENT",
+        },
+      };
+    }
+
+    case "CONTINUE_TO_NODE": {
+      if (postAction.targetNodeId && graph.nodes.some(n => n.id === postAction.targetNodeId)) {
+        const nextHist = isUserFacingNode(node)
+          ? pushHistory(navigationHistory, node.id)
+          : navigationHistory ?? [];
+        return {
+          type: "NAVIGATE",
+          targetNodeId: postAction.targetNodeId,
+          previousNodeId: node.id,
+          navigationHistory: nextHist,
+          transitionReason: "CONTINUE_TO_NODE",
+          speechText,
+        };
+      }
+      break;
+    }
+
+    case "END_CALL": {
+      const endNode = graph.nodes.find(n => kind(n) === "END_CALL");
+      const configuredPrompt = endNode ? prompt(endNode) : null;
+      const goodbye = configuredPrompt ?? "Thank you for calling. Have a great day.";
+      const fullSpeech = speechText && !speechText.includes(goodbye)
+        ? `${speechText} ${goodbye}`
+        : speechText ?? goodbye;
+
+      return {
+        type: "RETURN_STEP",
+        result: {
+          status: "ENDED",
+          currentNodeId: endNode?.id ?? node.id,
+          nextNodeId: null,
+          speechText: fullSpeech,
+          awaitInput: false,
+          endCall: true,
+          transitionReason: "END_CALL",
+        },
+      };
+    }
+
+    case "ASK_NEXT_ACTION": {
+      const askPrompt = postAction.prompt ?? "Would you like further assistance, return to the main menu, or end the call?";
+      const fullSpeech = speechText ? `${speechText} ${askPrompt}` : askPrompt;
+
+      return {
+        type: "RETURN_STEP",
+        result: {
+          status: "AWAITING_INPUT",
+          currentNodeId: node.id,
+          nextNodeId: null,
+          speechText: fullSpeech,
+          awaitInput: true,
+          endCall: false,
+          transitionReason: "ASK_NEXT_ACTION",
+        },
+      };
+    }
+  }
+
+  return null;
 }
 
 async function run(
@@ -146,6 +391,8 @@ async function run(
   stateSnapshot?: {
     previousNodeId?: string | null;
     navigationHistory?: string[];
+    lastValue?: string | null;
+    lastTriggeredAt?: number;
   }
 ): Promise<IVRGraphExecutionResult> {
   let currentNodeId = nodeId;
@@ -153,6 +400,8 @@ async function run(
   let speechText: string | null = null;
   let previousNodeId = stateSnapshot?.previousNodeId ?? null;
   let navigationHistory = stateSnapshot?.navigationHistory ?? [];
+  const lastValue = stateSnapshot?.lastValue ?? null;
+  const lastTriggeredAt = stateSnapshot?.lastTriggeredAt ?? undefined;
 
   if (
     ["TERMINATING", "ENDED"].includes(
@@ -174,7 +423,7 @@ async function run(
     const startNode = graph.nodes.find(item => kind(item) === "START");
     const nodeSpeech = prompt(node);
 
-    if (nodeSpeech && speechText === null) {
+    if (nodeKind !== "KNOWLEDGE" && nodeSpeech && speechText === null) {
       speechText = nodeSpeech;
     }
 
@@ -183,7 +432,8 @@ async function run(
       previousNodeId,
       currentNodeId: node.id,
       lastTrigger: transitionReason,
-      lastValue: null,
+      lastValue,
+      lastTriggeredAt,
       navigationHistory,
       inputExperience: isStagedHybridEntry(graph) ? "STAGED_HYBRID" : null,
       inputStage: stagedEntry ? "ENTRY_IVR" : undefined,
@@ -193,15 +443,12 @@ async function run(
     });
 
     if (nodeKind === "END_CALL") {
-      if (nodeSpeech) {
-        speechText = nodeSpeech;
-      }
-
+      const goodbye = nodeSpeech ?? speechText ?? "Thank you for calling. Have a great day.";
       return {
         status: "ENDED",
         currentNodeId: node.id,
         nextNodeId: null,
-        speechText,
+        speechText: goodbye,
         awaitInput: false,
         endCall: true,
         transitionReason: "END_CALL",
@@ -209,6 +456,23 @@ async function run(
     }
 
     if (nodeKind === "HYBRID_MENU" || nodeKind === "DTMF_MENU") {
+      const isRepeat =
+        transitionReason === "REPEAT" ||
+        reason === "REPEAT";
+      if (isRepeat && (speechText === null || speechText === nodeSpeech)) {
+        const configuredRepeat = stringValue(
+          (node.data?.runtimeMenu as Record<string, unknown> | undefined)
+            ?.repeatPrompt
+        );
+        speechText = configuredRepeat ?? "Certainly. Here are the options again.";
+      }
+      // Derive inputMode from Builder config; default for HYBRID_MENU is BOTH,
+      // for DTMF_MENU is DTMF. This drives the Plivo GetInput inputType.
+      const menuInputMode = normalizeMenuInputMode(
+        (node.data?.runtimeMenu as Record<string, unknown> | undefined)?.inputMode ??
+          node.data?.inputMode,
+        nodeKind === "DTMF_MENU" ? "DTMF" : "BOTH"
+      );
       return {
         status: "AWAITING_INPUT",
         currentNodeId: node.id,
@@ -220,12 +484,41 @@ async function run(
         currentNodeKind: nodeKind,
         entryInputStage: stagedEntry,
         entryPrompt: nodeSpeech ?? speechText,
-        entryTimeoutPrompt: stringValue((node.data?.runtimeMenu as Record<string, unknown> | undefined)?.exhaustedPrompt) ?? "I will connect you with our AI assistant.",
+        entryTimeoutPrompt:
+          stringValue(
+            (node.data?.runtimeMenu as Record<string, unknown> | undefined)
+              ?.exhaustedPrompt
+          ) ?? "Maximum attempts reached. Ending call.",
         entryTimeoutSeconds: entryTimeoutSeconds(node),
+        entryInputType: stagedEntry ? plivoInputTypeForMode(menuInputMode) : undefined,
       };
     }
 
     if (nodeKind === "AI" || nodeKind === "AI_CONVERSATION") {
+      const aiPolicy = normalizeAIPolicy(node.data);
+      if (aiPolicy?.mode === "NEVER") {
+        createCallLogger(callId).info(
+          { event: "ivr.ai_policy.ai_blocked", mode: "NEVER", callId, nodeId: node.id },
+          "AI node blocked by NEVER policy"
+        );
+        const fallbackPrompt =
+          stringValue(node.data?.fallbackPrompt) ??
+          stringValue(node.data?.noMatchPrompt) ??
+          stringValue(node.data?.prompt) ??
+          "Please choose from the available options.";
+        return {
+          status: "AWAITING_INPUT",
+          currentNodeId: node.id,
+          nextNodeId: null,
+          speechText: fallbackPrompt,
+          awaitInput: true,
+          endCall: false,
+          transitionReason: "AI_POLICY_BLOCKED",
+          currentNodeKind: nodeKind,
+          entryInputStage: false,
+        };
+      }
+
       return {
         status: "AWAITING_INPUT",
         currentNodeId: node.id,
@@ -248,7 +541,7 @@ async function run(
       }
 
       previousNodeId = node.id;
-      navigationHistory = appendHistory(navigationHistory, node.id);
+      // Internal transition: do NOT push to navigationHistory
       currentNodeId = nextEdge.target;
       transitionReason = nextEdge.data?.trigger
         ? String(nextEdge.data.trigger)
@@ -260,14 +553,34 @@ async function run(
 
     if (nodeKind === "AUTH_GATE") {
       const gate = evaluateAuthGateNode(graph, node);
-      const nextEdge = selectEdge(graph, node.id, gate.allowed ? ["PASS", "AUTHORIZED", "SUCCESS", "DEFAULT"] : ["FAIL", "FAILED", "UNAUTHORIZED", "DEFAULT"]);
+      const nextEdge = selectEdge(
+        graph,
+        node.id,
+        gate.allowed
+          ? ["PASS", "AUTHORIZED", "AUTHENTICATED", "SUCCESS", "DEFAULT"]
+          : [
+              "FAIL",
+              "FAILED",
+              "UNAUTHORIZED",
+              "NOT_AUTHENTICATED",
+              "NOT_AUTHORIZED",
+              "FAILURE",
+              "DEFAULT",
+            ]
+      );
 
       if (!nextEdge) {
         return failed("AUTH_GATE_EDGE_MISSING");
       }
 
+      if (!gate.allowed && speechText === null) {
+        speechText =
+          nodeSpeech ??
+          "Before I connect you with a representative, I need to complete verification.";
+      }
+
       previousNodeId = node.id;
-      navigationHistory = appendHistory(navigationHistory, node.id);
+      // Internal transition: do NOT push to navigationHistory
       currentNodeId = nextEdge.target;
       transitionReason = nextEdge.data?.trigger
         ? String(nextEdge.data.trigger)
@@ -286,7 +599,7 @@ async function run(
       }
 
       previousNodeId = node.id;
-      navigationHistory = appendHistory(navigationHistory, node.id);
+      // Internal transition: do NOT push to navigationHistory
       currentNodeId = nextEdge.target;
       transitionReason = nextEdge.data?.trigger
         ? String(nextEdge.data.trigger)
@@ -324,7 +637,13 @@ async function run(
     }
 
     if (nodeKind === "SEND_INFORMATION") {
-      const actionResult = await executeActionNode(callId, node, "SEND_INFORMATION");
+      const actionResult = await executeActionNode(
+        callId,
+        node,
+        "SEND_INFORMATION",
+        graph.tenantId,
+        (graph.call as any)?.authenticationLevel
+      );
       if (actionResult.speechText && speechText === null) {
         speechText = actionResult.speechText;
       }
@@ -341,6 +660,19 @@ async function run(
         };
       }
 
+      const postActionEffect = applyPostAction(graph, node, previousNodeId, navigationHistory, speechText, actionResult.transitionReason);
+      if (postActionEffect) {
+        if (postActionEffect.type === "RETURN_STEP") {
+          return postActionEffect.result;
+        }
+        previousNodeId = postActionEffect.previousNodeId;
+        navigationHistory = postActionEffect.navigationHistory;
+        currentNodeId = postActionEffect.targetNodeId;
+        transitionReason = postActionEffect.transitionReason;
+        speechText = postActionEffect.speechText;
+        continue;
+      }
+
       const nextEdge = selectEdge(graph, node.id, actionResult.nextTriggers);
       if (!nextEdge) {
         return {
@@ -355,7 +687,7 @@ async function run(
       }
 
       previousNodeId = node.id;
-      navigationHistory = appendHistory(navigationHistory, node.id);
+      navigationHistory = isUserFacingNode(node) ? pushHistory(navigationHistory, node.id) : navigationHistory;
       currentNodeId = nextEdge.target;
       transitionReason = nextEdge.data?.trigger
         ? String(nextEdge.data.trigger)
@@ -373,7 +705,7 @@ async function run(
         return failed("KNOWLEDGE_QUERY_MISSING");
       }
 
-      if (knowledgeResult.speechText && speechText === null) {
+      if (knowledgeResult.speechText) {
         speechText = knowledgeResult.speechText;
       }
 
@@ -387,6 +719,19 @@ async function run(
           endCall: knowledgeResult.endCall,
           transitionReason: knowledgeResult.transitionReason,
         };
+      }
+
+      const postActionEffect = applyPostAction(graph, node, previousNodeId, navigationHistory, speechText, knowledgeResult.transitionReason);
+      if (postActionEffect) {
+        if (postActionEffect.type === "RETURN_STEP") {
+          return postActionEffect.result;
+        }
+        previousNodeId = postActionEffect.previousNodeId;
+        navigationHistory = postActionEffect.navigationHistory;
+        currentNodeId = postActionEffect.targetNodeId;
+        transitionReason = postActionEffect.transitionReason;
+        speechText = postActionEffect.speechText;
+        continue;
       }
 
       const nextEdge = selectEdge(graph, node.id, knowledgeResult.nextTriggers);
@@ -403,7 +748,7 @@ async function run(
       }
 
       previousNodeId = node.id;
-      navigationHistory = appendHistory(navigationHistory, node.id);
+      navigationHistory = isUserFacingNode(node) ? pushHistory(navigationHistory, node.id) : navigationHistory;
       currentNodeId = nextEdge.target;
       transitionReason = nextEdge.data?.trigger
         ? String(nextEdge.data.trigger)
@@ -412,7 +757,13 @@ async function run(
     }
 
     if (nodeKind === "ACTION") {
-      const actionResult = await executeActionNode(callId, node);
+      const actionResult = await executeActionNode(
+        callId,
+        node,
+        undefined,
+        graph.tenantId,
+        (graph.call as any)?.authenticationLevel
+      );
       if (actionResult.speechText && speechText === null) {
         speechText = actionResult.speechText;
       }
@@ -429,6 +780,19 @@ async function run(
         };
       }
 
+      const postActionEffect = applyPostAction(graph, node, previousNodeId, navigationHistory, speechText, actionResult.transitionReason);
+      if (postActionEffect) {
+        if (postActionEffect.type === "RETURN_STEP") {
+          return postActionEffect.result;
+        }
+        previousNodeId = postActionEffect.previousNodeId;
+        navigationHistory = postActionEffect.navigationHistory;
+        currentNodeId = postActionEffect.targetNodeId;
+        transitionReason = postActionEffect.transitionReason;
+        speechText = postActionEffect.speechText;
+        continue;
+      }
+
       const nextEdge = selectEdge(graph, node.id, actionResult.nextTriggers);
       if (!nextEdge) {
         return {
@@ -443,7 +807,7 @@ async function run(
       }
 
       previousNodeId = node.id;
-      navigationHistory = appendHistory(navigationHistory, node.id);
+      navigationHistory = isUserFacingNode(node) ? pushHistory(navigationHistory, node.id) : navigationHistory;
       currentNodeId = nextEdge.target;
       transitionReason = nextEdge.data?.trigger
         ? String(nextEdge.data.trigger)
@@ -483,7 +847,6 @@ async function run(
       }
 
       previousNodeId = node.id;
-      navigationHistory = appendHistory(navigationHistory, node.id);
       currentNodeId = nextEdge.target;
       transitionReason = nextEdge.data?.trigger
         ? String(nextEdge.data.trigger)
@@ -491,7 +854,22 @@ async function run(
       continue;
     }
 
-    if (nodeKind === "START" || nodeKind === "GREETING") {
+    if (nodeKind === "START" || nodeKind === "GREETING" || nodeKind === "PLAY_MESSAGE") {
+      if (nodeKind !== "START") {
+        const postActionEffect = applyPostAction(graph, node, previousNodeId, navigationHistory, speechText, nodeKind);
+        if (postActionEffect) {
+          if (postActionEffect.type === "RETURN_STEP") {
+            return postActionEffect.result;
+          }
+          previousNodeId = postActionEffect.previousNodeId;
+          navigationHistory = postActionEffect.navigationHistory;
+          currentNodeId = postActionEffect.targetNodeId;
+          transitionReason = postActionEffect.transitionReason;
+          speechText = postActionEffect.speechText;
+          continue;
+        }
+      }
+
       const nextEdge = selectEdge(graph, node.id, ["DEFAULT"]);
 
       if (!nextEdge || !graph.nodes.some(item => item.id === nextEdge.target)) {
@@ -499,7 +877,7 @@ async function run(
       }
 
       previousNodeId = node.id;
-      navigationHistory = appendHistory(navigationHistory, node.id);
+      navigationHistory = isUserFacingNode(node) ? pushHistory(navigationHistory, node.id) : navigationHistory;
       currentNodeId = nextEdge.target;
       transitionReason = nextEdge.data?.trigger
         ? String(nextEdge.data.trigger)
@@ -516,12 +894,46 @@ async function run(
 function isStagedHybridEntry(graph: LoadedGraph): boolean {
   const start = graph.nodes.find(node => kind(node) === "START");
   const mode = stringValue(start?.data?.inputExperience) ?? stringValue(start?.data?.inputMode);
-  return mode === "STAGED_HYBRID";
+  if (mode === "STAGED_HYBRID") return true;
+  // HYBRID_MENU and DTMF_MENU nodes require staged entry (GetInput XML)
+  // when the call runtime is a realtime-streaming runtime (GEMINI_LIVE or CASCADED).
+  // Many published flows have inputExperience: "VOICE" on the START node —
+  // that flag describes the voice input style of the AI nodes, NOT whether to
+  // use Plivo GetInput for menu capture. We therefore activate staged entry
+  // for streaming voice runtimes whenever the active node is a menu.
+  const callRuntime = stringValue(graph.call.requestedRuntime)?.toUpperCase() ?? "";
+  return callRuntime === "GEMINI_LIVE" || callRuntime === "CASCADED";
 }
 
 function entryTimeoutSeconds(node: Node): number {
   const value = Number((node.data?.runtimeMenu as Record<string, unknown> | undefined)?.timeoutSeconds);
   return Number.isInteger(value) && value >= 1 && value <= 60 ? value : 8;
+}
+
+function resolveKnowledgeAcknowledgement(node: Node): string | null {
+  const explicit =
+    stringValue(node.data?.acknowledgement) ??
+    stringValue(node.data?.introPrompt) ??
+    stringValue(node.data?.prefixPrompt);
+  if (explicit) return explicit;
+  const label = stringValue(node.data?.label)?.trim();
+  if (label) {
+    return `Sure. Let me help you with ${label.toLowerCase()}.`;
+  }
+  return null;
+}
+
+function formatKnowledgeSpeech(
+  acknowledgement: string | null,
+  body: string
+): string {
+  const cleanBody = body.trim();
+  if (!acknowledgement) return cleanBody;
+  const cleanAck = acknowledgement.trim();
+  if (cleanBody.toLowerCase().startsWith(cleanAck.toLowerCase())) {
+    return cleanBody;
+  }
+  return `${cleanAck} ${cleanBody}`;
 }
 
 async function executeKnowledgeNode(
@@ -542,6 +954,71 @@ async function executeKnowledgeNode(
   }
 
   const allowedDocumentIds = await resolveKnowledgeScope(graph, node);
+  const isMenuNavigation = resolvedQuery.source === "PROMPT";
+  const aiPolicy = normalizeAIPolicy(node.data);
+
+  let skipRerank = isMenuNavigation;
+  let allowAI = !isMenuNavigation;
+
+  if (aiPolicy) {
+    createCallLogger(callId).info(
+      {
+        event: "ivr.ai_policy.resolved",
+        callId,
+        nodeId: node.id,
+        mode: aiPolicy.mode,
+        querySource: resolvedQuery.source,
+      },
+      "AI policy evaluated for knowledge node"
+    );
+
+    switch (aiPolicy.mode) {
+      case "NEVER":
+        allowAI = false;
+        skipRerank = true;
+        createCallLogger(callId).info(
+          { event: "ivr.ai_policy.ai_blocked", callId, nodeId: node.id, mode: "NEVER" },
+          "AI disabled by NEVER policy"
+        );
+        break;
+
+      case "FREE_FORM_ONLY":
+        if (isMenuNavigation) {
+          allowAI = false;
+          skipRerank = true;
+          createCallLogger(callId).info(
+            { event: "ivr.ai_policy.local_answer_used", callId, nodeId: node.id, reason: "MENU_DRIVEN_PROMPT" },
+            "Local answer used for menu prompt under FREE_FORM_ONLY"
+          );
+        } else {
+          allowAI = true;
+          skipRerank = !aiPolicy.allowRerank;
+          createCallLogger(callId).info(
+            { event: "ivr.ai_policy.ai_allowed", callId, nodeId: node.id, reason: "CALLER_TRANSCRIPT" },
+            "AI allowed for free-form question under FREE_FORM_ONLY"
+          );
+        }
+        break;
+
+      case "ALWAYS_CONVERSATIONAL":
+        allowAI = true;
+        skipRerank = !aiPolicy.allowRerank;
+        createCallLogger(callId).info(
+          { event: "ivr.ai_policy.ai_allowed", callId, nodeId: node.id, mode: "ALWAYS_CONVERSATIONAL" },
+          "AI allowed under ALWAYS_CONVERSATIONAL policy"
+        );
+        break;
+
+      case "LOW_CONFIDENCE_ONLY":
+        if (isMenuNavigation) {
+          allowAI = false;
+          skipRerank = true;
+        } else {
+          skipRerank = !aiPolicy.allowRerank;
+        }
+        break;
+    }
+  }
 
   const chunks = await retrieveKnowledge(resolvedQuery.query, 3, {
     knowledgeDocumentIds: allowedDocumentIds,
@@ -550,8 +1027,10 @@ async function executeKnowledgeNode(
     callAuthenticationLevel:
       (graph.call.authenticationLevel as CallAuthenticationLevel | null) ?? null,
     callId,
+    skipRerank,
   });
 
+  const acknowledgement = resolveKnowledgeAcknowledgement(node);
   const fallbackSpeech =
     resolveKnowledgeFallbackSpeech(node) ??
     "I couldn't find that information in our knowledge base.";
@@ -566,6 +1045,39 @@ async function executeKnowledgeNode(
     };
   }
 
+  const factualContent = chunks[0]?.content?.trim() ?? "";
+
+  // For LOW_CONFIDENCE_ONLY mode on free-form questions:
+  if (aiPolicy?.mode === "LOW_CONFIDENCE_ONLY" && !isMenuNavigation) {
+    const rawScore = chunks[0]?.score ?? 0;
+    const normalizedConfidence = computeNormalizedRetrievalConfidence(resolvedQuery.query, rawScore);
+    if (normalizedConfidence >= aiPolicy.confidenceThreshold) {
+      allowAI = false;
+      createCallLogger(callId).info(
+        { event: "ivr.ai_policy.local_answer_used", callId, nodeId: node.id, rawScore, normalizedConfidence, threshold: aiPolicy.confidenceThreshold },
+        "Local answer used due to high normalized confidence under LOW_CONFIDENCE_ONLY"
+      );
+    } else {
+      allowAI = true;
+      createCallLogger(callId).info(
+        { event: "ivr.ai_policy.ai_allowed", callId, nodeId: node.id, rawScore, normalizedConfidence, threshold: aiPolicy.confidenceThreshold },
+        "AI allowed due to low normalized confidence under LOW_CONFIDENCE_ONLY"
+      );
+    }
+  }
+
+  if (!allowAI) {
+    const speechBody = factualContent || fallbackSpeech;
+    const speechText = formatKnowledgeSpeech(acknowledgement, speechBody);
+    return {
+      speechText,
+      awaitInput: false,
+      endCall: false,
+      transitionReason: "KNOWLEDGE_FOUND",
+      nextTriggers: ["KNOWLEDGE_FOUND", "SUCCESS", "DEFAULT"],
+    };
+  }
+
   const memory = await getConversationMemory(callId);
   const conversation = await ConversationService.getConversation(callId);
   const history =
@@ -575,7 +1087,12 @@ async function executeKnowledgeNode(
       .join("\n") ?? "";
 
   const answerPrompt = [
-    "You are a professional AI Call Center Agent.",
+    "You are a professional AI Call Center Agent speaking over the telephone.",
+    "",
+    "VOICE CONVERSATION INSTRUCTIONS",
+    "- Answer in 1 to 3 short, clear, natural spoken sentences suitable for a phone call.",
+    "- Be direct and concise. Do NOT use bullet points, markdown, or numbered lists.",
+    "- Answer using only the verified facts in the retrieved document data.",
     "",
     "SYSTEM SECURITY POLICY",
     "",
@@ -626,9 +1143,36 @@ async function executeKnowledgeNode(
     answer = "";
   }
 
-  const speechText =
-    answer ||
-    fallbackSpeech;
+  if (answer) {
+    const speechText = formatKnowledgeSpeech(acknowledgement, answer);
+    return {
+      speechText,
+      awaitInput: false,
+      endCall: false,
+      transitionReason: "KNOWLEDGE_FOUND",
+      nextTriggers: ["KNOWLEDGE_FOUND", "SUCCESS", "DEFAULT"],
+    };
+  }
+
+  if (aiPolicy) {
+    createCallLogger(callId).warn(
+      { event: "ivr.ai_policy.fallback_used", callId, nodeId: node.id, failureBehavior: aiPolicy.failureBehavior },
+      "AI generation failed, applying configured failureBehavior"
+    );
+
+    if (aiPolicy.failureBehavior === "TRANSFER") {
+      return {
+        speechText: fallbackSpeech,
+        awaitInput: false,
+        endCall: false,
+        transitionReason: "HUMAN_TRANSFER",
+        nextTriggers: ["HUMAN_TRANSFER", "ACTION_FAILURE", "FAILURE", "DEFAULT"],
+      };
+    }
+  }
+
+  const speechBody = factualContent || fallbackSpeech;
+  const speechText = formatKnowledgeSpeech(acknowledgement, speechBody);
 
   return {
     speechText,
@@ -642,7 +1186,9 @@ async function executeKnowledgeNode(
 async function executeActionNode(
   callId: string,
   node: Node,
-  defaultActionCode?: string
+  defaultActionCode?: string,
+  tenantId?: string | null,
+  currentAuthLevel?: string
 ): Promise<NodeStepResult> {
   const actionCode = stringValue(node.data?.actionCode) ?? defaultActionCode ?? null;
   const configuredPrompt = prompt(node);
@@ -655,6 +1201,47 @@ async function executeActionNode(
       transitionReason: "ACTION_MISSING_CODE",
       nextTriggers: ["ACTION_FAILURE", "FAILURE", "DEFAULT"],
     };
+  }
+
+  // Check if a generic external integration endpoint is registered for this tenant & actionCode
+  if (tenantId) {
+    const integrationEndpoint = resolveIntegrationEndpoint(tenantId, actionCode);
+    if (integrationEndpoint) {
+      const externalResult = await executeExternalAction({
+        actionCode,
+        callId,
+        correlationId: callId,
+        tenantId,
+        idempotencyKey: stringValue(node.data?.idempotencyKey) ?? `${callId}_${node.id}`,
+        input: typeof node.data?.inputMapping === "object" && node.data?.inputMapping !== null
+          ? (node.data.inputMapping as Record<string, unknown>)
+          : {},
+        requiredAuthLevel: (stringValue(node.data?.requiredAuthLevel) as any) ?? integrationEndpoint.requiredAuthLevel,
+        currentAuthLevel,
+      });
+
+      let transitionReason = "ACTION_FAILURE";
+      let nextTriggers = ["ACTION_FAILURE", "FAILURE", "DEFAULT"];
+
+      if (externalResult.status === "SUCCESS") {
+        transitionReason = "ACTION_SUCCESS";
+        nextTriggers = ["ACTION_SUCCESS", "SUCCESS", "DEFAULT"];
+      } else if (externalResult.status === "PENDING") {
+        transitionReason = "PENDING";
+        nextTriggers = ["PENDING", "ACTION_FAILURE", "FAILURE", "DEFAULT"];
+      } else if (externalResult.status === "TIMEOUT") {
+        transitionReason = "TIMEOUT";
+        nextTriggers = ["TIMEOUT", "ACTION_FAILURE", "FAILURE", "DEFAULT"];
+      }
+
+      return {
+        speechText: externalResult.safeMessage ?? configuredPrompt ?? null,
+        awaitInput: false,
+        endCall: false,
+        transitionReason,
+        nextTriggers,
+      };
+    }
   }
 
   const syntheticOutcome = buildSyntheticOutcome(actionCode, configuredPrompt);
@@ -975,7 +1562,7 @@ function normalizeDocumentIds(value: unknown): string[] {
 async function resolveKnowledgeQuery(
   callId: string,
   node: Node
-): Promise<{ query: string } | null> {
+): Promise<{ query: string; source: "PROMPT" | "TRANSCRIPT" } | null> {
   const conversation = await ConversationService.getConversation(callId);
   const history = conversation?.messages ?? [];
   const lastUserMessage =
@@ -999,8 +1586,10 @@ async function resolveKnowledgeQuery(
     querySource === "HISTORY"
   ) {
     return lastUserMessage
-      ? { query: lastUserMessage }
-      : null;
+      ? { query: lastUserMessage, source: "TRANSCRIPT" }
+      : promptText
+        ? { query: promptText, source: "PROMPT" }
+        : null;
   }
 
   if (
@@ -1010,15 +1599,22 @@ async function resolveKnowledgeQuery(
     querySource === "INSTRUCTION"
   ) {
     return promptText
-      ? { query: promptText }
-      : null;
+      ? { query: promptText, source: "PROMPT" }
+      : lastUserMessage
+        ? { query: lastUserMessage, source: "TRANSCRIPT" }
+        : null;
   }
 
-  return lastUserMessage
-    ? { query: lastUserMessage }
-    : promptText
-      ? { query: promptText }
-      : null;
+  // Pre-configured node topic/prompt represents deterministic menu-driven knowledge (PROMPT source).
+  if (promptText) {
+    return { query: promptText, source: "PROMPT" };
+  }
+
+  if (lastUserMessage) {
+    return { query: lastUserMessage, source: "TRANSCRIPT" };
+  }
+
+  return null;
 }
 
 function resolveKnowledgePromptText(node: Node): string | null {
@@ -1130,6 +1726,12 @@ async function handleUnmatchedInput(
   const currentKind = kind(currentNode);
   const menu = readRuntimeMenu(currentNode);
   const stagedEntry = isStagedHybridEntry(graph);
+  const menuInputMode = normalizeMenuInputMode(
+    (currentNode.data?.runtimeMenu as Record<string, unknown> | undefined)?.inputMode ??
+      currentNode.data?.inputMode,
+    currentKind === "DTMF_MENU" ? "DTMF" : "BOTH"
+  );
+  const menuInputType = stagedEntry ? plivoInputTypeForMode(menuInputMode) : undefined;
 
   if (!menu || (currentKind !== "HYBRID_MENU" && currentKind !== "DTMF_MENU")) {
     return {
@@ -1165,13 +1767,17 @@ async function handleUnmatchedInput(
     const fallbackTargetId = fallbackEdge?.target ?? fallbackNodeId;
 
     if (fallbackTargetId && graph.nodes.some(node => node.id === fallbackTargetId)) {
+      const fallbackHistory = isUserFacingNode(currentNode)
+        ? pushHistory(state.navigationHistory, state.currentNodeId)
+        : state.navigationHistory ?? [];
+
       await IVRFlowSessionService.set(callId, {
         flowId: graph.version.id,
         previousNodeId: state.currentNodeId,
         currentNodeId: fallbackTargetId,
         lastTrigger: "FALLBACK",
         lastValue: value,
-        navigationHistory: appendHistory(state.navigationHistory, state.currentNodeId),
+        navigationHistory: fallbackHistory,
       });
 
       return run(
@@ -1181,7 +1787,7 @@ async function handleUnmatchedInput(
         "FALLBACK",
         {
           previousNodeId: state.currentNodeId,
-          navigationHistory: appendHistory(state.navigationHistory, state.currentNodeId),
+          navigationHistory: fallbackHistory,
         }
       );
     }
@@ -1192,7 +1798,7 @@ async function handleUnmatchedInput(
       nextNodeId: null,
       speechText: buildRetryPrompt(menu.exhaustedPrompt, 0),
       awaitInput: false,
-      endCall: false,
+      endCall: true,
       transitionReason: "MAX_ATTEMPTS_EXHAUSTED",
     };
   }
@@ -1212,9 +1818,10 @@ async function handleUnmatchedInput(
     transitionReason: failureReason === "TIMEOUT" ? "TIMEOUT" : "INVALID_INPUT",
     currentNodeKind: currentKind,
     entryInputStage: stagedEntry,
-    entryPrompt: prompt,
+    entryPrompt: menu.prompt,
     entryTimeoutPrompt: menu.exhaustedPrompt,
     entryTimeoutSeconds: entryTimeoutSeconds(currentNode),
+    entryInputType: menuInputType,
   };
 }
 
@@ -1248,13 +1855,13 @@ function readRuntimeMenu(
     prompt: promptText,
     invalidPrompt:
       stringValue(runtimeMenu?.invalidPrompt) ??
-      "That option is not available. Please try again.",
+      "Sorry, I didn't recognize that selection. Please choose one of the available options.",
     timeoutPrompt:
       stringValue(runtimeMenu?.timeoutPrompt) ??
-      "I did not receive a selection. Please try again.",
+      "I didn't receive a response. You can press a number or say an option.",
     exhaustedPrompt:
       stringValue(runtimeMenu?.exhaustedPrompt) ??
-      "I am having trouble receiving your keypad selection. Please continue using the voice assistant.",
+      "Maximum attempts reached. Ending call.",
     maxAttempts:
       Number.isInteger(configuredMaxAttempts) && configuredMaxAttempts >= 1 && configuredMaxAttempts <= 5
         ? configuredMaxAttempts
@@ -1274,17 +1881,69 @@ function buildRetryPrompt(basePrompt: string, remainingAttempts: number): string
   return `${basePrompt} You have ${remainingAttempts} attempts remaining.`;
 }
 
-function appendHistory(
+const MAX_NAVIGATION_HISTORY_DEPTH = 20;
+
+function isUserFacingNode(node: Node): boolean {
+  const nodeType = kind(node);
+  return [
+    "HYBRID_MENU",
+    "DTMF_MENU",
+    "KNOWLEDGE",
+    "ACTION",
+    "SEND_INFORMATION",
+    "CALLBACK",
+    "AI",
+    "AI_CONVERSATION",
+  ].includes(nodeType);
+}
+
+function pushHistory(
   history: string[] | undefined,
   nodeId: string | null | undefined
 ): string[] {
+  if (!nodeId?.trim()) return history ?? [];
+  const cleanId = nodeId.trim();
   const next = [...(history ?? [])];
 
-  if (nodeId?.trim()) {
-    next.push(nodeId.trim());
+  // Prevent duplicate top-of-stack push (A -> A)
+  if (next.length > 0 && next[next.length - 1] === cleanId) {
+    return next;
   }
 
-  return next.slice(-10);
+  next.push(cleanId);
+  return next.slice(-MAX_NAVIGATION_HISTORY_DEPTH);
+}
+
+function popHistory(
+  history: string[] | undefined,
+  graph: LoadedGraph,
+  currentNodeId?: string | null
+): { targetNodeId: string | null; updatedHistory: string[] } {
+  const stack = [...(history ?? [])];
+  let targetNodeId: string | null = null;
+
+  while (stack.length > 0) {
+    const candidate = stack.pop()!;
+    const candidateNode = graph.nodes.find(n => n.id === candidate);
+    if (candidateNode && isUserFacingNode(candidateNode)) {
+      if (candidate !== currentNodeId) {
+        targetNodeId = candidate;
+        break;
+      }
+    }
+  }
+
+  return { targetNodeId, updatedHistory: stack };
+}
+
+function resolveHomeTarget(graph: LoadedGraph, node?: Node): string {
+  const startNode = graph.nodes.find(n => kind(n) === "START");
+  const navConfig = normalizeNavigationConfig(startNode?.data) ?? (node ? normalizeNavigationConfig(node.data) : null);
+  return [
+    navConfig?.home?.targetNodeId,
+    startNode?.data?.mainMenuNodeId,
+    startNode?.data?.homeNodeId,
+  ].find((id): id is string => typeof id === "string" && graph.nodes.some(n => n.id === id.trim())) ?? startNode?.id ?? "start";
 }
 
 function buildSyntheticOutcome(
@@ -1486,4 +2145,21 @@ function failed(reason = "INVALID_RUNTIME_STATE"): IVRGraphExecutionResult {
     endCall: false,
     transitionReason: reason,
   };
+}
+
+export function computeNormalizedRetrievalConfidence(
+  query: string,
+  rawScore: number
+): number {
+  if (!query || rawScore <= 0) return 0;
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const termCount = Math.max(1, terms.length);
+  // Maximum theoretical BM25 score from bm25Score():
+  // - Per-term saturation upper bound: (k1 + 1) = 2.5
+  // - Exact substring match bonus: 3.0
+  // - All-terms coverage match bonus: 2.0
+  // S_max = (2.5 * termCount) + 5.0
+  const maxPossibleScore = termCount * 2.5 + 5.0;
+  const normalized = rawScore / maxPossibleScore;
+  return Math.min(1, Math.max(0, Number(normalized.toFixed(4))));
 }

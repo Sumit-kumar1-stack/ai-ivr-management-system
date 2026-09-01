@@ -6,7 +6,17 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: { call: { findUnique: mocks.findUnique } } }));
-vi.mock("@/lib/logger", () => ({ createCallLogger: () => ({ info: vi.fn() }) }));
+vi.mock("@/lib/logger", () => ({
+  createCallLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+  createServerLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+  createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+}));
+vi.mock("@/lib/redis", () => ({
+  redisConnection: {
+    get: vi.fn().mockResolvedValue(null),
+    set: vi.fn().mockResolvedValue("OK"),
+  },
+}));
 vi.mock("@/services/knowledge/retrieval.service", () => ({ retrieveKnowledge: mocks.retrieveKnowledge }));
 
 import { searchKnowledgeBaseTool } from "@/services/tools/search-knowledge-base.tool";

@@ -1,5 +1,11 @@
 import { resolveRealtimeInputCapability } from "./realtime-input-capability.service";
 import { selectRuntime, type IVRRuntimeMode } from "./ivr-runtime-selector.service";
+import {
+  normalizeAIPolicy,
+  normalizeConversationalEscapeConfig,
+  normalizeNavigationConfig,
+  normalizePostActionConfig,
+} from "./ivr-runtime-menu.service";
 
 export type IVRFlowValidationSeverity = "ERROR" | "WARNING" | "INFO";
 
@@ -28,6 +34,7 @@ export interface ValidateIVRFlowInput {
   edges: unknown[];
   tenantId?: string | null;
   tenantPremiumVoiceEnabled?: boolean;
+  enforcePublicationReadiness?: boolean;
   allowedKnowledgeDocumentIds?: string[];
   allowedActionCodes?: string[];
   allowedTransferDestinationIds?: string[];
@@ -37,6 +44,22 @@ export interface ValidateIVRFlowInput {
   allowedAuthenticationLevels?: string[];
   provider?: string | null;
   voiceRuntime?: string | null;
+}
+
+export function isPlaceholderResourceToken(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const lower = value.trim().toLowerCase();
+  return (
+    lower === "doc-default" ||
+    lower === "dest-agent" ||
+    lower === "action-default" ||
+    lower === "placeholder" ||
+    lower === "placeholder-doc" ||
+    lower === "placeholder-dest" ||
+    lower.startsWith("placeholder-") ||
+    lower.startsWith("temp-") ||
+    lower.endsWith("-placeholder")
+  );
 }
 
 type Node = {
@@ -202,6 +225,11 @@ export function validateIVRFlowDefinition(
   if (stringValue(startNodes[0]?.data?.inputExperience) === "STAGED_HYBRID") {
     validateStagedHybridEntry(startNodes[0], nodes, edges, issues);
   }
+
+  validateNavigationConfiguration(startNodes[0], nodes, issues);
+  validatePostActionConfiguration(nodes, issues);
+  validateAIPolicyConfiguration(nodes, issues);
+  validateConversationalEscapeConfiguration(nodes, issues);
 
   const nodeIds = new Set(nodes.map(node => node.id));
 
@@ -464,15 +492,16 @@ function validateKnowledgeNode(
     issues.push(warn("KNOWLEDGE_SCOPE_EMPTY", node.id, "knowledgeDocumentIds", "Knowledge nodes should reference approved knowledge documents."));
   }
 
-  if (input.allowedKnowledgeDocumentIds !== undefined) {
-    const allowed = new Set(input.allowedKnowledgeDocumentIds.map(id => id.trim()).filter(Boolean));
-    for (const id of documentIds) {
+  for (const id of documentIds) {
+    if (isPlaceholderResourceToken(id) && (input.allowedKnowledgeDocumentIds !== undefined || input.enforcePublicationReadiness)) {
+      issues.push(error("KNOWLEDGE_PLACEHOLDER_UNRESOLVED", node.id, "knowledgeDocumentIds", `Knowledge document placeholder "${id}" must be replaced with an approved tenant document before publishing.`));
+    } else if (input.allowedKnowledgeDocumentIds !== undefined) {
+      const allowed = new Set(input.allowedKnowledgeDocumentIds.map(i => i.trim()).filter(Boolean));
       if (!allowed.has(id)) {
         issues.push(error("KNOWLEDGE_CROSS_TENANT", node.id, "knowledgeDocumentIds", `Knowledge document ${id} is not allowed in this flow context.`));
       }
     }
   }
-
 }
 
 function validateActionNode(
@@ -487,7 +516,9 @@ function validateActionNode(
     return;
   }
 
-  if (input.allowedActionCodes !== undefined) {
+  if (isPlaceholderResourceToken(actionCode) && (input.allowedActionCodes !== undefined || input.enforcePublicationReadiness)) {
+    issues.push(error("ACTION_PLACEHOLDER_UNRESOLVED", node.id, "actionCode", `Action placeholder "${actionCode}" must be resolved before publishing.`));
+  } else if (input.allowedActionCodes !== undefined) {
     const allowed = new Set(input.allowedActionCodes.map(code => code.trim().toUpperCase()).filter(Boolean));
     if (!allowed.has(actionCode.toUpperCase())) {
       issues.push(error("ACTION_NOT_ALLOWED", node.id, "actionCode", `Action code ${actionCode} is not permitted in this tenant context.`));
@@ -513,7 +544,9 @@ function validateTransferNode(
     issues.push(error("TRANSFER_LEGACY_FIELD", node.id, "transferDestinationId", "Use transferDestinationId only; legacy transfer destination aliases are not persisted."));
   }
 
-  if (destinationId && input.allowedTransferDestinationIds !== undefined) {
+  if (destinationId && isPlaceholderResourceToken(destinationId) && (input.allowedTransferDestinationIds !== undefined || input.enforcePublicationReadiness)) {
+    issues.push(error("TRANSFER_PLACEHOLDER_UNRESOLVED", node.id, "transferDestinationId", `Transfer destination placeholder "${destinationId}" must be replaced with a valid destination before publishing.`));
+  } else if (destinationId && input.allowedTransferDestinationIds !== undefined) {
     const allowed = new Set(input.allowedTransferDestinationIds.map(id => id.trim()).filter(Boolean));
     if (!allowed.has(destinationId)) {
       issues.push(error("TRANSFER_CROSS_TENANT", node.id, "transferDestinationId", `Transfer destination ${destinationId} is not allowed in this tenant context.`));
@@ -1098,5 +1131,342 @@ function inferSuggestedFix(code: string, message: string): string | null {
   if (code === "AUTH_LEVEL_NOT_ALLOWED") return "Choose an authentication level supported by this tenant.";
   if (code === "UNBOUNDED_LOOP") return "Add a terminating edge, retry limit, or escape path.";
   if (code === "AUTH_PATH_REQUIRED") return "Place an AUTH_GATE before this sensitive action or transfer.";
+  if (code === "NAV_HOME_TARGET_INVALID") return "Set HOME target node to an existing node in the flow.";
+  if (code === "NAV_COMMAND_DIGIT_COLLISION") return "Use distinct DTMF digits for each enabled navigation command.";
+  if (code === "NAV_COMMAND_PHRASE_COLLISION") return "Use distinct voice phrases for each enabled navigation command.";
+  if (code === "NAV_MENU_OPTION_COLLISION") return "Adjust menu option or navigation digits/phrases to prevent ambiguity.";
+  if (code === "POST_ACTION_TARGET_MISSING") return "Select a target node for the CONTINUE_TO_NODE post-action policy.";
+  if (code === "POST_ACTION_TARGET_INVALID") return "Choose an existing node in the flow as the post-action target.";
+  if (code === "POST_ACTION_INCOMPATIBLE_NODE") return "Remove post-action configuration from terminal or entry nodes.";
+  if (code === "POST_ACTION_SELF_LOOP") return "Change post-action target to a different node or choose STAY_CURRENT.";
+  if (code === "KNOWLEDGE_PLACEHOLDER_UNRESOLVED") return "Replace the placeholder knowledge document with an authorized document from your tenant catalog.";
+  if (code === "TRANSFER_PLACEHOLDER_UNRESOLVED") return "Replace the placeholder transfer destination with a valid team or agent destination.";
+  if (code === "ACTION_PLACEHOLDER_UNRESOLVED") return "Select an authorized integration action from your catalog.";
   return message.includes("requires") ? message : null;
+}
+
+function validatePostActionConfiguration(
+  nodes: Node[],
+  issues: IVRFlowValidationIssue[]
+): void {
+  for (const node of nodes) {
+    const postAction = normalizePostActionConfig(node.data);
+    if (!postAction) continue;
+
+    const nodeType = kind(node);
+    if (["START", "END_CALL", "HUMAN_TRANSFER"].includes(nodeType)) {
+      issues.push(
+        warn(
+          "POST_ACTION_INCOMPATIBLE_NODE",
+          node.id,
+          "postAction",
+          `Post-action policy is not applicable on ${nodeType} nodes.`
+        )
+      );
+    }
+
+    if (postAction.mode === "CONTINUE_TO_NODE") {
+      if (!postAction.targetNodeId) {
+        issues.push(
+          error(
+            "POST_ACTION_TARGET_MISSING",
+            node.id,
+            "postAction.targetNodeId",
+            "CONTINUE_TO_NODE post-action policy requires a target node ID."
+          )
+        );
+      } else if (!nodes.some(n => n.id === postAction.targetNodeId)) {
+        issues.push(
+          error(
+            "POST_ACTION_TARGET_INVALID",
+            node.id,
+            "postAction.targetNodeId",
+            `Configured post-action target node '${postAction.targetNodeId}' does not exist in the flow.`
+          )
+        );
+      } else if (postAction.targetNodeId === node.id) {
+        issues.push(
+          warn(
+            "POST_ACTION_SELF_LOOP",
+            node.id,
+            "postAction.targetNodeId",
+            "Post-action target node points to itself, which may cause an automatic transition loop."
+          )
+        );
+      }
+    }
+  }
+}
+
+function validateAIPolicyConfiguration(
+  nodes: Node[],
+  issues: IVRFlowValidationIssue[]
+): void {
+  const incompatibleKinds = ["START", "END_CALL", "AUTH_GATE", "CONDITION", "BUSINESS_HOURS"];
+
+  for (const node of nodes) {
+    if (!isRecord(node.data) || !isRecord(node.data.aiPolicy)) continue;
+    const nodeKind = kind(node);
+
+    if (incompatibleKinds.includes(nodeKind)) {
+      issues.push(
+        warn(
+          "AI_POLICY_INCOMPATIBLE_NODE",
+          node.id,
+          "aiPolicy",
+          `AI Policy is configured on node '${node.id}' of kind '${nodeKind}', which does not execute AI.`
+        )
+      );
+      continue;
+    }
+
+    const aiPolicy = normalizeAIPolicy(node.data);
+    if (!aiPolicy) {
+      issues.push(
+        error(
+          "AI_POLICY_INVALID_MODE",
+          node.id,
+          "aiPolicy.mode",
+          "Configured AI policy mode is invalid. Supported modes: NEVER, FREE_FORM_ONLY, LOW_CONFIDENCE_ONLY, ALWAYS_CONVERSATIONAL."
+        )
+      );
+      continue;
+    }
+
+    const raw = node.data.aiPolicy;
+    if (typeof raw.confidenceThreshold === "number" && (raw.confidenceThreshold < 0 || raw.confidenceThreshold > 1)) {
+      issues.push(
+        warn(
+          "AI_POLICY_INVALID_CONFIDENCE",
+          node.id,
+          "aiPolicy.confidenceThreshold",
+          "Confidence threshold must be a number between 0.0 and 1.0."
+        )
+      );
+    }
+
+    if (typeof raw.timeoutMs === "number" && (raw.timeoutMs < 500 || raw.timeoutMs > 30000)) {
+      issues.push(
+        warn(
+          "AI_POLICY_INVALID_TIMEOUT",
+          node.id,
+          "aiPolicy.timeoutMs",
+          "AI timeout should be between 500ms and 30,000ms."
+        )
+      );
+    }
+
+    if (aiPolicy.failureBehavior === "CUSTOM_DESTINATION") {
+      if (!aiPolicy.failureTargetNodeId) {
+        issues.push(
+          error(
+            "AI_POLICY_FAILURE_TARGET_MISSING",
+            node.id,
+            "aiPolicy.failureTargetNodeId",
+            "CUSTOM_DESTINATION failure behavior requires a failureTargetNodeId."
+          )
+        );
+      } else if (!nodes.some(n => n.id === aiPolicy.failureTargetNodeId)) {
+        issues.push(
+          error(
+            "AI_POLICY_FAILURE_TARGET_INVALID",
+            node.id,
+            "aiPolicy.failureTargetNodeId",
+            `Configured AI failure target node '${aiPolicy.failureTargetNodeId}' does not exist in the flow.`
+          )
+        );
+      } else if (aiPolicy.failureTargetNodeId === node.id) {
+        issues.push(
+          warn(
+            "AI_POLICY_SELF_LOOP",
+            node.id,
+            "aiPolicy.failureTargetNodeId",
+            "AI failure target points to itself, which may cause an infinite retry loop."
+          )
+        );
+      }
+    }
+  }
+}
+
+function validateConversationalEscapeConfiguration(
+  nodes: Node[],
+  issues: IVRFlowValidationIssue[]
+): void {
+  const incompatibleKinds = ["START", "END_CALL", "AUTH_GATE", "CONDITION", "BUSINESS_HOURS"];
+
+  for (const node of nodes) {
+    if (!isRecord(node.data) || (!isRecord(node.data.conversationalEscape) && !node.data.allowNaturalLanguageEscape && !node.data.naturalLanguageEscapeEnabled)) continue;
+    const nodeKind = kind(node);
+
+    if (incompatibleKinds.includes(nodeKind)) {
+      issues.push(
+        warn(
+          "CONVERSATIONAL_ESCAPE_INCOMPATIBLE_NODE",
+          node.id,
+          "conversationalEscape",
+          `Conversational Escape is configured on node '${node.id}' of kind '${nodeKind}', which is an internal/structural node.`
+        )
+      );
+      continue;
+    }
+
+    const escapeConfig = normalizeConversationalEscapeConfig(node.data);
+    if (!escapeConfig || !escapeConfig.enabled) continue;
+
+    if (!escapeConfig.targetNodeId) {
+      issues.push(
+        error(
+          "CONVERSATIONAL_ESCAPE_TARGET_REQUIRED",
+          node.id,
+          "conversationalEscape.targetNodeId",
+          "Conversational Escape is enabled but no target node ID is configured."
+        )
+      );
+    } else {
+      const targetNode = nodes.find(n => n.id === escapeConfig.targetNodeId);
+      if (!targetNode) {
+        issues.push(
+          error(
+            "CONVERSATIONAL_ESCAPE_TARGET_INVALID",
+            node.id,
+            "conversationalEscape.targetNodeId",
+            `Configured Conversational Escape target node '${escapeConfig.targetNodeId}' does not exist in the flow.`
+          )
+        );
+      } else if (targetNode.id === node.id) {
+        issues.push(
+          warn(
+            "CONVERSATIONAL_ESCAPE_SELF_LOOP",
+            node.id,
+            "conversationalEscape.targetNodeId",
+            "Conversational Escape target points to itself, which may cause a routing loop."
+          )
+        );
+      } else {
+        const targetKind = kind(targetNode);
+        if (incompatibleKinds.includes(targetKind)) {
+          issues.push(
+            error(
+              "CONVERSATIONAL_ESCAPE_TARGET_KIND_INVALID",
+              node.id,
+              "conversationalEscape.targetNodeId",
+              `Conversational Escape target node '${escapeConfig.targetNodeId}' is of kind '${targetKind}', which cannot handle conversational questions.`
+            )
+          );
+        }
+      }
+    }
+  }
+}
+
+function validateNavigationConfiguration(
+  start: Node | undefined,
+  nodes: Node[],
+  issues: IVRFlowValidationIssue[]
+): void {
+  if (!start) return;
+
+  const navConfig = normalizeNavigationConfig(start.data);
+  if (!navConfig) return;
+
+  if (navConfig.home.enabled && navConfig.home.targetNodeId) {
+    if (!nodes.some(n => n.id === navConfig.home.targetNodeId)) {
+      issues.push(
+        error(
+          "NAV_HOME_TARGET_INVALID",
+          start.id,
+          "navigation.home.targetNodeId",
+          `Configured HOME target node ${navConfig.home.targetNodeId} does not exist in the flow.`
+        )
+      );
+    }
+  }
+
+  const actions: Array<{ name: string; digits: string[]; phrases: string[]; enabled: boolean }> = [
+    { name: "HOME", digits: navConfig.home.digits, phrases: navConfig.home.phrases, enabled: navConfig.home.enabled },
+    { name: "BACK", digits: navConfig.back.digits, phrases: navConfig.back.phrases, enabled: navConfig.back.enabled },
+    { name: "REPEAT", digits: navConfig.repeat.digits, phrases: navConfig.repeat.phrases, enabled: navConfig.repeat.enabled },
+    { name: "END", digits: navConfig.end.digits, phrases: navConfig.end.phrases, enabled: navConfig.end.enabled },
+  ];
+
+  const enabledActions = actions.filter(a => a.enabled);
+
+  for (let i = 0; i < enabledActions.length; i++) {
+    for (let j = i + 1; j < enabledActions.length; j++) {
+      const a1 = enabledActions[i]!;
+      const a2 = enabledActions[j]!;
+
+      const sharedDigits = a1.digits.filter(d => a2.digits.includes(d));
+      if (sharedDigits.length > 0) {
+        issues.push(
+          warn(
+            "NAV_COMMAND_DIGIT_COLLISION",
+            start.id,
+            "navigation",
+            `Navigation actions ${a1.name} and ${a2.name} share conflicting DTMF digit(s): ${sharedDigits.join(", ")}.`
+          )
+        );
+      }
+
+      const sharedPhrases = a1.phrases.filter(p => a2.phrases.includes(p));
+      if (sharedPhrases.length > 0) {
+        issues.push(
+          warn(
+            "NAV_COMMAND_PHRASE_COLLISION",
+            start.id,
+            "navigation",
+            `Navigation actions ${a1.name} and ${a2.name} share conflicting voice phrase(s): ${sharedPhrases.join(", ")}.`
+          )
+        );
+      }
+    }
+  }
+
+  const allNavDigits = new Set(enabledActions.flatMap(a => a.digits));
+  const allNavPhrases = new Set(enabledActions.flatMap(a => a.phrases));
+
+  const menuNodes = nodes.filter(n => ["DTMF_MENU", "HYBRID_MENU"].includes(kind(n)));
+  for (const menu of menuNodes) {
+    const options = Array.isArray(menu.data?.options)
+      ? menu.data.options
+      : Array.isArray(menu.data?.menuOptions)
+        ? menu.data.menuOptions
+        : [];
+
+    for (const rawOption of options) {
+      if (!isRecord(rawOption)) continue;
+      const digit = stringValue(rawOption.digit) ?? stringValue(rawOption.dtmf);
+      const label = stringValue(rawOption.label)?.toLowerCase();
+      const phrases = (Array.isArray(rawOption.voicePhrases) ? rawOption.voicePhrases : Array.isArray(rawOption.phrases) ? rawOption.phrases : [])
+        .filter((p): p is string => typeof p === "string")
+        .map(p => p.toLowerCase());
+
+      if (digit && allNavDigits.has(digit.toLowerCase())) {
+        issues.push(
+          warn(
+            "NAV_MENU_OPTION_COLLISION",
+            menu.id,
+            "options",
+            `Menu option digit '${digit}' collides with configured navigation digit '${digit}'. At runtime, the menu option will take precedence.`
+          )
+        );
+      }
+
+      const optionPhrases = [label, ...phrases].filter(Boolean) as string[];
+      for (const phrase of optionPhrases) {
+        if (allNavPhrases.has(phrase)) {
+          issues.push(
+            warn(
+              "NAV_MENU_OPTION_COLLISION",
+              menu.id,
+              "options",
+              `Menu option phrase '${phrase}' collides with configured navigation phrase '${phrase}'. At runtime, the menu option will take precedence.`
+            )
+          );
+          break;
+        }
+      }
+    }
+  }
 }

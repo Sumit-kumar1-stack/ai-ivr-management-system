@@ -1,5 +1,6 @@
 import {
   CallAuthenticationLevel,
+  CallDirection,
 } from "@prisma/client";
 
 import {
@@ -301,6 +302,80 @@ describe(
               CallAuthenticationLevel.AUTH_LEVEL_1,
           })
         );
+      }
+    );
+
+    it(
+      "builds prompt with CommunicationCampaign knowledgeDocumentIds without requiring ownerUserId",
+      async () => {
+        mocks.getCall.mockResolvedValue({
+          id: "call-comm-rag",
+          direction: CallDirection.OUTBOUND,
+          tenantId: "tenant-bank-1",
+          authenticationLevel: CallAuthenticationLevel.AUTH_LEVEL_1,
+          communicationCampaign: {
+            id: "comm-1",
+            name: "OmniBank Summer Loan Offer",
+            knowledgeDocumentIds: ["doc-rate-card-1"],
+            ownerUserId: "mgr-1",
+            ownerUser: { tenantId: "tenant-bank-1" },
+          },
+          campaign: null,
+        });
+
+        mocks.resolveOutboundConversationContext.mockResolvedValue({
+          outbound: true,
+          purpose: null,
+          campaignId: "comm-1",
+          campaignName: "OmniBank Summer Loan Offer",
+          instruction: "Explain the personal loan rate of 8.5%.",
+          openingMessage: "Hello Asha.",
+          campaign: {
+            id: "comm-1",
+            name: "OmniBank Summer Loan Offer",
+            objective: "Pre-approved loan customers",
+            audience: "Pre-approved loan customers",
+            description: null,
+            instruction: "Explain the personal loan rate of 8.5%.",
+            runtime: "STANDARD",
+          },
+          customer: {
+            name: "Asha",
+            reference: "cust-1",
+            language: "English",
+          },
+          callLanguage: "English",
+        });
+
+        mocks.buildOutboundContextPrompt.mockReturnValue(
+          "Campaign: OmniBank Summer Loan Offer\nCustomer: Asha"
+        );
+
+        mocks.retrieveKnowledge.mockResolvedValue([
+          {
+            content: "The personal loan interest rate is 8.5% p.a.",
+            score: 0.95,
+            documentId: "doc-rate-card-1",
+            chunkIndex: 0,
+            classification: "INTERNAL",
+          },
+        ]);
+
+        const prompt = await buildPrompt("call-comm-rag", "What is the loan rate?");
+
+        expect(prompt).toContain("The personal loan interest rate is 8.5% p.a.");
+        expect(prompt).toContain("OmniBank Summer Loan Offer");
+        expect(mocks.retrieveKnowledge).toHaveBeenCalledWith(
+          "What is the loan rate?",
+          4,
+          expect.objectContaining({
+            knowledgeDocumentIds: ["doc-rate-card-1"],
+            tenantId: "tenant-bank-1",
+            ownerUserId: null,
+            callAuthenticationLevel: CallAuthenticationLevel.AUTH_LEVEL_1,
+          })
+        );
+        expect(mocks.resolveSecureCampaignKnowledgeDocumentIds).not.toHaveBeenCalled();
       }
     );
   }

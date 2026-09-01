@@ -162,6 +162,7 @@ export async function routeVoiceThroughIVR(
       inputMode: "VOICE",
       rawInput: transcript,
       previousNodeId: runtime.previousNodeId ?? undefined,
+      navigationHistory: runtime.navigationHistory ?? undefined,
     });
 
     const execution = await executeIVRGraphRoute(callId, route, {

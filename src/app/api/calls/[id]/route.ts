@@ -21,6 +21,10 @@ import {
   assertCallOwnership,
 } from "@/services/security/tenant-access.service";
 
+import {
+  normalizeRecordingStatus,
+} from "@/services/telephony/plivo-recording.service";
+
 
 const CALL_DETAILS_ROLES:
   readonly UserRole[] = [
@@ -336,6 +340,12 @@ export async function GET(
         status:
           call.status,
 
+        direction:
+          call.direction,
+
+        provider:
+          call.provider,
+
         language:
           call.language,
 
@@ -345,6 +355,21 @@ export async function GET(
           Boolean(
             call.recordingUrl
           ),
+
+        recordingStatus:
+          normalizeRecordingStatus(
+            call.recordingStatus,
+            Boolean(call.recordingUrl)
+          ),
+
+        recordingAvailableAt:
+          call.recordingAvailableAt,
+
+        requestedRuntime:
+          call.requestedRuntime,
+
+        effectiveRuntime:
+          call.effectiveRuntime,
 
         transcript:
           currentUser.role ===

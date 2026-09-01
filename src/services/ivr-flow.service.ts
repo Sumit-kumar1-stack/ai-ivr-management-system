@@ -12,6 +12,7 @@ import {
   prisma,
 } from "@/lib/prisma";
 import { ConflictError, NotFoundError } from "@/lib/app-error";
+import { canBypassMakerCheckerForTesting } from "@/services/security/governance-override.service";
 
 import {
   validateIVRFlowDefinition,
@@ -989,6 +990,8 @@ export class IVRFlowService {
         tenantId:
           flow.tenantId ?? null,
 
+        enforcePublicationReadiness: true,
+
         ...resourceAuthorization,
       });
 
@@ -1045,14 +1048,22 @@ export class IVRFlowService {
   static async approve(id: string, approvedByUserId: string) {
     const flow = await prisma.iVRFlow.findUnique({ where: { id } });
     if (!flow || flow.lifecycle !== IVRFlowLifecycle.PENDING_APPROVAL) throw new ConflictError("Only submitted IVR flows can be approved.", "IVR_FLOW_NOT_SUBMITTED");
-    if (flow.ownerUserId === approvedByUserId || flow.submittedByUserId === approvedByUserId) throw new ConflictError("A flow creator cannot approve their own submitted flow.", "IVR_FLOW_SELF_APPROVAL_BLOCKED");
+    const approver = await prisma.user.findUnique({ where: { id: approvedByUserId }, select: { id: true, role: true } });
+    const isSelf = flow.ownerUserId === approvedByUserId || flow.submittedByUserId === approvedByUserId;
+    if (isSelf && !canBypassMakerCheckerForTesting(approver)) {
+      throw new ConflictError("A flow creator cannot approve their own submitted flow.", "IVR_FLOW_SELF_APPROVAL_BLOCKED");
+    }
     return prisma.iVRFlow.update({ where: { id }, data: { lifecycle: IVRFlowLifecycle.APPROVED, approvedAt: new Date(), approvedByUserId } });
   }
 
   static async reject(id: string, rejectedByUserId: string, reason: string) {
     const flow = await prisma.iVRFlow.findUnique({ where: { id } });
     if (!flow || flow.lifecycle !== IVRFlowLifecycle.PENDING_APPROVAL) throw new ConflictError("Only submitted IVR flows can be rejected.", "IVR_FLOW_NOT_SUBMITTED");
-    if (flow.ownerUserId === rejectedByUserId || flow.submittedByUserId === rejectedByUserId) throw new ConflictError("A flow creator cannot reject their own submitted flow.", "IVR_FLOW_SELF_APPROVAL_BLOCKED");
+    const rejecter = await prisma.user.findUnique({ where: { id: rejectedByUserId }, select: { id: true, role: true } });
+    const isSelf = flow.ownerUserId === rejectedByUserId || flow.submittedByUserId === rejectedByUserId;
+    if (isSelf && !canBypassMakerCheckerForTesting(rejecter)) {
+      throw new ConflictError("A flow creator cannot reject their own submitted flow.", "IVR_FLOW_SELF_APPROVAL_BLOCKED");
+    }
     const rejectionReason = reason.trim();
     if (!rejectionReason) throw new ConflictError("A rejection reason is required.", "IVR_FLOW_REJECTION_REASON_REQUIRED");
     return prisma.iVRFlow.update({ where: { id }, data: { lifecycle: IVRFlowLifecycle.REJECTED, rejectedAt: new Date(), rejectedByUserId, rejectionReason } });

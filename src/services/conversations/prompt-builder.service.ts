@@ -82,14 +82,26 @@ export async function resolveStandardKnowledgeScope(
   const outboundContext = existing?.outboundContext ?? await resolveOutboundConversationContext(callId);
   const knowledgeDocumentIds = call?.direction === "INBOUND"
     ? toInboundKnowledgeDocumentIds(call.inboundProfile?.knowledgeDocumentIds)
-    : await resolveSecureCampaignKnowledgeDocumentIds(outboundContext.campaignId ?? "", {
-      ownerUserId: call?.campaign?.ownerUserId ?? null,
-    });
+    : call?.communicationCampaign
+      ? toInboundKnowledgeDocumentIds(call.communicationCampaign.knowledgeDocumentIds)
+      : call?.campaignId && call?.campaign
+        ? await resolveSecureCampaignKnowledgeDocumentIds(call.campaignId, {
+            ownerUserId: call.campaign.ownerUserId ?? null,
+          })
+        : outboundContext.campaignId
+          ? await resolveSecureCampaignKnowledgeDocumentIds(outboundContext.campaignId, {
+              ownerUserId: call?.campaign?.ownerUserId ?? null,
+            })
+          : [];
 
   return {
     knowledgeDocumentIds,
-    tenantId: call?.tenantId ?? call?.campaign?.ownerUser?.tenantId ?? null,
-    ownerUserId: call?.campaign?.ownerUserId ?? null,
+    tenantId:
+      call?.tenantId ??
+      call?.communicationCampaign?.ownerUser?.tenantId ??
+      call?.campaign?.ownerUser?.tenantId ??
+      null,
+    ownerUserId: call?.communicationCampaign ? null : call?.campaign?.ownerUserId ?? null,
     callAuthenticationLevel: call?.authenticationLevel ?? null,
   };
 }

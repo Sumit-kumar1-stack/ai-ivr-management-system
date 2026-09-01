@@ -13,25 +13,60 @@ export function resolveInboundKnowledgeDocumentIds(input: {
   tenantId: string | null | undefined;
   profileKnowledgeDocumentIds: unknown;
   ivrFlowVersion: PublishedInboundIvrVersion;
+  currentNodeId?: string | null;
 }): string[] {
   const profileIds = toStringArray(input.profileKnowledgeDocumentIds);
-  if (profileIds.length > 0) return profileIds;
-
   const tenantId = input.tenantId?.trim() ?? "";
   const version = input.ivrFlowVersion;
-  if (!tenantId || !version || version.status !== "PUBLISHED" || version.tenantId?.trim() !== tenantId) return [];
+  const isTenantMatch = Boolean(
+    tenantId &&
+    version &&
+    version.status === "PUBLISHED" &&
+    version.tenantId?.trim() === tenantId
+  );
 
-  return [...new Set(nodes(version.nodes).flatMap(node => {
-    const kind = stringValue(node.data?.nodeKind)?.toUpperCase();
-    return kind === "KNOWLEDGE" || kind === "AI" || kind === "AI_CONVERSATION"
-      ? toStringArray(node.data?.knowledgeDocumentIds ?? node.data?.knowledgeIds ?? node.data?.knowledge)
+  const authorizedIds =
+    profileIds.length > 0
+      ? profileIds
+      : isTenantMatch
+      ? [
+          ...new Set(
+            nodes(version?.nodes).flatMap(node => {
+              const kind = stringValue(node.data?.nodeKind)?.toUpperCase();
+              return kind === "KNOWLEDGE" || kind === "AI" || kind === "AI_CONVERSATION"
+                ? toStringArray(
+                    node.data?.knowledgeDocumentIds ??
+                      node.data?.knowledgeIds ??
+                      node.data?.knowledge
+                  )
+                : [];
+            })
+          ),
+        ]
       : [];
-  }))];
+
+  if (input.currentNodeId && isTenantMatch) {
+    const allNodes = nodes(version?.nodes);
+    const activeNode = allNodes.find(node => node.id === input.currentNodeId);
+    if (activeNode && stringValue(activeNode.data?.nodeKind)?.toUpperCase() === "KNOWLEDGE") {
+      const nodeDocs = toStringArray(
+        activeNode.data?.knowledgeDocumentIds ??
+          activeNode.data?.knowledgeIds ??
+          activeNode.data?.knowledge
+      );
+      return nodeDocs.filter(id => authorizedIds.includes(id));
+    }
+  }
+
+  return authorizedIds;
 }
 
-function nodes(value: unknown): Array<{ data?: Record<string, unknown> }> {
+function nodes(value: unknown): Array<{ id?: string; data?: Record<string, unknown> }> {
   return Array.isArray(value)
-    ? value.filter(isRecord).map(node => ({ data: isRecord(node.data) ? node.data : undefined }))
+    ? value.filter(isRecord).map(node => ({
+        id: stringValue(node.id) ?? undefined,
+        data: isRecord(node.data) ? node.data : undefined,
+      }))
     : [];
 }
 

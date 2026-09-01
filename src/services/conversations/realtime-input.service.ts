@@ -11,6 +11,7 @@ import {
   routeVoiceThroughIVR,
   type HybridVoiceRouteResult,
 } from "@/services/ivr/ivr-hybrid-router.service";
+import { normalizeNavigationConfig } from "@/services/ivr/ivr-runtime-menu.service";
 import { IVRFlowSessionService } from "@/services/ivr/ivr-flow-session.service";
 import { orchestrateHumanTransfer } from "@/services/telephony/human-transfer-orchestrator.service";
 import { VoiceWorker } from "@/services/voice/voice-worker.service";
@@ -73,14 +74,33 @@ export async function routeRealtimeCallInput(
   if (!callId) return ignored("INVALID_CALL_ID");
 
   if (input.type === "SILENCE") {
-    return ignored("SILENCE_OBSERVED");
+    const graphRoute = await routeDtmfThroughIVR(callId, "");
+    await deliverGraphResult(callId, graphRoute, options);
+    return fromGraph(graphRoute, "SILENCE", "");
   }
 
   if (input.type === "VOICE") {
     if (!input.isFinal || !input.text.trim()) return ignored("VOICE_PARTIAL");
-    const globalCommand = globalVoiceCommand(input.text);
-    if (globalCommand) return routeSystemInput(callId, globalCommand, options);
+
+    const session = await IVRFlowSessionService.get(callId);
+    const normalizedInput = input.text.trim().toLowerCase();
+    if (
+      session?.lastValue &&
+      session.lastValue.trim().toLowerCase() === normalizedInput &&
+      session.lastTriggeredAt &&
+      Date.now() - session.lastTriggeredAt < 3000
+    ) {
+      return ignored("DUPLICATE_VOICE_TURN");
+    }
+
     const graphRoute = await routeVoiceThroughIVR(callId, input.text, options.turnId);
+    if (graphRoute.graphExecution && graphRoute.matched) {
+      await deliverGraphResult(callId, graphRoute, options);
+      return fromGraph(graphRoute, "VOICE", input.text);
+    }
+    const context = await getActiveFlowContext(callId);
+    const globalCommand = globalVoiceCommand(input.text, context ?? undefined);
+    if (globalCommand) return routeSystemInput(callId, globalCommand, options);
     if (graphRoute.graphExecution) {
       await deliverGraphResult(callId, graphRoute, options);
       return fromGraph(graphRoute, "VOICE", input.text);
@@ -125,8 +145,16 @@ export async function routeRealtimeCallInput(
   return fromGraph(graphRoute, "DTMF", digit);
 }
 
-function globalVoiceCommand(text: string): Extract<RealtimeCallInput, { type: "SYSTEM" }>['event'] | null {
+function globalVoiceCommand(text: string, context?: ActiveFlowContext): Extract<RealtimeCallInput, { type: "SYSTEM" }>['event'] | null {
   const normalized = text.trim().toLowerCase().replace(/[.!?]/g, "");
+  if (context) {
+    const navConfig = normalizeNavigationConfig(context.currentNode.data) ?? normalizeNavigationConfig(context.start.data);
+    if (navConfig) {
+      if (navConfig.home.enabled && navConfig.home.phrases.some(p => p === normalized || normalized.includes(p))) return "MAIN_MENU";
+      if (navConfig.repeat.enabled && navConfig.repeat.phrases.some(p => p === normalized || normalized.includes(p))) return "REPEAT";
+      if (navConfig.end.enabled && navConfig.end.phrases.some(p => p === normalized || normalized.includes(p))) return "END_CALL";
+    }
+  }
   if (["agent", "human", "talk to a person", "talk to an agent", "talk to an agent please", "customer care", "representative", "talk to a representative"].includes(normalized)) return "AGENT_REQUEST";
   if (["repeat", "repeat that", "say that again"].includes(normalized)) return "REPEAT";
   if (["main menu", "go back"].includes(normalized)) return "MAIN_MENU";
@@ -215,14 +243,48 @@ async function routeShortcut(
   if (String(context.currentNode.data?.nodeKind ?? "").toUpperCase() === "CONFIRMATION") {
     return ignored("END_CALL_DEFERRED_TO_CONFIRMATION");
   }
-  const result = await endProviderCall(callId);
+
+  const option = (
+    Array.isArray(context.currentNode.data?.options)
+      ? context.currentNode.data.options
+      : Array.isArray(context.currentNode.data?.menuOptions)
+        ? context.currentNode.data.menuOptions
+        : []
+  ).find(opt => isRecord(opt) && (opt.digit === value || opt.dtmf === value));
+
+  const targetNodeId =
+    (isRecord(option) && typeof option.destinationNodeId === "string" ? option.destinationNodeId : null) ??
+    configuredNode(context, "endCallNodeId", ["END_CALL"]);
+
+  if (targetNodeId) {
+    const route = await routeToIVRNode(callId, targetNodeId, "END_CALL", value);
+    await deliverGraphResult(callId, route, options);
+    return fromGraph(route, "SYSTEM", value, "END_CALL");
+  }
+
+  const fallbackGoodbye = "Thank you for calling. Have a great day.";
+
+  if (options.deliverOutput !== false) {
+    void VoiceWorker.start(callId);
+    await VoiceWorker.addText(callId, fallbackGoodbye);
+    const result = await endProviderCall(callId);
+    return {
+      handled: result.success,
+      intent: { intent: "END_CALL", source: "SYSTEM", confidence: 1, originalInput: value },
+      graphExecution: null,
+      speechText: result.success ? fallbackGoodbye : result.message,
+      endCall: result.success,
+      reason: result.code ?? "END_CALL_REQUESTED",
+    };
+  }
+
   return {
-    handled: result.success,
+    handled: true,
     intent: { intent: "END_CALL", source: "SYSTEM", confidence: 1, originalInput: value },
     graphExecution: null,
-    speechText: result.success ? null : result.message,
-    endCall: result.success,
-    reason: result.code ?? "END_CALL_REQUESTED",
+    speechText: fallbackGoodbye,
+    endCall: true,
+    reason: "END_CALL_REQUESTED",
   };
 }
 
@@ -232,6 +294,9 @@ async function deliverGraphResult(callId: string, route: HybridVoiceRouteResult,
     turnId: options.turnId,
     recordConversationMessage: options.recordConversationMessage ?? false,
   });
+  if (route.graphExecution.endCall) {
+    await endProviderCall(callId);
+  }
 }
 
 function fromGraph(
@@ -271,6 +336,16 @@ async function getActiveFlowContext(callId: string): Promise<ActiveFlowContext |
 
 function shortcutForDigit(digit: string, context: ActiveFlowContext): ShortcutAction | null {
   if (overridesShortcut(digit, context.currentNode.data)) return null;
+
+  const navConfig = normalizeNavigationConfig(context.currentNode.data) ?? normalizeNavigationConfig(context.start.data);
+  if (navConfig) {
+    if (navConfig.home.enabled && navConfig.home.digits.includes(digit)) return "MAIN_MENU";
+    if (navConfig.back.enabled && navConfig.back.digits.includes(digit)) return "MAIN_MENU";
+    if (navConfig.repeat.enabled && navConfig.repeat.digits.includes(digit)) return "REPEAT_LAST_RESPONSE";
+    if (navConfig.end.enabled && navConfig.end.digits.includes(digit)) return "END_CALL";
+    return null;
+  }
+
   const configured = readShortcut(context.start.data, digit);
   return configured === false ? null : configured ?? defaultShortcuts[digit] ?? null;
 }

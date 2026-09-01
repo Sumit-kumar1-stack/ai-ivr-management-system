@@ -271,11 +271,8 @@ export class VoiceService {
         const retryable =
           typeof status === "number" &&
           (
-            status === 429 ||
-            (
-              status >= 500 &&
-              status < 600
-            )
+            status >= 500 &&
+            status < 600
           ) &&
           attempt < MAX_RETRYABLE_TTS_ATTEMPTS;
 

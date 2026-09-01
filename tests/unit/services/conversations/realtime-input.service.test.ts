@@ -110,10 +110,65 @@ describe("Realtime input bus", () => {
     expect(mocks.routeMainMenu).toHaveBeenCalledWith("call-1", "menu");
     expect(menu.intent).toMatchObject({ intent: "MAIN_MENU" });
     expect(mocks.endCall).toHaveBeenCalledWith("call-1");
-    expect(end).toMatchObject({ handled: true, endCall: true });
+    expect(end).toMatchObject({ handled: true, endCall: true, speechText: "Thank you for calling. Have a great day." });
+  });
+
+  it("does NOT invoke provider REST hangup on XML GetInput END_CALL path (deliverOutput: false)", async () => {
+    const end = await routeRealtimeCallInput(
+      { type: "DTMF", callId: "call-1", provider: "PLIVO", digit: "#", timestamp: 1 },
+      { deliverOutput: false }
+    );
+
+    expect(mocks.endCall).not.toHaveBeenCalled();
+    expect(end).toMatchObject({ handled: true, endCall: true, speechText: "Thank you for calling. Have a great day." });
+  });
+
+  it("routes END_CALL through builder END_CALL node when present without invoking REST hangup on XML path", async () => {
+    const endExecution = {
+      status: "ENDED" as const,
+      currentNodeId: "end-node",
+      nextNodeId: null,
+      speechText: "Thank you for contacting Test Services. Goodbye.",
+      awaitInput: false,
+      endCall: true,
+      transitionReason: "END_CALL",
+    };
+    mocks.getCall.mockResolvedValue({
+      id: "call-1",
+      ivrFlowVersion: {
+        status: "PUBLISHED",
+        nodes: [
+          { id: "start", data: { nodeKind: "START", mainMenuNodeId: "menu" } },
+          { id: "menu", data: { nodeKind: "HYBRID_MENU", options: [{ digit: "9", label: "End call", action: "END_CALL", destinationNodeId: "end-node" }] } },
+          { id: "end-node", data: { nodeKind: "END_CALL", prompt: "Thank you for contacting Test Services. Goodbye." } },
+        ],
+      },
+    });
+    mocks.routeToNode.mockResolvedValue({
+      matched: true,
+      confidence: 1,
+      action: "NAVIGATE",
+      execution: endExecution,
+      graphExecution: endExecution,
+      continueConversation: false,
+    });
+
+    const result = await routeRealtimeCallInput(
+      { type: "DTMF", callId: "call-1", provider: "PLIVO", digit: "9", timestamp: 1 },
+      { deliverOutput: false }
+    );
+
+    expect(mocks.routeToNode).toHaveBeenCalledWith("call-1", "end-node", "END_CALL", "9");
+    expect(mocks.endCall).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      handled: true,
+      endCall: true,
+      speechText: "Thank you for contacting Test Services. Goodbye.",
+    });
   });
 
   it("maps Plivo live voice commands through the same canonical actions as 0, 9, star, and hash", async () => {
+    mocks.routeVoice.mockResolvedValue({ matched: false, confidence: 0, graphExecution: null, continueConversation: false });
     mocks.getConversation.mockResolvedValue({ messages: [{ role: "ASSISTANT", content: "A previous answer." }] });
     await routeRealtimeCallInput({ type: "VOICE", callId: "call-1", provider: "PLIVO", text: "talk to a person", isFinal: true, timestamp: 1 });
     await routeRealtimeCallInput({ type: "VOICE", callId: "call-1", provider: "PLIVO", text: "repeat that", isFinal: true, timestamp: 2 });
@@ -124,7 +179,6 @@ describe("Realtime input bus", () => {
     expect(mocks.addText).toHaveBeenCalledWith("call-1", "A previous answer.");
     expect(mocks.routeMainMenu).toHaveBeenCalledWith("call-1", "menu");
     expect(mocks.endCall).toHaveBeenCalledWith("call-1");
-    expect(mocks.routeVoice).not.toHaveBeenCalled();
   });
 
   it("rejects malformed DTMF and never treats it as a graph action", async () => {

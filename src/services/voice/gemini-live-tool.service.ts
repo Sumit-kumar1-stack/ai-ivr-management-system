@@ -3,6 +3,10 @@ import type {
 } from "@google/genai";
 
 import {
+  prisma,
+} from "@/lib/prisma";
+
+import {
   createCallLogger,
   normalizeError,
 } from "@/lib/logger";
@@ -56,6 +60,10 @@ import type {
 import {
   GeminiLiveActionConfirmationService,
 } from "./gemini-live-action-confirmation.service";
+
+import {
+  routeRealtimeCallInput,
+} from "@/services/conversations/realtime-input.service";
 
 import type {
   GeminiLiveBusinessActionName,
@@ -911,6 +919,49 @@ const GEMINI_LIVE_FUNCTION_DECLARATIONS:
       ],
     },
   },
+
+  //------------------------------------------------
+  // Select IVR Menu Option
+  //------------------------------------------------
+
+  {
+    name:
+      "selectMenuOption",
+
+    description:
+      [
+        "Select a menu option or navigation path on the active IVR menu.",
+        "Use when the caller selects an option or speaks a menu topic",
+        "(e.g. Loan Information, Eligibility, Documents, Human Agent, Repeat Menu, End Call).",
+      ].join(
+        " "
+      ),
+
+    parametersJsonSchema: {
+      type:
+        "object",
+
+      additionalProperties:
+        false,
+
+      properties: {
+        option: {
+          type:
+            "string",
+
+          description:
+            "The menu topic, option phrase, or digit selected by the caller (e.g. 'loan information', 'eligibility', 'documents', 'human agent', 'repeat', 'goodbye', '1', '2', '3', '4', '8', '9').",
+
+          maxLength:
+            200,
+        },
+      },
+
+      required: [
+        "option",
+      ],
+    },
+  },
 ];
 
 //--------------------------------------------------
@@ -1032,6 +1083,17 @@ export async function executeGeminiLiveFunctionCall(
 
       case "searchKnowledgeBase":
         return await executeKnowledgeTool(
+          normalizedCallId,
+          functionCall,
+          signal
+        );
+
+      //--------------------------------------------
+      // IVR Navigation
+      //--------------------------------------------
+
+      case "selectMenuOption":
+        return await executeSelectMenuOptionTool(
           normalizedCallId,
           functionCall,
           signal
@@ -1313,6 +1375,115 @@ async function executeKnowledgeTool(
 
       output:
         result.result,
+    },
+  };
+}
+
+//--------------------------------------------------
+// IVR Menu Selection Tool
+//--------------------------------------------------
+
+async function executeSelectMenuOptionTool(
+  callId:
+    string,
+
+  functionCall:
+    GeminiLiveFunctionCall,
+
+  signal?:
+    AbortSignal
+): Promise<GeminiLiveFunctionResponse> {
+  throwIfAborted(
+    signal
+  );
+
+  const args =
+    functionCall.args ??
+    {};
+
+  const option =
+    readRequiredString(
+      args,
+      "option",
+      200
+    );
+
+  if (
+    !option
+  ) {
+    return toolError({
+      functionCall,
+
+      name:
+        "selectMenuOption",
+
+      code:
+        "INVALID_OPTION",
+
+      message:
+        "A menu option or topic phrase is required.",
+    });
+  }
+
+  const call =
+    await prisma.call.findUnique({
+      where: {
+        id: callId,
+      },
+      select: {
+        provider: true,
+      },
+    });
+
+  const provider =
+    (call?.provider as "TWILIO" | "PLIVO" | "EXOTEL") ??
+    "PLIVO";
+
+  const result =
+    await routeRealtimeCallInput({
+      type:
+        "VOICE",
+
+      callId,
+
+      provider,
+
+      text:
+        option,
+
+      isFinal:
+        true,
+
+      timestamp:
+        Date.now(),
+    });
+
+  throwIfAborted(
+    signal
+  );
+
+  return {
+    id:
+      functionCall.id,
+
+    name:
+      "selectMenuOption",
+
+    response: {
+      success:
+        result.handled,
+
+      destinationNodeId:
+        result.graphExecution?.currentNodeId ??
+        null,
+
+      transitionReason:
+        result.graphExecution?.transitionReason ??
+        result.reason,
+
+      speechText:
+        result.speechText ??
+        null,
     },
   };
 }

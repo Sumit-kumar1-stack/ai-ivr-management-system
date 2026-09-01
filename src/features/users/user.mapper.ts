@@ -6,6 +6,7 @@ export function toUserResponse(user: User) {
     fullName: user.fullName,
     email: user.email,
     role: user.role,
+    campaignCapabilities: user.campaignCapabilities,
     phone: user.phone,
     avatar: user.avatar,
     tenantId: user.tenantId,

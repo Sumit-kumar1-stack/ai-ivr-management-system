@@ -62,7 +62,7 @@ interface BuilderContextType {
   resetDraft: () => void;
   applyTemplate: (templateId: string) => void;
   replaceGraph: (next: { nodes: IVRNode[]; edges: IVREdge[] }) => void;
-  applyGeneratedGraph: (next: { nodes: IVRNode[]; edges: IVREdge[] }) => void;
+  applyGeneratedGraph: (next: { nodes: IVRNode[]; edges: IVREdge[]; name?: string }) => void;
   canUndo: boolean; canRedo: boolean; undo: () => void; redo: () => void;
   commitGraph: (next: { nodes: IVRNode[]; edges: IVREdge[] }) => void;
 }
@@ -246,12 +246,15 @@ export function IVRBuilderProvider({
     commitGraph(next);
   }
 
-  function applyGeneratedGraph(next: { nodes: IVRNode[]; edges: IVREdge[] }): void {
+  function applyGeneratedGraph(next: { nodes: IVRNode[]; edges: IVREdge[]; name?: string }): void {
     // This is the single transition from a Copilot candidate into the shared
     // editable draft used by the canvas, inspectors, save, validation, and simulation.
     const draft = applyGeneratedGraphToDraft(next);
     setNodes(draft.nodes);
     setEdges(draft.edges);
+    if (draft.name && (!flowName || flowName === "Untitled Flow" || !selectedFlow)) {
+      setFlowName(draft.name);
+    }
     setMode(draft.mode);
     setSaveState(draft.saveState);
     history.current.reset({ nodes: draft.nodes, edges: draft.edges });
