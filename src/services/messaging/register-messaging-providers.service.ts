@@ -7,6 +7,10 @@ import {
 } from "@/providers/messaging/plivo-sms.adapter";
 
 import {
+  ExotelSmsAdapter,
+} from "@/providers/messaging/exotel-sms.adapter";
+
+import {
   MetaWhatsAppAdapter,
 } from "@/providers/messaging/meta-whatsapp.adapter";
 
@@ -46,6 +50,20 @@ export function registerMessagingProviders():
   ) {
     registerMessagingProvider(
       new PlivoSmsAdapter()
+    );
+  }
+
+  //------------------------------------------------
+  // Exotel SMS
+  //------------------------------------------------
+
+  if (
+    !getMessagingProvider(
+      "EXOTEL"
+    )
+  ) {
+    registerMessagingProvider(
+      new ExotelSmsAdapter()
     );
   }
 

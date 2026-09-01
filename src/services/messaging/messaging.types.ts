@@ -197,6 +197,65 @@ export interface ResolveMessagingProviderOptions {
 }
 
 //--------------------------------------------------
+// Provider Descriptor & Status Model (Phase M4)
+//--------------------------------------------------
+
+export interface MessagingProviderDescriptor {
+  provider:
+    MessagingProviderName;
+
+  channel:
+    MessagingChannel;
+
+  label:
+    string;
+
+  capabilities:
+    readonly MessagingProviderCapability[];
+
+  supported:
+    boolean;
+
+  configured:
+    boolean;
+
+  enabled:
+    boolean;
+
+  available:
+    boolean;
+
+  missingConfigurationKeys?:
+    readonly string[];
+}
+
+export interface MessagingProviderHealth {
+  provider:
+    MessagingProviderName;
+
+  channel:
+    MessagingChannel;
+
+  label:
+    string;
+
+  capabilities:
+    readonly MessagingProviderCapability[];
+
+  configured:
+    boolean;
+
+  enabled:
+    boolean;
+
+  available:
+    boolean;
+
+  missingConfigurationKeys:
+    readonly string[];
+}
+
+//--------------------------------------------------
 // Capability Matrix
 //--------------------------------------------------
 

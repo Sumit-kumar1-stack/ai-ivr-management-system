@@ -942,6 +942,244 @@ describe(
             );
           }
         );
+
+        it(
+          "successfully dispatches campaign SMS via Exotel when Exotel adapter is resolved",
+          async () => {
+            const originalExotelUrl =
+              process.env
+                .EXOTEL_PUBLIC_BASE_URL;
+
+            process.env.EXOTEL_PUBLIC_BASE_URL =
+              "https://exotel-app.example.com";
+
+            const mockSend =
+              vi.fn().mockResolvedValue({
+                success:
+                  true,
+
+                provider:
+                  "EXOTEL",
+
+                channel:
+                  "SMS",
+
+                providerMessageId:
+                  "exo-msg-sid-1",
+
+                status:
+                  "queued",
+              });
+
+            mocks.resolveMessagingProvider.mockReturnValueOnce({
+              provider:
+                "EXOTEL",
+
+              channels: [
+                "SMS",
+              ],
+
+              capabilities: [
+                "SMS_OUTBOUND",
+                "SMS_STATUS_CALLBACK",
+              ],
+
+              statusCallbackPath:
+                "/api/exotel/messaging/status",
+
+              isConfigured:
+                () => true,
+
+              send:
+                mockSend,
+            });
+
+            const result =
+              await dispatchCommunicationSms({
+                campaignId:
+                  "camp-exotel-1",
+
+                recipientId:
+                  "rec-exotel-1",
+
+                recipient:
+                  "+919876543210",
+
+                customerName:
+                  "Aarav",
+              });
+
+            expect(
+              result.success
+            ).toBe(
+              true
+            );
+
+            expect(
+              mockSend
+            ).toHaveBeenCalledWith(
+              expect.objectContaining({
+                channel:
+                  "SMS",
+
+                recipient:
+                  "+919876543210",
+
+                statusCallbackUrl:
+                  expect.stringContaining(
+                    "/api/exotel/messaging/status?messageId=outbound-msg-1"
+                  ),
+              })
+            );
+
+            if (
+              originalExotelUrl !==
+              undefined
+            ) {
+              process.env.EXOTEL_PUBLIC_BASE_URL =
+                originalExotelUrl;
+            } else {
+              delete process.env.EXOTEL_PUBLIC_BASE_URL;
+            }
+          }
+        );
+
+        it(
+          "WhatsApp failure followed by SMS dispatch routes cleanly to configured Exotel SMS adapter",
+          async () => {
+            // Step 1: WhatsApp fails
+            const mockWhatsAppSend =
+              vi.fn().mockResolvedValue({
+                success:
+                  false,
+
+                provider:
+                  "META",
+
+                channel:
+                  "WHATSAPP",
+
+                code:
+                  "META_131026",
+
+                message:
+                  "Message undeliverable",
+              });
+
+            mocks.resolveMessagingProvider.mockReturnValueOnce({
+              provider:
+                "META",
+
+              channels: [
+                "WHATSAPP",
+              ],
+
+              capabilities: [
+                "WHATSAPP_OUTBOUND",
+                "WHATSAPP_TEMPLATE",
+              ],
+
+              isConfigured:
+                () => true,
+
+              send:
+                mockWhatsAppSend,
+            });
+
+            const waResult =
+              await dispatchCommunicationWhatsApp({
+                campaignId:
+                  "camp-fallback-exo",
+
+                recipientId:
+                  "rec-fallback-exo",
+
+                recipient:
+                  "+919876543210",
+
+                customerName:
+                  "Priya",
+              });
+
+            expect(
+              waResult.success
+            ).toBe(
+              false
+            );
+
+            // Step 2: Fallback executes SMS dispatch, resolving Exotel SMS
+            const mockExotelSend =
+              vi.fn().mockResolvedValue({
+                success:
+                  true,
+
+                provider:
+                  "EXOTEL",
+
+                channel:
+                  "SMS",
+
+                providerMessageId:
+                  "exotel-fallback-sid",
+
+                status:
+                  "queued",
+              });
+
+            mocks.resolveMessagingProvider.mockReturnValueOnce({
+              provider:
+                "EXOTEL",
+
+              channels: [
+                "SMS",
+              ],
+
+              capabilities: [
+                "SMS_OUTBOUND",
+                "SMS_STATUS_CALLBACK",
+              ],
+
+              isConfigured:
+                () => true,
+
+              send:
+                mockExotelSend,
+            });
+
+            const smsResult =
+              await dispatchCommunicationSms({
+                campaignId:
+                  "camp-fallback-exo",
+
+                recipientId:
+                  "rec-fallback-exo",
+
+                recipient:
+                  "+919876543210",
+
+                customerName:
+                  "Priya",
+              });
+
+            expect(
+              smsResult.success
+            ).toBe(
+              true
+            );
+
+            expect(
+              mockExotelSend
+            ).toHaveBeenCalledWith(
+              expect.objectContaining({
+                channel:
+                  "SMS",
+
+                recipient:
+                  "+919876543210",
+              })
+            );
+          }
+        );
       }
     );
   }

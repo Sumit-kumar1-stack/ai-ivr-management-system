@@ -124,6 +124,15 @@ const KNOWN_OPTIONAL_VARIABLES =
     "RETENTION_MAX_RECORDS_PER_RUN",
 
     "WHATSAPP_ENABLED",
+    "SMS_PROVIDER",
+    "WHATSAPP_PROVIDER",
+    "PLIVO_SMS_FROM",
+    "EXOTEL_SMS_FROM",
+    "META_APP_SECRET",
+    "META_WHATSAPP_ACCESS_TOKEN",
+    "META_WHATSAPP_PHONE_NUMBER_ID",
+    "META_WHATSAPP_VERIFY_TOKEN",
+    "META_PUBLIC_BASE_URL",
 
     "META_WA_TEMPLATE_LANGUAGE",
     "META_WHATSAPP_API_VERSION",
@@ -906,6 +915,187 @@ function checkMessaging(
   checks:
     ProductionEnvironmentCheck[]
 ): boolean {
+  //------------------------------------------------
+  // SMS Provider Configuration Validation
+  //------------------------------------------------
+
+  const rawSmsProvider =
+    readEnvironmentValue(
+      env,
+      "SMS_PROVIDER"
+    );
+
+  const smsProvider =
+    rawSmsProvider
+      ?.trim()
+      .toLowerCase();
+
+  if (
+    rawSmsProvider &&
+    smsProvider !==
+      "twilio" &&
+    smsProvider !==
+      "plivo" &&
+    smsProvider !==
+      "exotel"
+  ) {
+    addCheck(
+      checks,
+      "SMS_PROVIDER",
+      "FAIL",
+      "must be twilio, plivo, or exotel"
+    );
+  } else if (
+    smsProvider ===
+    "twilio"
+  ) {
+    addCheck(
+      checks,
+      "SMS_PROVIDER",
+      "PASS",
+      "Twilio production SMS provider selected"
+    );
+
+    checkRequiredSecret(
+      env,
+      checks,
+      "TWILIO_ACCOUNT_SID",
+      "required for Twilio SMS messaging"
+    );
+
+    checkRequiredSecret(
+      env,
+      checks,
+      "TWILIO_AUTH_TOKEN",
+      "required for Twilio SMS messaging"
+    );
+  } else if (
+    smsProvider ===
+    "plivo"
+  ) {
+    addCheck(
+      checks,
+      "SMS_PROVIDER",
+      "PASS",
+      "Plivo production SMS provider selected"
+    );
+
+    checkRequiredSecret(
+      env,
+      checks,
+      "PLIVO_AUTH_ID",
+      "required for Plivo SMS messaging"
+    );
+
+    checkRequiredSecret(
+      env,
+      checks,
+      "PLIVO_AUTH_TOKEN",
+      "required for Plivo SMS messaging"
+    );
+
+    checkRequiredSecret(
+      env,
+      checks,
+      "PLIVO_SMS_FROM",
+      "required for Plivo SMS messaging sender"
+    );
+  } else if (
+    smsProvider ===
+    "exotel"
+  ) {
+    addCheck(
+      checks,
+      "SMS_PROVIDER",
+      "PASS",
+      "Exotel production SMS provider selected"
+    );
+
+    checkRequiredSecret(
+      env,
+      checks,
+      "EXOTEL_ACCOUNT_SID",
+      "required for Exotel SMS messaging"
+    );
+
+    checkRequiredSecret(
+      env,
+      checks,
+      "EXOTEL_API_KEY",
+      "required for Exotel SMS messaging"
+    );
+
+    checkRequiredSecret(
+      env,
+      checks,
+      "EXOTEL_API_TOKEN",
+      "required for Exotel SMS messaging"
+    );
+
+    checkRequiredSecret(
+      env,
+      checks,
+      "EXOTEL_SUBDOMAIN",
+      "required for Exotel SMS messaging"
+    );
+
+    checkRequiredSecret(
+      env,
+      checks,
+      "EXOTEL_SMS_FROM",
+      "required for Exotel SMS messaging sender"
+    );
+  } else {
+    addCheck(
+      checks,
+      "SMS_PROVIDER",
+      "PASS",
+      "default Twilio SMS provider selected"
+    );
+  }
+
+  //------------------------------------------------
+  // WhatsApp Provider Configuration Validation
+  //------------------------------------------------
+
+  const rawWhatsAppProvider =
+    readEnvironmentValue(
+      env,
+      "WHATSAPP_PROVIDER"
+    );
+
+  const whatsAppProvider =
+    rawWhatsAppProvider
+      ?.trim()
+      .toLowerCase();
+
+  if (
+    rawWhatsAppProvider &&
+    whatsAppProvider !==
+      "meta"
+  ) {
+    addCheck(
+      checks,
+      "WHATSAPP_PROVIDER",
+      "FAIL",
+      "must be meta"
+    );
+  } else if (
+    whatsAppProvider ===
+    "meta"
+  ) {
+    addCheck(
+      checks,
+      "WHATSAPP_PROVIDER",
+      "PASS",
+      "Meta WhatsApp provider selected"
+    );
+  }
+
+  //------------------------------------------------
+  // WhatsApp Channel Validation
+  //------------------------------------------------
+
   const rawWhatsappEnabled =
     readEnvironmentValue(
       env,

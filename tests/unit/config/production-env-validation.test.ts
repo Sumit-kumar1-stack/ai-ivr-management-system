@@ -450,5 +450,269 @@ describe(
         );
       }
     );
+
+    //------------------------------------------------
+    // Phase M4: Messaging Provider Production Env Tests
+    //------------------------------------------------
+
+    it(
+      "rejects an invalid SMS_PROVIDER value in production",
+      () => {
+        const report =
+          validate({
+            NODE_ENV:
+              "production",
+
+            SMS_PROVIDER:
+              "invalid_provider",
+          });
+
+        expect(
+          report.healthy
+        ).toBe(
+          false
+        );
+
+        expect(
+          report.checks
+        ).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              name:
+                "SMS_PROVIDER",
+              level:
+                "FAIL",
+            }),
+          ])
+        );
+      }
+    );
+
+    it(
+      "validates Plivo SMS credentials when SMS_PROVIDER=plivo in production",
+      () => {
+        // Missing Plivo SMS credentials
+        const invalidReport =
+          validate({
+            NODE_ENV:
+              "production",
+
+            SMS_PROVIDER:
+              "plivo",
+
+            PLIVO_AUTH_ID:
+              "",
+
+            PLIVO_AUTH_TOKEN:
+              "",
+
+            PLIVO_SMS_FROM:
+              "",
+          });
+
+        expect(
+          invalidReport.healthy
+        ).toBe(
+          false
+        );
+
+        const failedNames =
+          invalidReport.checks
+            .filter(
+              c =>
+                c.level ===
+                "FAIL"
+            )
+            .map(
+              c =>
+                c.name
+            );
+
+        expect(
+          failedNames
+        ).toContain(
+          "PLIVO_AUTH_ID"
+        );
+
+        expect(
+          failedNames
+        ).toContain(
+          "PLIVO_AUTH_TOKEN"
+        );
+
+        expect(
+          failedNames
+        ).toContain(
+          "PLIVO_SMS_FROM"
+        );
+
+        // Complete Plivo SMS credentials
+        const validReport =
+          validate({
+            NODE_ENV:
+              "production",
+
+            SMS_PROVIDER:
+              "plivo",
+
+            PLIVO_AUTH_ID:
+              "PLIVO_AUTH_ID_PROD_1234",
+
+            PLIVO_AUTH_TOKEN:
+              "PLIVO_AUTH_TOKEN_PROD_5678",
+
+            PLIVO_SMS_FROM:
+              "+15551234567",
+          });
+
+        expect(
+          validReport.healthy
+        ).toBe(
+          true
+        );
+      }
+    );
+
+    it(
+      "validates Exotel SMS credentials when SMS_PROVIDER=exotel in production",
+      () => {
+        // Missing Exotel SMS credentials
+        const invalidReport =
+          validate({
+            NODE_ENV:
+              "production",
+
+            SMS_PROVIDER:
+              "exotel",
+
+            EXOTEL_ACCOUNT_SID:
+              "",
+
+            EXOTEL_API_KEY:
+              "",
+
+            EXOTEL_API_TOKEN:
+              "",
+
+            EXOTEL_SUBDOMAIN:
+              "",
+
+            EXOTEL_SMS_FROM:
+              "",
+          });
+
+        expect(
+          invalidReport.healthy
+        ).toBe(
+          false
+        );
+
+        const failedNames =
+          invalidReport.checks
+            .filter(
+              c =>
+                c.level ===
+                "FAIL"
+            )
+            .map(
+              c =>
+                c.name
+            );
+
+        expect(
+          failedNames
+        ).toContain(
+          "EXOTEL_ACCOUNT_SID"
+        );
+
+        expect(
+          failedNames
+        ).toContain(
+          "EXOTEL_API_KEY"
+        );
+
+        expect(
+          failedNames
+        ).toContain(
+          "EXOTEL_API_TOKEN"
+        );
+
+        expect(
+          failedNames
+        ).toContain(
+          "EXOTEL_SUBDOMAIN"
+        );
+
+        expect(
+          failedNames
+        ).toContain(
+          "EXOTEL_SMS_FROM"
+        );
+
+        // Complete Exotel SMS credentials
+        const validReport =
+          validate({
+            NODE_ENV:
+              "production",
+
+            SMS_PROVIDER:
+              "exotel",
+
+            EXOTEL_ACCOUNT_SID:
+              "EXOTEL_ACCOUNT_SID_PROD",
+
+            EXOTEL_API_KEY:
+              "EXOTEL_API_KEY_PROD",
+
+            EXOTEL_API_TOKEN:
+              "EXOTEL_API_TOKEN_PROD",
+
+            EXOTEL_SUBDOMAIN:
+              "api.in.exotel.com",
+
+            EXOTEL_SMS_FROM:
+              "+919876543210",
+          });
+
+        expect(
+          validReport.healthy
+        ).toBe(
+          true
+        );
+      }
+    );
+
+    it(
+      "rejects an invalid WHATSAPP_PROVIDER value in production",
+      () => {
+        const report =
+          validate({
+            NODE_ENV:
+              "production",
+
+            WHATSAPP_PROVIDER:
+              "invalid_wa_provider",
+          });
+
+        expect(
+          report.healthy
+        ).toBe(
+          false
+        );
+
+        expect(
+          report.checks
+        ).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              name:
+                "WHATSAPP_PROVIDER",
+              level:
+                "FAIL",
+            }),
+          ])
+        );
+      }
+    );
   }
 );

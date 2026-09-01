@@ -203,10 +203,79 @@ describe(
         );
 
         it(
-          "constructs Exotel status callback URL for future M3 provider",
+          "constructs Exotel status callback URL with message-bound HMAC token without exposing raw secrets",
           () => {
             process.env.EXOTEL_PUBLIC_BASE_URL =
               "https://exotel.example.com";
+
+            process.env.EXOTEL_WEBHOOK_SECRET =
+              "exotel_secret_abc123";
+
+            process.env.EXOTEL_API_TOKEN =
+              "raw_exotel_api_token_xyz";
+
+            const url =
+              buildMessagingStatusCallbackUrl({
+                provider:
+                  "EXOTEL",
+
+                outboundMessageId:
+                  "exo-msg-789",
+              });
+
+            expect(
+              url
+            ).toBeDefined();
+
+            // Raw secret or API token must NEVER appear in the callback URL
+            expect(
+              url
+            ).not.toContain(
+              "exotel_secret_abc123"
+            );
+
+            expect(
+              url
+            ).not.toContain(
+              "raw_exotel_api_token_xyz"
+            );
+
+            // URL must include messageId and derived HMAC token
+            expect(
+              url
+            ).toContain(
+              "?messageId=exo-msg-789&token="
+            );
+
+            const parsed =
+              new URL(
+                url!
+              );
+
+            const token =
+              parsed.searchParams.get(
+                "token"
+              );
+
+            expect(
+              token
+            ).toBeTruthy();
+
+            expect(
+              token
+            ).toHaveLength(
+              64
+            ); // SHA256 hex string
+          }
+        );
+
+        it(
+          "constructs Exotel status callback URL without token when EXOTEL_WEBHOOK_SECRET is unset",
+          () => {
+            process.env.EXOTEL_PUBLIC_BASE_URL =
+              "https://exotel.example.com";
+
+            delete process.env.EXOTEL_WEBHOOK_SECRET;
 
             const url =
               buildMessagingStatusCallbackUrl({

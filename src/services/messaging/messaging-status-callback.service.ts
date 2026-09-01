@@ -1,3 +1,7 @@
+import {
+  generateExotelMessageStatusToken,
+} from "@/lib/exotel-webhook-auth";
+
 import type {
   MessagingProviderAdapter,
   MessagingProviderName,
@@ -159,10 +163,33 @@ export function buildMessagingStatusCallbackUrl(
       ? callbackPath
       : `/${callbackPath}`;
 
+  let tokenParam =
+    "";
+
+  if (
+    providerName ===
+    "EXOTEL"
+  ) {
+    const derivedToken =
+      generateExotelMessageStatusToken(
+        outboundMessageId
+      );
+
+    if (
+      derivedToken
+    ) {
+      tokenParam =
+        `&token=${encodeURIComponent(
+          derivedToken
+        )}`;
+    }
+  }
+
   return (
     `${baseUrl}${normalizedPath}` +
     `?messageId=${encodeURIComponent(
       outboundMessageId
-    )}`
+    )}` +
+    tokenParam
   );
 }
