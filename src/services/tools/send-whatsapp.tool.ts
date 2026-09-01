@@ -31,8 +31,8 @@ import type {
 } from "@/services/messaging/whatsapp-template.service";
 
 import {
-  sendMessage,
-} from "@/services/messaging/messaging.service";
+  resolveMessagingProvider,
+} from "@/services/messaging/messaging-provider-registry.service";
 
 import type {
   BusinessToolDefinition,
@@ -261,6 +261,28 @@ async function executeWhatsApp(
     );
 
   //------------------------------------------------
+  // Provider Resolution
+  //------------------------------------------------
+
+  const adapter =
+    resolveMessagingProvider({
+      channel:
+        "WHATSAPP",
+
+      capability:
+        "WHATSAPP_OUTBOUND",
+    });
+
+  if (
+    !adapter ||
+    !adapter.isConfigured()
+  ) {
+    throw new Error(
+      "WHATSAPP_PROVIDER_NOT_CONFIGURED: No configured WhatsApp messaging provider is available"
+    );
+  }
+
+  //------------------------------------------------
   // Reserve Idempotency
   //------------------------------------------------
 
@@ -279,7 +301,7 @@ async function executeWhatsApp(
               MessagingChannel.WHATSAPP,
 
             provider:
-              "META",
+              adapter.provider,
 
             recipient,
 
@@ -373,43 +395,40 @@ async function executeWhatsApp(
 
   try {
     const providerResult =
-      await sendMessage(
-        "META",
-        {
-          channel:
-            "WHATSAPP",
+      await adapter.send({
+        channel:
+          "WHATSAPP",
 
-          recipient,
+        recipient,
 
-          templateName:
-            template.name,
+        templateName:
+          template.name,
 
-          templateLanguage:
-            template.language,
+        templateLanguage:
+          template.language,
 
-          templateComponents: [
-            {
-              type:
-                "body",
+        templateComponents: [
+          {
+            type:
+              "body",
 
-              parameters:
-                template
-                  .bodyParameters
-                  .map(
-                    text => ({
-                      type:
-                        "text" as const,
+            parameters:
+              template
+                .bodyParameters
+                .map(
+                  text => ({
+                    type:
+                      "text" as const,
 
-                      text,
-                    })
-                  ),
-            },
-          ],
+                    text,
+                  })
+                ),
+          },
+        ],
 
-          signal:
-            context.signal,
-        }
-      );
+        signal:
+          context.signal,
+      });
 
     //------------------------------------------------
     // Rejected

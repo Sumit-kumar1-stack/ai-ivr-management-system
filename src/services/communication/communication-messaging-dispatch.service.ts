@@ -25,8 +25,8 @@ import {
 } from "@/services/messaging/whatsapp-template.service";
 
 import {
-  sendMessage,
-} from "@/services/messaging/messaging.service";
+  resolveMessagingProvider,
+} from "@/services/messaging/messaging-provider-registry.service";
 
 //--------------------------------------------------
 // Template
@@ -115,6 +115,41 @@ export async function dispatchCommunicationSms(
   }
 
   //------------------------------------------------
+  // Provider Resolution
+  //------------------------------------------------
+
+  const adapter =
+    resolveMessagingProvider({
+      channel:
+        "SMS",
+
+      capability:
+        "SMS_OUTBOUND",
+    });
+
+  if (
+    !adapter ||
+    !adapter.isConfigured()
+  ) {
+    return {
+      success:
+        false,
+
+      duplicate:
+        false,
+
+      outboundMessageId:
+        null,
+
+      code:
+        "SMS_PROVIDER_NOT_CONFIGURED",
+
+      message:
+        "No configured SMS messaging provider is available.",
+    };
+  }
+
+  //------------------------------------------------
   // Idempotency
   //------------------------------------------------
 
@@ -133,7 +168,7 @@ export async function dispatchCommunicationSms(
         MessagingChannel.SMS,
 
       provider:
-        "TWILIO",
+        adapter.provider,
 
       recipient:
         input.recipient,
@@ -174,23 +209,20 @@ export async function dispatchCommunicationSms(
   //------------------------------------------------
 
   const providerResult =
-    await sendMessage(
-      "TWILIO",
-      {
-        channel:
-          "SMS",
+    await adapter.send({
+      channel:
+        "SMS",
 
-        recipient:
-          input.recipient,
+      recipient:
+        input.recipient,
 
-        body,
+      body,
 
-        statusCallbackUrl:
-          buildSmsStatusCallbackUrl(
-            reservation.message.id
-          ),
-      }
-    );
+      statusCallbackUrl:
+        buildSmsStatusCallbackUrl(
+          reservation.message.id
+        ),
+    });
 
   if (
     !providerResult.success
@@ -332,6 +364,41 @@ export async function dispatchCommunicationWhatsApp(
   }
 
   //------------------------------------------------
+  // Provider Resolution
+  //------------------------------------------------
+
+  const adapter =
+    resolveMessagingProvider({
+      channel:
+        "WHATSAPP",
+
+      capability:
+        "WHATSAPP_OUTBOUND",
+    });
+
+  if (
+    !adapter ||
+    !adapter.isConfigured()
+  ) {
+    return {
+      success:
+        false,
+
+      duplicate:
+        false,
+
+      outboundMessageId:
+        null,
+
+      code:
+        "WHATSAPP_PROVIDER_NOT_CONFIGURED",
+
+      message:
+        "No configured WhatsApp messaging provider is available.",
+    };
+  }
+
+  //------------------------------------------------
   // Idempotency
   //------------------------------------------------
 
@@ -350,7 +417,7 @@ export async function dispatchCommunicationWhatsApp(
         MessagingChannel.WHATSAPP,
 
       provider:
-        "META",
+        adapter.provider,
 
       recipient:
         input.recipient,
@@ -391,41 +458,38 @@ export async function dispatchCommunicationWhatsApp(
   //------------------------------------------------
 
   const providerResult =
-    await sendMessage(
-      "META",
-      {
-        channel:
-          "WHATSAPP",
+    await adapter.send({
+      channel:
+        "WHATSAPP",
 
-        recipient:
-          input.recipient,
+      recipient:
+        input.recipient,
 
-        templateName:
-          template.name,
+      templateName:
+        template.name,
 
-        templateLanguage:
-          template.language,
+      templateLanguage:
+        template.language,
 
-        templateComponents: [
-          {
-            type:
-              "body",
+      templateComponents: [
+        {
+          type:
+            "body",
 
-            parameters:
-              template
-                .bodyParameters
-                .map(
-                  text => ({
-                    type:
-                      "text" as const,
+          parameters:
+            template
+              .bodyParameters
+              .map(
+                text => ({
+                  type:
+                    "text" as const,
 
-                    text,
-                  })
-                ),
-          },
-        ],
-      }
-    );
+                  text,
+                })
+              ),
+        },
+      ],
+    });
 
   if (
     !providerResult.success

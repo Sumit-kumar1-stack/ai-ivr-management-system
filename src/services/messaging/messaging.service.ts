@@ -4,6 +4,7 @@ import {
 
 import {
   getMessagingProvider,
+  resolveMessagingProvider,
 } from "./messaging-provider-registry.service";
 
 import {
@@ -11,6 +12,7 @@ import {
 } from "./register-messaging-providers.service";
 
 import type {
+  MessagingProviderCapability,
   MessagingProviderName,
   MessagingSendRequest,
   MessagingSendResult,
@@ -26,7 +28,76 @@ const log =
   );
 
 //--------------------------------------------------
-// Send
+// Send by Channel (Provider-Neutral)
+//--------------------------------------------------
+
+export async function sendChannelMessage(
+  request:
+    MessagingSendRequest,
+
+  options: {
+    capability?:
+      MessagingProviderCapability;
+
+    preferredProvider?:
+      MessagingProviderName;
+  } = {}
+): Promise<MessagingSendResult> {
+  const adapter =
+    resolveMessagingProvider({
+      channel:
+        request.channel,
+
+      capability:
+        options.capability,
+
+      preferredProvider:
+        options.preferredProvider,
+    });
+
+  if (
+    !adapter
+  ) {
+    return {
+      success:
+        false,
+
+      provider:
+        options.preferredProvider ??
+        "MOCK",
+
+      channel:
+        request.channel,
+
+      code:
+        "MESSAGING_PROVIDER_NOT_AVAILABLE",
+
+      message:
+        "No configured messaging provider is available for this channel and capability.",
+    };
+  }
+
+  log.info(
+    {
+      event:
+        "messaging.dispatch.started",
+
+      provider:
+        adapter.provider,
+
+      channel:
+        request.channel,
+    },
+    "Outbound message dispatch started"
+  );
+
+  return adapter.send(
+    request
+  );
+}
+
+//--------------------------------------------------
+// Send by Specific Provider
 //--------------------------------------------------
 
 export async function sendMessage(

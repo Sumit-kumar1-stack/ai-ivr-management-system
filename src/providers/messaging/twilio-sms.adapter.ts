@@ -12,7 +12,9 @@ import {
 } from "@/lib/logger";
 
 import type {
+  MessagingChannel,
   MessagingProviderAdapter,
+  MessagingProviderCapability,
   MessagingSendRequest,
   MessagingSendResult,
 } from "@/services/messaging/messaging.types";
@@ -40,6 +42,48 @@ export class TwilioSmsAdapter
     [
       "SMS",
     ] as const;
+
+  readonly capabilities =
+    [
+      "SMS_OUTBOUND",
+      "SMS_STATUS_CALLBACK",
+    ] as const;
+
+  //------------------------------------------------
+  // Supports
+  //------------------------------------------------
+
+  supports(
+    channel:
+      MessagingChannel,
+    capability?:
+      MessagingProviderCapability
+  ): boolean {
+    if (
+      !(
+        this
+          .channels as readonly string[]
+      ).includes(
+        channel
+      )
+    ) {
+      return false;
+    }
+
+    if (
+      capability &&
+      !(
+        this
+          .capabilities as readonly string[]
+      ).includes(
+        capability
+      )
+    ) {
+      return false;
+    }
+
+    return true;
+  }
 
   //------------------------------------------------
   // Configured

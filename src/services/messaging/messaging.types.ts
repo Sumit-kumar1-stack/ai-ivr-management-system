@@ -18,6 +18,18 @@ export type MessagingProviderName =
   | "MOCK";
 
 //--------------------------------------------------
+// Capabilities
+//--------------------------------------------------
+
+export type MessagingProviderCapability =
+  | "SMS_OUTBOUND"
+  | "SMS_STATUS_CALLBACK"
+  | "WHATSAPP_OUTBOUND"
+  | "WHATSAPP_TEMPLATE"
+  | "WHATSAPP_STATUS_CALLBACK"
+  | "WHATSAPP_READ_RECEIPT";
+
+//--------------------------------------------------
 // WhatsApp Template Parameter
 //--------------------------------------------------
 
@@ -73,6 +85,9 @@ export interface MessagingSendRequest {
   statusCallbackUrl?:
     string;
 
+  idempotencyKey?:
+    string;
+
   signal?:
     AbortSignal;
 }
@@ -96,6 +111,9 @@ export interface MessagingSendSuccess {
 
   status:
     string;
+
+  retryable?:
+    false;
 }
 
 //--------------------------------------------------
@@ -117,6 +135,9 @@ export interface MessagingSendFailure {
 
   message:
     string;
+
+  retryable?:
+    boolean;
 }
 
 //--------------------------------------------------
@@ -138,6 +159,16 @@ export interface MessagingProviderAdapter {
   readonly channels:
     readonly MessagingChannel[];
 
+  readonly capabilities:
+    readonly MessagingProviderCapability[];
+
+  supports(
+    channel:
+      MessagingChannel,
+    capability?:
+      MessagingProviderCapability
+  ): boolean;
+
   isConfigured():
     boolean;
 
@@ -146,3 +177,50 @@ export interface MessagingProviderAdapter {
       MessagingSendRequest
   ): Promise<MessagingSendResult>;
 }
+
+//--------------------------------------------------
+// Resolution Options
+//--------------------------------------------------
+
+export interface ResolveMessagingProviderOptions {
+  channel:
+    MessagingChannel;
+
+  capability?:
+    MessagingProviderCapability;
+
+  preferredProvider?:
+    MessagingProviderName;
+}
+
+//--------------------------------------------------
+// Capability Matrix
+//--------------------------------------------------
+
+export interface MessagingProviderCapabilityDescriptor {
+  provider:
+    MessagingProviderName;
+
+  channels:
+    readonly MessagingChannel[];
+
+  capabilities:
+    readonly MessagingProviderCapability[];
+
+  isConfigured:
+    boolean;
+}
+
+export type MessagingCapabilityMatrix = Record<
+  MessagingProviderName,
+  {
+    channels:
+      readonly MessagingChannel[];
+
+    capabilities:
+      readonly MessagingProviderCapability[];
+
+    isConfigured:
+      boolean;
+  }
+>;

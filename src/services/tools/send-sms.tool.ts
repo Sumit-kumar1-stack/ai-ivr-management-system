@@ -31,8 +31,8 @@ import type {
 } from "@/services/messaging/message-template.service";
 
 import {
-  sendMessage,
-} from "@/services/messaging/messaging.service";
+  resolveMessagingProvider,
+} from "@/services/messaging/messaging-provider-registry.service";
 
 import type {
   BusinessToolDefinition,
@@ -261,6 +261,28 @@ async function executeSms(
     );
 
   //------------------------------------------------
+  // Provider Resolution
+  //------------------------------------------------
+
+  const adapter =
+    resolveMessagingProvider({
+      channel:
+        "SMS",
+
+      capability:
+        "SMS_OUTBOUND",
+    });
+
+  if (
+    !adapter ||
+    !adapter.isConfigured()
+  ) {
+    throw new Error(
+      "SMS_PROVIDER_NOT_CONFIGURED: No configured SMS messaging provider is available"
+    );
+  }
+
+  //------------------------------------------------
   // Reserve Idempotency Before Provider Call
   //------------------------------------------------
 
@@ -279,7 +301,7 @@ async function executeSms(
               MessagingChannel.SMS,
 
             provider:
-              "TWILIO",
+              adapter.provider,
 
             recipient,
 
@@ -382,22 +404,19 @@ async function executeSms(
 
   try {
     const providerResult =
-      await sendMessage(
-        "TWILIO",
-        {
-          channel:
-            "SMS",
+      await adapter.send({
+        channel:
+          "SMS",
 
-          recipient,
+        recipient,
 
-          body,
+        body,
 
-          statusCallbackUrl,
+        statusCallbackUrl,
 
-          signal:
-            context.signal,
-        }
-      );
+        signal:
+          context.signal,
+      });
 
     //------------------------------------------------
     // Provider Rejected

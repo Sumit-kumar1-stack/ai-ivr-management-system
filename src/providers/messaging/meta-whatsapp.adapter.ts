@@ -4,7 +4,9 @@ import {
 } from "@/lib/logger";
 
 import type {
+  MessagingChannel,
   MessagingProviderAdapter,
+  MessagingProviderCapability,
   MessagingSendRequest,
   MessagingSendResult,
 } from "@/services/messaging/messaging.types";
@@ -70,6 +72,50 @@ export class MetaWhatsAppAdapter
     [
       "WHATSAPP",
     ] as const;
+
+  readonly capabilities =
+    [
+      "WHATSAPP_OUTBOUND",
+      "WHATSAPP_TEMPLATE",
+      "WHATSAPP_STATUS_CALLBACK",
+      "WHATSAPP_READ_RECEIPT",
+    ] as const;
+
+  //------------------------------------------------
+  // Supports
+  //------------------------------------------------
+
+  supports(
+    channel:
+      MessagingChannel,
+    capability?:
+      MessagingProviderCapability
+  ): boolean {
+    if (
+      !(
+        this
+          .channels as readonly string[]
+      ).includes(
+        channel
+      )
+    ) {
+      return false;
+    }
+
+    if (
+      capability &&
+      !(
+        this
+          .capabilities as readonly string[]
+      ).includes(
+        capability
+      )
+    ) {
+      return false;
+    }
+
+    return true;
+  }
 
   //------------------------------------------------
   // Configured
