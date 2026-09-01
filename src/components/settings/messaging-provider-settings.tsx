@@ -101,7 +101,7 @@ export default function MessagingProviderSettings({
   );
 
   return (
-    <section className="rounded-2xl border border-slate-200 bg-slate-50 p-6 space-y-6">
+    <section className="rounded-2xl border border-slate-200 bg-slate-50 p-6 space-y-6" data-tour="messaging-providers">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>

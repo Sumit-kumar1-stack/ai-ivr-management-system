@@ -136,10 +136,13 @@ export default function Sidebar({
                   (!isCalls && !isRecordings && item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`)) ||
                   (item.href === "/campaigns" && pathname.startsWith("/communication/campaigns"));
 
+                const tourKey = `sidebar-${item.href.replace(/^\//, "").replace(/\//g, "-")}`;
+
                 return (
                   <li key={item.href}>
                     <Link
                       href={item.href}
+                      data-tour={tourKey}
                       aria-current={isActive ? "page" : undefined}
                       className={`
                         flex

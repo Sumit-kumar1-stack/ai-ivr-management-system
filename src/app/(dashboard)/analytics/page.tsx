@@ -63,7 +63,7 @@ export default function AnalyticsPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-tour="analytics-overview">
       {/* Header & Controls */}
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between border-b pb-5 border-slate-200/80">
         <div>

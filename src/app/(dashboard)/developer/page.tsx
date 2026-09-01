@@ -61,7 +61,7 @@ export default async function DeveloperDashboardPage() {
   ]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-tour="developer-integrations">
       <div className="space-y-2">
         <h1 className="text-3xl font-semibold tracking-tight">Developer Dashboard</h1>
         <p className="text-sm text-muted-foreground">

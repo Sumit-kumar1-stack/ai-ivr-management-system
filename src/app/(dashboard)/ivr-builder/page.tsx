@@ -120,7 +120,7 @@ export default function IVRBuilderPage() {
       initialTemplates={builderData?.templates}
       initialFlowId={searchParams.get("flowId") ?? undefined}
     >
-      <div className="h-[calc(100vh-90px)] flex">
+      <div className="h-[calc(100vh-90px)] flex" data-tour="ivr-builder-canvas">
         <IVRSidebar />
 
         <IVRCanvas />

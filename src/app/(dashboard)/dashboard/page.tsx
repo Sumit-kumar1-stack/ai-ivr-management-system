@@ -14,7 +14,7 @@ export default function DashboardPage() {
   useDashboardEvents();
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8" data-tour="dashboard-overview">
       {/* Header */}
 
       <div

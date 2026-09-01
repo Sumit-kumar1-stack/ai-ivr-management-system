@@ -505,7 +505,7 @@ export default function CallRecordingsPage() {
   );
 
   return (
-    <div className="min-h-screen space-y-6 p-4 md:p-6 xl:p-8">
+    <div className="min-h-screen space-y-6 p-4 md:p-6 xl:p-8" data-tour="calls-recordings">
       {/* Header */}
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>

@@ -14,7 +14,7 @@ export default async function KnowledgePage() {
   const canMutate = user.role === "SUPER_ADMIN" || user.campaignCapabilities?.includes("CAMPAIGN_EDIT") === true;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-tour="knowledge-upload">
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-slate-900">

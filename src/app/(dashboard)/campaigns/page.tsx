@@ -147,7 +147,7 @@ export default function CampaignsPage() {
     );
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8" data-tour="campaign-list">
       <section className="overflow-hidden rounded-3xl border border-slate-200/70 bg-white shadow-sm">
         <div className="grid gap-6 bg-[linear-gradient(135deg,rgba(15,23,42,0.98),rgba(17,78,134,0.95)_52%,rgba(37,99,235,0.88))] p-8 text-white md:grid-cols-[1.3fr_0.7fr] md:p-10">
           <div className="space-y-5">
