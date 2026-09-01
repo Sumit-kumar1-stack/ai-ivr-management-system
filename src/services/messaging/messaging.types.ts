@@ -162,6 +162,9 @@ export interface MessagingProviderAdapter {
   readonly capabilities:
     readonly MessagingProviderCapability[];
 
+  readonly statusCallbackPath?:
+    string;
+
   supports(
     channel:
       MessagingChannel,

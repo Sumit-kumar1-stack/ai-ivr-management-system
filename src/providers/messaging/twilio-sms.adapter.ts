@@ -49,6 +49,9 @@ export class TwilioSmsAdapter
       "SMS_STATUS_CALLBACK",
     ] as const;
 
+  readonly statusCallbackPath =
+    "/api/twilio/messaging/status";
+
   //------------------------------------------------
   // Supports
   //------------------------------------------------

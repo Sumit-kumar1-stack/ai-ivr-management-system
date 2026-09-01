@@ -276,37 +276,59 @@ export function resolveMessagingProvider(
   // 2. Environment Provider Configuration
   //------------------------------------------------
 
-  const envProviderName =
-    resolveEnvironmentProvider(
-      channel
-    );
-
   if (
-    envProviderName
+    hasExplicitEnvironmentProvider(
+      channel
+    )
   ) {
-    const adapter =
-      adapters.get(
-        envProviderName
+    const envProviderName =
+      resolveEnvironmentProvider(
+        channel
       );
 
     if (
-      adapter &&
-      adapter.isConfigured() &&
-      adapter.supports(
-        channel,
-        capability
-      )
+      envProviderName
     ) {
-      return adapter;
+      const adapter =
+        adapters.get(
+          envProviderName
+        );
+
+      if (
+        adapter &&
+        adapter.isConfigured() &&
+        adapter.supports(
+          channel,
+          capability
+        )
+      ) {
+        return adapter;
+      }
     }
 
-    if (
-      hasExplicitEnvironmentProvider(
-        channel
-      )
-    ) {
-      return null;
-    }
+    return null;
+  }
+
+  // Default provider by channel
+  const defaultProviderName =
+    channel === "SMS"
+      ? "TWILIO"
+      : "META";
+
+  const defaultAdapter =
+    adapters.get(
+      defaultProviderName
+    );
+
+  if (
+    defaultAdapter &&
+    defaultAdapter.isConfigured() &&
+    defaultAdapter.supports(
+      channel,
+      capability
+    )
+  ) {
+    return defaultAdapter;
   }
 
   //------------------------------------------------

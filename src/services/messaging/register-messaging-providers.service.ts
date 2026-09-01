@@ -3,6 +3,10 @@ import {
 } from "@/providers/messaging/twilio-sms.adapter";
 
 import {
+  PlivoSmsAdapter,
+} from "@/providers/messaging/plivo-sms.adapter";
+
+import {
   MetaWhatsAppAdapter,
 } from "@/providers/messaging/meta-whatsapp.adapter";
 
@@ -28,6 +32,20 @@ export function registerMessagingProviders():
   ) {
     registerMessagingProvider(
       new TwilioSmsAdapter()
+    );
+  }
+
+  //------------------------------------------------
+  // Plivo SMS
+  //------------------------------------------------
+
+  if (
+    !getMessagingProvider(
+      "PLIVO"
+    )
+  ) {
+    registerMessagingProvider(
+      new PlivoSmsAdapter()
     );
   }
 

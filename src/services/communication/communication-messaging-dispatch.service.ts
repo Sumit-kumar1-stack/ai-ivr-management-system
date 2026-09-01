@@ -28,6 +28,10 @@ import {
   resolveMessagingProvider,
 } from "@/services/messaging/messaging-provider-registry.service";
 
+import {
+  buildMessagingStatusCallbackUrl,
+} from "@/services/messaging/messaging-status-callback.service";
+
 //--------------------------------------------------
 // Template
 //--------------------------------------------------
@@ -219,8 +223,16 @@ export async function dispatchCommunicationSms(
       body,
 
       statusCallbackUrl:
-        buildSmsStatusCallbackUrl(
-          reservation.message.id
+        buildMessagingStatusCallbackUrl(
+          {
+            provider:
+              adapter,
+
+            outboundMessageId:
+              reservation
+                .message
+                .id,
+          }
         ),
     });
 
@@ -810,39 +822,4 @@ function mapSmsInitialStatus(
     default:
       return OutboundMessageStatus.ACCEPTED;
   }
-}
-
-//--------------------------------------------------
-// Twilio Callback
-//--------------------------------------------------
-
-function buildSmsStatusCallbackUrl(
-  outboundMessageId:
-    string
-): string | undefined {
-  const baseUrl =
-    (
-      process.env
-        .TWILIO_PUBLIC_BASE_URL ??
-      process.env
-        .APP_URL
-    )
-      ?.trim()
-      .replace(
-        /\/+$/,
-        ""
-      );
-
-  if (
-    !baseUrl
-  ) {
-    return undefined;
-  }
-
-  return (
-    `${baseUrl}/api/twilio/messaging/status` +
-    `?messageId=${encodeURIComponent(
-      outboundMessageId
-    )}`
-  );
 }

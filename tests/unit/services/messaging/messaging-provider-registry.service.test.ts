@@ -55,11 +55,16 @@ describe(
     //------------------------------------------------
 
     it(
-      "registers Twilio for SMS and Meta for WhatsApp by default",
+      "registers Twilio and Plivo for SMS and Meta for WhatsApp by default",
       () => {
         const twilio =
           getMessagingProvider(
             "TWILIO"
+          );
+
+        const plivo =
+          getMessagingProvider(
+            "PLIVO"
           );
 
         const meta =
@@ -79,6 +84,22 @@ describe(
 
         expect(
           twilio?.channels
+        ).toEqual([
+          "SMS",
+        ]);
+
+        expect(
+          plivo
+        ).not.toBeNull();
+
+        expect(
+          plivo?.provider
+        ).toBe(
+          "PLIVO"
+        );
+
+        expect(
+          plivo?.channels
         ).toEqual([
           "SMS",
         ]);
@@ -176,6 +197,85 @@ describe(
         expect(
           getMessagingProviderCapabilities(
             "TWILIO"
+          )
+        ).toEqual([
+          "SMS_OUTBOUND",
+          "SMS_STATUS_CALLBACK",
+        ]);
+      }
+    );
+
+    it(
+      "Plivo advertises only supported messaging capabilities",
+      () => {
+        const plivo =
+          getMessagingProvider(
+            "PLIVO"
+          );
+
+        expect(
+          plivo?.capabilities
+        ).toEqual([
+          "SMS_OUTBOUND",
+          "SMS_STATUS_CALLBACK",
+        ]);
+
+        expect(
+          plivo?.supports(
+            "SMS",
+            "SMS_OUTBOUND"
+          )
+        ).toBe(
+          true
+        );
+
+        expect(
+          plivo?.supports(
+            "SMS",
+            "SMS_STATUS_CALLBACK"
+          )
+        ).toBe(
+          true
+        );
+
+        expect(
+          plivo?.supports(
+            "SMS",
+            "WHATSAPP_OUTBOUND" as any
+          )
+        ).toBe(
+          false
+        );
+
+        expect(
+          plivo?.supports(
+            "WHATSAPP" as any
+          )
+        ).toBe(
+          false
+        );
+
+        expect(
+          providerSupportsCapability(
+            "PLIVO",
+            "SMS_OUTBOUND"
+          )
+        ).toBe(
+          true
+        );
+
+        expect(
+          providerSupportsCapability(
+            "PLIVO",
+            "WHATSAPP_OUTBOUND"
+          )
+        ).toBe(
+          false
+        );
+
+        expect(
+          getMessagingProviderCapabilities(
+            "PLIVO"
           )
         ).toEqual([
           "SMS_OUTBOUND",
@@ -286,14 +386,8 @@ describe(
     );
 
     it(
-      "returns empty capabilities and false for unregistered providers",
+      "returns empty capabilities and false for unregistered providers (EXOTEL)",
       () => {
-        expect(
-          getMessagingProvider(
-            "PLIVO"
-          )
-        ).toBeNull();
-
         expect(
           getMessagingProvider(
             "EXOTEL"
@@ -302,7 +396,7 @@ describe(
 
         expect(
           providerSupportsChannel(
-            "PLIVO",
+            "EXOTEL",
             "SMS"
           )
         ).toBe(
@@ -311,7 +405,7 @@ describe(
 
         expect(
           providerSupportsCapability(
-            "PLIVO",
+            "EXOTEL",
             "SMS_OUTBOUND"
           )
         ).toBe(
@@ -320,13 +414,13 @@ describe(
 
         expect(
           getMessagingProviderCapabilities(
-            "PLIVO"
+            "EXOTEL"
           )
         ).toEqual([]);
 
         expect(
           isMessagingCapabilitySupported(
-            "PLIVO",
+            "EXOTEL",
             "SMS",
             "SMS_OUTBOUND"
           )
@@ -363,6 +457,22 @@ describe(
         );
 
         expect(
+          matrix.PLIVO
+        ).toBeDefined();
+
+        expect(
+          matrix.PLIVO.channels
+        ).toContain(
+          "SMS"
+        );
+
+        expect(
+          matrix.PLIVO.capabilities
+        ).toContain(
+          "SMS_OUTBOUND"
+        );
+
+        expect(
           matrix.META
         ).toBeDefined();
 
@@ -377,14 +487,6 @@ describe(
         ).toContain(
           "WHATSAPP_OUTBOUND"
         );
-
-        expect(
-          matrix.PLIVO
-        ).toEqual({
-          channels: [],
-          capabilities: [],
-          isConfigured: false,
-        });
 
         expect(
           matrix.EXOTEL
@@ -432,6 +534,45 @@ describe(
           resolved?.provider
         ).toBe(
           "TWILIO"
+        );
+      }
+    );
+
+    it(
+      "resolves Plivo for SMS outbound when SMS_PROVIDER=plivo",
+      () => {
+        process.env.SMS_PROVIDER =
+          "plivo";
+
+        const plivo =
+          getMessagingProvider(
+            "PLIVO"
+          );
+
+        vi.spyOn(
+          plivo!,
+          "isConfigured"
+        ).mockReturnValue(
+          true
+        );
+
+        const resolved =
+          resolveMessagingProvider({
+            channel:
+              "SMS",
+
+            capability:
+              "SMS_OUTBOUND",
+          });
+
+        expect(
+          resolved
+        ).not.toBeNull();
+
+        expect(
+          resolved?.provider
+        ).toBe(
+          "PLIVO"
         );
       }
     );
@@ -615,7 +756,7 @@ describe(
               "SMS_OUTBOUND",
 
             preferredProvider:
-              "PLIVO",
+              "EXOTEL",
           });
 
         expect(
@@ -628,7 +769,7 @@ describe(
       "fails safely when explicit environment provider is set to an unknown/unsupported provider",
       () => {
         process.env.SMS_PROVIDER =
-          "plivo";
+          "unknown_vendor";
 
         const resolved =
           resolveMessagingProvider({

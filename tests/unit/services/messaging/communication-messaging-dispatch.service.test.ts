@@ -685,5 +685,264 @@ describe(
         );
       }
     );
+
+    //------------------------------------------------
+    // Plivo SMS Dispatch & WhatsApp Fallback Routing
+    //------------------------------------------------
+
+    describe(
+      "Plivo SMS provider resolution & WhatsApp fallback",
+      () => {
+        it(
+          "resolves Plivo SMS adapter dynamically and attaches Plivo status callback",
+          async () => {
+            const originalPlivoUrl =
+              process.env.PLIVO_PUBLIC_BASE_URL;
+
+            process.env.PLIVO_PUBLIC_BASE_URL =
+              "https://plivo-app.example.com";
+
+            const mockSend =
+              vi.fn().mockResolvedValue({
+                success:
+                  true,
+
+                provider:
+                  "PLIVO",
+
+                channel:
+                  "SMS",
+
+                providerMessageId:
+                  "plivo-msg-uuid-1",
+
+                status:
+                  "queued",
+              });
+
+            mocks.resolveMessagingProvider.mockReturnValue({
+              provider:
+                "PLIVO",
+
+              channels: [
+                "SMS",
+              ],
+
+              capabilities: [
+                "SMS_OUTBOUND",
+                "SMS_STATUS_CALLBACK",
+              ],
+
+              isConfigured:
+                () => true,
+
+              send:
+                mockSend,
+            });
+
+            const result =
+              await dispatchCommunicationSms({
+                campaignId:
+                  "camp-1",
+
+                recipientId:
+                  "rec-1",
+
+                recipient:
+                  "+15551234567",
+
+                customerName:
+                  "Carol",
+              });
+
+            expect(
+              result.success
+            ).toBe(
+              true
+            );
+
+            expect(
+              mocks.create
+            ).toHaveBeenCalledWith(
+              expect.objectContaining({
+                data:
+                  expect.objectContaining({
+                    channel:
+                      MessagingChannel.SMS,
+
+                    provider:
+                      "PLIVO",
+
+                    recipient:
+                      "+15551234567",
+                  }),
+              })
+            );
+
+            expect(
+              mockSend
+            ).toHaveBeenCalledWith(
+              expect.objectContaining({
+                channel:
+                  "SMS",
+
+                recipient:
+                  "+15551234567",
+
+                statusCallbackUrl:
+                  "https://plivo-app.example.com/api/plivo/messaging/status?messageId=outbound-msg-1",
+              })
+            );
+
+            if (
+              originalPlivoUrl !==
+              undefined
+            ) {
+              process.env.PLIVO_PUBLIC_BASE_URL =
+                originalPlivoUrl;
+            } else {
+              delete process.env.PLIVO_PUBLIC_BASE_URL;
+            }
+          }
+        );
+
+        it(
+          "WhatsApp failure followed by SMS dispatch routes cleanly to configured Plivo SMS adapter",
+          async () => {
+            // Step 1: WhatsApp fails
+            const mockWhatsAppSend =
+              vi.fn().mockResolvedValue({
+                success:
+                  false,
+
+                provider:
+                  "META",
+
+                channel:
+                  "WHATSAPP",
+
+                code:
+                  "META_131026",
+
+                message:
+                  "Message undeliverable",
+              });
+
+            mocks.resolveMessagingProvider.mockReturnValueOnce({
+              provider:
+                "META",
+
+              channels: [
+                "WHATSAPP",
+              ],
+
+              capabilities: [
+                "WHATSAPP_OUTBOUND",
+                "WHATSAPP_TEMPLATE",
+              ],
+
+              isConfigured:
+                () => true,
+
+              send:
+                mockWhatsAppSend,
+            });
+
+            const waResult =
+              await dispatchCommunicationWhatsApp({
+                campaignId:
+                  "camp-fallback",
+
+                recipientId:
+                  "rec-fallback",
+
+                recipient:
+                  "+15551234567",
+
+                customerName:
+                  "David",
+              });
+
+            expect(
+              waResult.success
+            ).toBe(
+              false
+            );
+
+            // Step 2: Fallback executes SMS dispatch, resolving Plivo SMS
+            const mockPlivoSend =
+              vi.fn().mockResolvedValue({
+                success:
+                  true,
+
+                provider:
+                  "PLIVO",
+
+                channel:
+                  "SMS",
+
+                providerMessageId:
+                  "plivo-fallback-uuid",
+
+                status:
+                  "queued",
+              });
+
+            mocks.resolveMessagingProvider.mockReturnValueOnce({
+              provider:
+                "PLIVO",
+
+              channels: [
+                "SMS",
+              ],
+
+              capabilities: [
+                "SMS_OUTBOUND",
+                "SMS_STATUS_CALLBACK",
+              ],
+
+              isConfigured:
+                () => true,
+
+              send:
+                mockPlivoSend,
+            });
+
+            const smsResult =
+              await dispatchCommunicationSms({
+                campaignId:
+                  "camp-fallback",
+
+                recipientId:
+                  "rec-fallback",
+
+                recipient:
+                  "+15551234567",
+
+                customerName:
+                  "David",
+              });
+
+            expect(
+              smsResult.success
+            ).toBe(
+              true
+            );
+
+            expect(
+              mockPlivoSend
+            ).toHaveBeenCalledWith(
+              expect.objectContaining({
+                channel:
+                  "SMS",
+
+                recipient:
+                  "+15551234567",
+              })
+            );
+          }
+        );
+      }
+    );
   }
 );
