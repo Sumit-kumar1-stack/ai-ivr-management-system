@@ -1,4 +1,7 @@
-OmniIVR — Adaptive Voice Automation & Orchestration Platform
+# OmniIVR — Adaptive Voice Automation & Orchestration Platform
+
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white) ![Next.js](https://img.shields.io/badge/Next.js-000000?logo=nextdotjs&logoColor=white) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white) ![Redis](https://img.shields.io/badge/Redis-DC382D?logo=redis&logoColor=white) ![Voice AI](https://img.shields.io/badge/Voice-AI%20%26%20Telephony-6C63FF)
+
 
 OmniIVR is a multi-tenant communication orchestration platform for traditional IVR, smart IVR, adaptive AI IVR, conversational AI calling, outbound campaigns, recordings, analytics, knowledge retrieval, RBAC, and enterprise integrations.
 
